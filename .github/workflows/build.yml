@@ -31,8 +31,8 @@ jobs:
           export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
           export DOTNET_ROLL_FORWARD=Major
           chmod +x $OO_PS4_TOOLCHAIN/bin/linux/* || true
-          cp -r $OO_PS4_TOOLCHAIN/samples/hello_world hello_world
-          cd hello_world
+          cp -r $OO_PS4_TOOLCHAIN/samples samples
+          cd samples/hello_world
           make
           find . -name '*.pkg'
 
@@ -41,4 +41,4 @@ jobs:
         if: always()
         with:
           name: hello-build
-          path: hello_world/**/*.pkg
+          path: samples/hello_world/**/*.pkg
