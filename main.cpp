@@ -16,6 +16,18 @@
 #define PW   44
 #define PH   44
 
+// القيم الحقيقية لأزرار يد PS4 بنظام Orbis
+#define REAL_PAD_UP       0x0010
+#define REAL_PAD_RIGHT    0x0020
+#define REAL_PAD_DOWN     0x0040
+#define REAL_PAD_LEFT     0x0080
+#define REAL_PAD_L1       0x0400
+#define REAL_PAD_R1       0x0800
+#define REAL_PAD_TRIANGLE 0x1000
+#define REAL_PAD_CIRCLE   0x2000
+#define REAL_PAD_CROSS    0x4000
+#define REAL_PAD_SQUARE   0x8000
+
 std::stringstream debugLogStream;
 
 static Scene2D *scene;
@@ -51,9 +63,8 @@ static void fillRect(int x, int y, int w, int h, Color c) {
     if (y < 0) { h += y; y = 0; }
     if (x + w > FRAME_WIDTH) w = FRAME_WIDTH - x;
     if (y + h > FRAME_HEIGHT) h = FRAME_HEIGHT - y;
-    for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++)
-            scene->DrawPixel(x + i, y + j, c);
+    if (w <= 0 || h <= 0) return;
+    scene->DrawRectangle(x, y, w, h, c);
 }
 
 static void setRow(int row, int c0, int c1, char ch) {
@@ -155,10 +166,15 @@ static bool touchingGoal() {
 }
 
 static void update(Controller *ctl) {
-    bool left = ctl->DpadLeftPressed();
-    bool right = ctl->DpadRightPressed();
-    bool run = ctl->SquarePressed();
-    bool jumpHeld = ctl->XPressed();
+    // نقرأ حالة اليد مرة وحدة بالبداية وبعدين نفحص الأزرار مباشرة من padData
+    ctl->CheckButtonsPressed(0);
+    unsigned int btns = ctl->padData.buttons;
+    unsigned char lx = ctl->padData.leftStick.x;
+
+    bool left  = (btns & REAL_PAD_LEFT)  != 0 || (lx < 80);
+    bool right = (btns & REAL_PAD_RIGHT) != 0 || (lx > 176);
+    bool run   = (btns & (REAL_PAD_SQUARE | REAL_PAD_L1 | REAL_PAD_R1)) != 0;
+    bool jumpHeld = (btns & REAL_PAD_CROSS) != 0;
     bool jumpNew = jumpHeld && !prevJump;
     prevJump = jumpHeld;
 
@@ -239,7 +255,7 @@ static void drawSaw(int cx, int cy) {
     int a = (tick / 2) & 15;
     int cc = CS[a], ss = SN[a];
     for (int dy = -26; dy <= 26; dy++) {
-        for (int dx = -26; dx <= 26; dx++) {
+        for (int dx = -26; dx <= 26; dy++) {
             int d2 = dx * dx + dy * dy;
             if (d2 > 26 * 26) continue;
             int u = (dx * cc + dy * ss) >> 8;
