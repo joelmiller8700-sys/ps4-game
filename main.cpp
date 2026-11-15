@@ -4,7 +4,12 @@
 
 #include "../../_common/graphics.h"
 #include "../../_common/log.h"
+
+#define class struct
+#define private public
 #include "controller.h"
+#undef private
+#undef class
 
 #define FRAME_WIDTH  1920
 #define FRAME_HEIGHT 1080
