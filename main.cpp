@@ -4,12 +4,7 @@
 
 #include "../../_common/graphics.h"
 #include "../../_common/log.h"
-
-#define class struct
-#define private public
 #include "controller.h"
-#undef private
-#undef class
 
 #define FRAME_WIDTH  1920
 #define FRAME_HEIGHT 1080
@@ -68,8 +63,9 @@ static void fillRect(int x, int y, int w, int h, Color c) {
     if (y < 0) { h += y; y = 0; }
     if (x + w > FRAME_WIDTH) w = FRAME_WIDTH - x;
     if (y + h > FRAME_HEIGHT) h = FRAME_HEIGHT - y;
-    if (w <= 0 || h <= 0) return;
-    scene->DrawRectangle(x, y, w, h, c);
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++)
+            scene->DrawPixel(x + i, y + j, c);
 }
 
 static void setRow(int row, int c0, int c1, char ch) {
@@ -171,10 +167,8 @@ static bool touchingGoal() {
 }
 
 static void update(Controller *ctl) {
-    // نقرأ حالة اليد مرة وحدة بالبداية وبعدين نفحص الأزرار مباشرة من padData
-    ctl->CheckButtonsPressed(0);
-    unsigned int btns = ctl->padData.buttons;
-    unsigned char lx = ctl->padData.leftStick.x;
+    unsigned int btns = ctl->GetRawButtons();
+    unsigned char lx  = ctl->GetLeftStickX();
 
     bool left  = (btns & REAL_PAD_LEFT)  != 0 || (lx < 80);
     bool right = (btns & REAL_PAD_RIGHT) != 0 || (lx > 176);
