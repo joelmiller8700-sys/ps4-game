@@ -23,7 +23,7 @@ jobs:
           mkdir -p toolchain
           tar -xzf toolchain.tar.gz -C toolchain
 
-      - name: Build graphics sample and dump sources
+      - name: Build game
         run: |
           H=$(find toolchain -path '*orbis/libkernel.h' | head -1)
           export OO_PS4_TOOLCHAIN=$PWD/$(dirname $(dirname $(dirname $H)))
@@ -31,22 +31,24 @@ jobs:
           export DOTNET_ROLL_FORWARD=Major
           chmod +x $OO_PS4_TOOLCHAIN/bin/linux/* || true
           cp -r $OO_PS4_TOOLCHAIN/samples samples
-          mkdir -p out
-          for d in graphics input; do
-            find samples/$d -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name 'Makefile' \) -size -80k | while read f; do
-              echo "=== $f"
-              cat "$f"
-            done >> out/sources.txt
-          done
-          cd samples/graphics
-          make || true
-          cd ../..
-          find samples/graphics -name '*.pkg' -exec cp {} out/ \;
-          ls -la out
+          rm -rf samples/game
+          cp -r samples/input samples/game
+          mv samples/game/input samples/game/game
+          rm -rf samples/game/assets
+          cp main.cpp samples/game/game/main.cpp
+          cd samples/game
+          sed -i 's/^TITLE[ ]*:=.*/TITLE       := Meat Cube/' Makefile
+          sed -i 's/^TITLE_ID[ ]*:=.*/TITLE_ID    := BREW00091/' Makefile
+          sed -i 's/^CONTENT_ID[ ]*:=.*/CONTENT_ID  := IV0000-BREW00091_00-MEATCUBE00000000/' Makefile
+          make
+          mkdir -p $GITHUB_WORKSPACE/out
+          find . -name '*.pkg' -exec cp {} $GITHUB_WORKSPACE/out/ \;
+          ls -la $GITHUB_WORKSPACE/out
+          test -n "$(ls $GITHUB_WORKSPACE/out)"
 
       - name: Upload result
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sample-sources
-          path: out/*
+          name: meat-cube
+          path: out/*.pkg
