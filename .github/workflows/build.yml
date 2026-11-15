@@ -19,12 +19,11 @@ jobs:
         run: |
           curl -sL https://api.github.com/repos/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/latest -o rel.json
           URL=$(grep browser_download_url rel.json | grep -i 'tar.gz' | head -1 | cut -d '"' -f4)
-          echo "Downloading: $URL"
           curl -L -o toolchain.tar.gz "$URL"
           mkdir -p toolchain
           tar -xzf toolchain.tar.gz -C toolchain
 
-      - name: Build official hello_world sample
+      - name: Build graphics sample and dump sources
         run: |
           H=$(find toolchain -path '*orbis/libkernel.h' | head -1)
           export OO_PS4_TOOLCHAIN=$PWD/$(dirname $(dirname $(dirname $H)))
@@ -32,20 +31,22 @@ jobs:
           export DOTNET_ROLL_FORWARD=Major
           chmod +x $OO_PS4_TOOLCHAIN/bin/linux/* || true
           cp -r $OO_PS4_TOOLCHAIN/samples samples
-          cd samples/hello_world
-          ls -la
-          make clean || true
-          make
-          ls -la
-          cd ../..
           mkdir -p out
-          find samples -name '*.pkg' -exec cp {} out/ \;
+          for d in graphics input; do
+            find samples/$d -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name 'Makefile' \) -size -80k | while read f; do
+              echo "=== $f"
+              cat "$f"
+            done >> out/sources.txt
+          done
+          cd samples/graphics
+          make || true
+          cd ../..
+          find samples/graphics -name '*.pkg' -exec cp {} out/ \;
           ls -la out
-          test -n "$(ls out)"
 
       - name: Upload result
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: hello-build
-          path: out/*.pkg
+          name: sample-sources
+          path: out/*
