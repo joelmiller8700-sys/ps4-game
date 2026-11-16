@@ -2,9 +2,11 @@
 #include <string.h>
 #include <sstream>
 
+#include <orbis/Pad.h>
+#include <orbis/UserService.h>
+
 #include "../../_common/graphics.h"
 #include "../../_common/log.h"
-#include "controller.h"
 
 #define FRAME_WIDTH  1920
 #define FRAME_HEIGHT 1080
@@ -20,6 +22,9 @@ std::stringstream debugLogStream;
 
 static Scene2D *scene;
 static char level[ROWS][COLS + 1];
+
+static int padHandle = -1;
+static OrbisPadData padData;
 
 static float px, py, vx, vy;
 static bool onGround = false, prevJump = false;
@@ -54,6 +59,20 @@ static int rnd(int n) {
 static Color mk(int r, int g, int b) {
     Color c = { (unsigned char)r, (unsigned char)g, (unsigned char)b };
     return c;
+}
+
+static bool initPad() {
+    if (scePadInit() != 0) return false;
+
+    OrbisUserServiceInitializeParams param;
+    param.priority = ORBIS_KERNEL_PRIO_FIFO_LOWEST;
+    sceUserServiceInitialize(&param);
+
+    int userID = 0;
+    sceUserServiceGetInitialUser(&userID);
+
+    padHandle = scePadOpen(userID, 0, 0, NULL);
+    return padHandle >= 0;
 }
 
 static void setClip(int x, int y, int w, int h) {
@@ -176,19 +195,43 @@ static bool touchingGoal() {
     return false;
 }
 
-static void update(Controller *ctl) {
-    bool left = ctl->DpadLeftPressed();
-    bool right = ctl->DpadRightPressed();
-    bool run = ctl->SquarePressed();
-    bool jumpHeld = ctl->XPressed();
+static void update() {
+    scePadReadState(padHandle, &padData);
+    unsigned int btn = padData.buttons;
+
+    // Analog sticks (center is about 128): use whichever stick is pushed more
+    int lx = (int)padData.leftStick.x - 128;
+    int rxs = (int)padData.rightStick.x - 128;
+    int ax = iabs(rxs) > iabs(lx) ? rxs : lx;
+    float ana = ax / 110.0f;
+    if (ana > 1.0f) ana = 1.0f;
+    if (ana < -1.0f) ana = -1.0f;
+    if (ana > -0.2f && ana < 0.2f) ana = 0.0f;
+
+    bool dleft = (btn & ORBIS_PAD_BUTTON_LEFT) != 0;
+    bool dright = (btn & ORBIS_PAD_BUTTON_RIGHT) != 0;
+
+    int dir = 0;
+    float scale = 1.0f;
+    if (ana != 0.0f) {
+        dir = ana > 0.0f ? 1 : -1;
+        scale = ana > 0.0f ? ana : -ana;
+        if (scale < 0.5f) scale = 0.5f;
+    } else {
+        dir = (dright ? 1 : 0) - (dleft ? 1 : 0);
+    }
+    bool left = dir < 0;
+    bool right = dir > 0;
+
+    bool run = (btn & ORBIS_PAD_BUTTON_SQUARE) != 0;
+    bool jumpHeld = (btn & ORBIS_PAD_BUTTON_CROSS) != 0;
     bool jumpNew = jumpHeld && !prevJump;
     prevJump = jumpHeld;
 
     bool wallL = rectSolid((int)px - 1, (int)py, 1, PH);
     bool wallR = rectSolid((int)px + PW, (int)py, 1, PH);
 
-    float maxSpeed = run ? 8.0f : 5.5f;
-    int dir = (right ? 1 : 0) - (left ? 1 : 0);
+    float maxSpeed = (run ? 8.0f : 5.5f) * scale;
     if (dir != 0) facing = dir;
 
     if (wallLock > 0) {
@@ -289,7 +332,6 @@ static void drawFace(int x, int y, int dirFace, Color eyeWhite) {
     fillRect(x + 25 + off, y + 16, 5, 8, mk(0, 0, 0));
 }
 
-// Static level: walls, spikes, goal (saws are drawn as moving objects)
 static void drawTiles() {
     for (int r = 0; r < ROWS; r++) {
         for (int c = 0; c < COLS; c++) {
@@ -356,17 +398,14 @@ static void render(int b) {
         dirtyCount[b] = 0;
     }
 
-    // New blood splats
     for (int i = splatShown[b]; i < splatCount; i++) drawSplat(splats[i]);
     splatShown[b] = splatCount;
 
-    // Death counter
     int hudN = deaths < 40 ? deaths : 40;
     for (int i = hudShown[b]; i < hudN; i++)
         fillRect(70 + i * 22, 70, 14, 14, mk(205, 25, 35));
     hudShown[b] = hudN;
 
-    // Saws
     for (int r = 0; r < ROWS; r++) {
         for (int c = 0; c < COLS; c++) {
             if (level[r][c] == 'O') {
@@ -377,7 +416,6 @@ static void render(int b) {
         }
     }
 
-    // Player
     int x = (int)px, y = (int)py;
     fillRect(x, y, PW, PH, mk(140, 0, 15));
     fillRect(x + 3, y + 3, PW - 6, PH - 6, mk(205, 25, 35));
@@ -397,8 +435,7 @@ int main(void) {
     }
 
     DEBUGLOG << "Initializing controller";
-    auto controller = new Controller();
-    if (!controller->Init(-1)) {
+    if (!initPad()) {
         DEBUGLOG << "Failed to initialize controller";
         for (;;);
     }
@@ -419,7 +456,7 @@ int main(void) {
                 needFull[1] = true;
             }
         } else {
-            update(controller);
+            update();
         }
 
         render(b);
