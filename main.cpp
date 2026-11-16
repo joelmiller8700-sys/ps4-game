@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sstream>
 
@@ -18,6 +19,9 @@
 #define PW   44
 #define PH   44
 
+#define NUM_LEVELS 55
+#define LEVEL_COLS 11
+
 std::stringstream debugLogStream;
 
 static Scene2D *scene;
@@ -26,8 +30,9 @@ static char level[ROWS][COLS + 1];
 static int padHandle = -1;
 static OrbisPadData padData;
 
+// ---------- Game state ----------
 static float px, py, vx, vy;
-static bool onGround = false, prevJump = false;
+static bool onGround = false;
 static int coyote = 0, wallLock = 0, facing = 1;
 static int deaths = 0, winTimer = 0, tick = 0, frameID = 0;
 
@@ -48,6 +53,27 @@ static int clipX0 = 0, clipY0 = 0, clipX1 = FRAME_WIDTH, clipY1 = FRAME_HEIGHT;
 
 static const int CS[16] = {256,237,181,98,0,-98,-181,-237,-256,-237,-181,-98,0,98,181,237};
 static const int SN[16] = {0,98,181,237,256,237,181,98,0,-98,-181,-237,-256,-237,-181,-98};
+
+// ---------- UI state ----------
+enum { S_MENU = 0, S_LEVELS = 1, S_SETTINGS = 2, S_CREDITS = 3, S_PLAY = 4 };
+static int state = S_MENU;
+static int menuSel = 0, levelSel = 0, settingsSel = 0;
+static int controlMode = 1;      // 0 = arrows, 1 = analog
+static int unlockedLevels = 1;
+static bool uiFull[2] = {true, true};
+static bool pend[2][64];
+
+// ---------- Input ----------
+struct Input {
+    bool up, down, left, right;
+    bool dleft, dright;
+    bool cross, circle, options, square;
+    bool crossNew, circleNew, optionsNew;
+    float ana;
+};
+static Input in;
+static bool prevCross = false, prevCircle = false, prevOptions = false;
+static int holdCnt[4] = {0, 0, 0, 0};
 
 static int iabs(int a) { return a < 0 ? -a : a; }
 
@@ -75,6 +101,54 @@ static bool initPad() {
     return padHandle >= 0;
 }
 
+static void readInput() {
+    scePadReadState(padHandle, &padData);
+    unsigned int btn = padData.buttons;
+
+    int lx = (int)padData.leftStick.x - 128;
+    int ly = (int)padData.leftStick.y - 128;
+    int rx = (int)padData.rightStick.x - 128;
+    int ry = (int)padData.rightStick.y - 128;
+
+    in.dleft = (btn & ORBIS_PAD_BUTTON_LEFT) != 0;
+    in.dright = (btn & ORBIS_PAD_BUTTON_RIGHT) != 0;
+    bool dup = (btn & ORBIS_PAD_BUTTON_UP) != 0;
+    bool ddown = (btn & ORBIS_PAD_BUTTON_DOWN) != 0;
+
+    in.up = dup || ly < -60 || ry < -60;
+    in.down = ddown || ly > 60 || ry > 60;
+    in.left = in.dleft || lx < -60 || rx < -60;
+    in.right = in.dright || lx > 60 || rx > 60;
+
+    int ax = iabs(rx) > iabs(lx) ? rx : lx;
+    float a = ax / 110.0f;
+    if (a > 1.0f) a = 1.0f;
+    if (a < -1.0f) a = -1.0f;
+    if (a > -0.2f && a < 0.2f) a = 0.0f;
+    in.ana = a;
+
+    in.cross = (btn & ORBIS_PAD_BUTTON_CROSS) != 0;
+    in.circle = (btn & ORBIS_PAD_BUTTON_CIRCLE) != 0;
+    in.options = (btn & ORBIS_PAD_BUTTON_OPTIONS) != 0;
+    in.square = (btn & ORBIS_PAD_BUTTON_SQUARE) != 0;
+
+    in.crossNew = in.cross && !prevCross;
+    in.circleNew = in.circle && !prevCircle;
+    in.optionsNew = in.options && !prevOptions;
+    prevCross = in.cross;
+    prevCircle = in.circle;
+    prevOptions = in.options;
+}
+
+static bool navEvent(int i, bool pressed) {
+    if (!pressed) { holdCnt[i] = 0; return false; }
+    holdCnt[i]++;
+    if (holdCnt[i] == 1) return true;
+    if (holdCnt[i] > 20 && ((holdCnt[i] - 20) % 6) == 0) return true;
+    return false;
+}
+
+// ---------- Drawing primitives ----------
 static void setClip(int x, int y, int w, int h) {
     clipX0 = x < 0 ? 0 : x;
     clipY0 = y < 0 ? 0 : y;
@@ -97,6 +171,92 @@ static void fillRect(int x, int y, int w, int h, Color c) {
             scene->DrawPixel(i, j, c);
 }
 
+// ---------- Bitmap font (5x7) ----------
+static const unsigned char FONT[41][7] = {
+    {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}, // A
+    {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E}, // B
+    {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E}, // C
+    {0x1E,0x11,0x11,0x11,0x11,0x11,0x1E}, // D
+    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F}, // E
+    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10}, // F
+    {0x0E,0x11,0x10,0x17,0x11,0x11,0x0F}, // G
+    {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}, // H
+    {0x0E,0x04,0x04,0x04,0x04,0x04,0x0E}, // I
+    {0x07,0x02,0x02,0x02,0x02,0x12,0x0C}, // J
+    {0x11,0x12,0x14,0x18,0x14,0x12,0x11}, // K
+    {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}, // L
+    {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}, // M
+    {0x11,0x11,0x19,0x15,0x13,0x11,0x11}, // N
+    {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}, // O
+    {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10}, // P
+    {0x0E,0x11,0x11,0x11,0x15,0x12,0x0D}, // Q
+    {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11}, // R
+    {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E}, // S
+    {0x1F,0x04,0x04,0x04,0x04,0x04,0x04}, // T
+    {0x11,0x11,0x11,0x11,0x11,0x11,0x0E}, // U
+    {0x11,0x11,0x11,0x11,0x11,0x0A,0x04}, // V
+    {0x11,0x11,0x11,0x15,0x15,0x15,0x0A}, // W
+    {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11}, // X
+    {0x11,0x11,0x11,0x0A,0x04,0x04,0x04}, // Y
+    {0x1F,0x01,0x02,0x04,0x08,0x10,0x1F}, // Z
+    {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}, // 0
+    {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E}, // 1
+    {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}, // 2
+    {0x1F,0x02,0x04,0x02,0x01,0x11,0x0E}, // 3
+    {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, // 4
+    {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E}, // 5
+    {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E}, // 6
+    {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}, // 7
+    {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}, // 8
+    {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C}, // 9
+    {0x00,0x04,0x04,0x00,0x04,0x04,0x00}, // :
+    {0x00,0x00,0x00,0x1F,0x00,0x00,0x00}, // -
+    {0x02,0x04,0x08,0x10,0x08,0x04,0x02}, // <
+    {0x08,0x04,0x02,0x01,0x02,0x04,0x08}, // >
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00}  // space
+};
+
+static int glyphIndex(char ch) {
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+    if (ch >= '0' && ch <= '9') return 26 + (ch - '0');
+    if (ch == ':') return 36;
+    if (ch == '-') return 37;
+    if (ch == '<') return 38;
+    if (ch == '>') return 39;
+    return 40;
+}
+
+static void drawText(int x, int y, const char *s, int scale, Color c) {
+    for (; *s; s++) {
+        int g = glyphIndex(*s);
+        if (g != 40) {
+            for (int row = 0; row < 7; row++) {
+                unsigned char bits = FONT[g][row];
+                for (int col = 0; col < 5; col++) {
+                    if (bits & (0x10 >> col))
+                        fillRect(x + col * scale, y + row * scale, scale, scale, c);
+                }
+            }
+        }
+        x += 6 * scale;
+    }
+}
+
+static int textWidth(const char *s, int scale) {
+    int n = (int)strlen(s);
+    return n > 0 ? n * 6 * scale - scale : 0;
+}
+
+static void drawTextC(int cx, int y, const char *s, int scale, Color c) {
+    drawText(cx - textWidth(s, scale) / 2, y, s, scale, c);
+}
+
+static void intToStr(int v, char *out) {
+    if (v >= 10) { out[0] = (char)('0' + v / 10); out[1] = (char)('0' + v % 10); out[2] = 0; }
+    else { out[0] = (char)('0' + v); out[1] = 0; }
+}
+
+// ---------- Level ----------
 static void setRow(int row, int c0, int c1, char ch) {
     for (int c = c0; c <= c1; c++) level[row][c] = ch;
 }
@@ -196,37 +356,24 @@ static bool touchingGoal() {
 }
 
 static void update() {
-    scePadReadState(padHandle, &padData);
-    unsigned int btn = padData.buttons;
-
-    // Analog sticks (center is about 128): use whichever stick is pushed more
-    int lx = (int)padData.leftStick.x - 128;
-    int rxs = (int)padData.rightStick.x - 128;
-    int ax = iabs(rxs) > iabs(lx) ? rxs : lx;
-    float ana = ax / 110.0f;
-    if (ana > 1.0f) ana = 1.0f;
-    if (ana < -1.0f) ana = -1.0f;
-    if (ana > -0.2f && ana < 0.2f) ana = 0.0f;
-
-    bool dleft = (btn & ORBIS_PAD_BUTTON_LEFT) != 0;
-    bool dright = (btn & ORBIS_PAD_BUTTON_RIGHT) != 0;
-
+    bool useAnalog = (controlMode == 1);
     int dir = 0;
     float scale = 1.0f;
-    if (ana != 0.0f) {
-        dir = ana > 0.0f ? 1 : -1;
-        scale = ana > 0.0f ? ana : -ana;
-        if (scale < 0.5f) scale = 0.5f;
+    if (useAnalog) {
+        if (in.ana != 0.0f) {
+            dir = in.ana > 0.0f ? 1 : -1;
+            scale = in.ana > 0.0f ? in.ana : -in.ana;
+            if (scale < 0.5f) scale = 0.5f;
+        }
     } else {
-        dir = (dright ? 1 : 0) - (dleft ? 1 : 0);
+        dir = (in.dright ? 1 : 0) - (in.dleft ? 1 : 0);
     }
     bool left = dir < 0;
     bool right = dir > 0;
 
-    bool run = (btn & ORBIS_PAD_BUTTON_SQUARE) != 0;
-    bool jumpHeld = (btn & ORBIS_PAD_BUTTON_CROSS) != 0;
-    bool jumpNew = jumpHeld && !prevJump;
-    prevJump = jumpHeld;
+    bool run = in.square;
+    bool jumpHeld = in.cross;
+    bool jumpNew = in.crossNew;
 
     bool wallL = rectSolid((int)px - 1, (int)py, 1, PH);
     bool wallR = rectSolid((int)px + PW, (int)py, 1, PH);
@@ -295,6 +442,7 @@ static void update() {
     }
 }
 
+// ---------- Game drawing ----------
 static void drawSpike(int c, int r) {
     int cx = c * TILE + TILE / 2;
     int top = r * TILE + 20;
@@ -424,6 +572,215 @@ static void render(int b) {
     addDirty(b, x - 2, y - 2, PW + 4, PH + 4);
 }
 
+// ---------- UI ----------
+static void markPend(int i) {
+    if (i < 0 || i >= 64) return;
+    pend[0][i] = true;
+    pend[1][i] = true;
+}
+
+static void setState(int s) {
+    state = s;
+    uiFull[0] = true;
+    uiFull[1] = true;
+}
+
+static void startLevel() {
+    buildLevel();
+    respawn();
+    deaths = 0;
+    splatCount = 0;
+    winTimer = 0;
+    needFull[0] = true;
+    needFull[1] = true;
+    needWin[0] = false;
+    needWin[1] = false;
+    state = S_PLAY;
+}
+
+static int itemCount() {
+    if (state == S_MENU) return 4;
+    if (state == S_LEVELS) return NUM_LEVELS + 1;
+    if (state == S_SETTINGS) return 2;
+    return 0;
+}
+
+static void drawBigCube(int x, int y) {
+    fillRect(x, y, 88, 88, mk(140, 0, 15));
+    fillRect(x + 6, y + 6, 76, 76, mk(205, 25, 35));
+    fillRect(x + 18, y + 24, 20, 28, mk(255, 255, 255));
+    fillRect(x + 50, y + 24, 20, 28, mk(255, 255, 255));
+    fillRect(x + 28, y + 32, 10, 16, mk(0, 0, 0));
+    fillRect(x + 60, y + 32, 10, 16, mk(0, 0, 0));
+    fillRect(x + 30, y + 64, 28, 8, mk(120, 0, 12));
+}
+
+static void drawBanner(const char *title, int scale, int y, int h, bool cubes) {
+    fillRect(460, y, 1000, h, mk(35, 35, 50));
+    drawTextC(960, y + (h - 7 * scale) / 2, title, scale, mk(225, 40, 50));
+    if (cubes) {
+        drawBigCube(500, y + (h - 88) / 2);
+        drawBigCube(1332, y + (h - 88) / 2);
+    }
+}
+
+static void drawHint(const char *s) {
+    int w = textWidth(s, 3) + 80;
+    fillRect(960 - w / 2, 980, w, 60, mk(35, 35, 50));
+    drawTextC(960, 980 + 19, s, 3, mk(200, 200, 215));
+}
+
+static void drawLock(int cx, int cy) {
+    Color g = mk(140, 140, 155);
+    fillRect(cx - 18, cy - 2, 36, 28, g);
+    fillRect(cx - 12, cy - 26, 24, 6, g);
+    fillRect(cx - 12, cy - 22, 6, 20, g);
+    fillRect(cx + 6, cy - 22, 6, 20, g);
+    fillRect(cx - 3, cy + 6, 6, 10, mk(40, 40, 50));
+}
+
+static void drawStatic() {
+    if (state == S_MENU) {
+        drawBanner("MEAT CUBE", 12, 140, 150, true);
+        drawHint("X: SELECT");
+    } else if (state == S_LEVELS) {
+        drawBanner("LEVELS", 8, 130, 110, false);
+        drawHint("X: PLAY   O: BACK");
+    } else if (state == S_SETTINGS) {
+        drawBanner("SETTINGS", 8, 130, 110, false);
+        fillRect(610, 700, 700, 60, mk(35, 35, 50));
+        drawTextC(960, 700 + 19, "LEFT RIGHT OR X: CHANGE", 3, mk(200, 200, 215));
+        drawHint("O: BACK");
+    } else if (state == S_CREDITS) {
+        drawBanner("CREDITS", 8, 130, 110, false);
+        fillRect(460, 300, 1000, 540, mk(35, 35, 50));
+        drawTextC(960, 350, "GAME DESIGNERS", 5, mk(200, 200, 215));
+        drawTextC(960, 470, "KAREEM", 10, mk(225, 40, 50));
+        drawTextC(960, 600, "CLAUDE", 10, mk(225, 40, 50));
+        drawTextC(960, 760, "MEAT CUBE", 4, mk(140, 140, 155));
+        drawHint("O: BACK");
+    }
+}
+
+static void drawItem(int i) {
+    if (state == S_MENU) {
+        if (i < 0 || i > 3) return;
+        const char *labels[4] = { "LEVELS", "SETTINGS", "CREDITS", "EXIT" };
+        int x = 610, y = 420 + i * 120;
+        bool sel = (i == menuSel);
+        fillRect(x, y, 700, 90, sel ? mk(205, 25, 35) : mk(45, 45, 62));
+        drawTextC(960, y + 24, labels[i], 6, sel ? mk(255, 255, 255) : mk(200, 200, 215));
+    } else if (state == S_LEVELS) {
+        if (i >= 0 && i < NUM_LEVELS) {
+            int col = i % LEVEL_COLS, row = i / LEVEL_COLS;
+            int x = 375 + col * 108, y = 330 + row * 108;
+            bool sel = (i == levelSel);
+            bool unlocked = (i < unlockedLevels);
+            if (sel) fillRect(x, y, 90, 90, mk(245, 245, 255));
+            int inset = sel ? 6 : 0;
+            fillRect(x + inset, y + inset, 90 - 2 * inset, 90 - 2 * inset,
+                     unlocked ? mk(205, 25, 35) : mk(50, 50, 62));
+            if (unlocked) {
+                char buf[4];
+                intToStr(i + 1, buf);
+                drawTextC(x + 45, y + 24, buf, 6, mk(255, 255, 255));
+            } else {
+                drawLock(x + 45, y + 45);
+            }
+        } else if (i == NUM_LEVELS) {
+            fillRect(610, 880, 700, 60, mk(35, 35, 50));
+            char buf[64];
+            char n[4];
+            strcpy(buf, "LEVEL ");
+            intToStr(levelSel + 1, n);
+            strcat(buf, n);
+            Color c;
+            if (levelSel < unlockedLevels) { strcat(buf, ": PRESS X TO PLAY"); c = mk(120, 230, 140); }
+            else { strcat(buf, ": LOCKED"); c = mk(255, 170, 60); }
+            drawTextC(960, 880 + 16, buf, 4, c);
+        }
+    } else if (state == S_SETTINGS) {
+        if (i < 0 || i > 1) return;
+        int x = 510, y = 420 + i * 120;
+        bool sel = (i == settingsSel);
+        fillRect(x, y, 900, 90, sel ? mk(205, 25, 35) : mk(45, 45, 62));
+        const char *label;
+        if (i == 0) label = controlMode == 1 ? "CONTROLS: ANALOG" : "CONTROLS: ARROWS";
+        else label = "BACK";
+        drawTextC(960, y + 24, label, 6, sel ? mk(255, 255, 255) : mk(200, 200, 215));
+    }
+}
+
+static void drawUI(int b) {
+    resetClip();
+    if (uiFull[b]) {
+        scene->FrameBufferClear();
+        drawStatic();
+        int n = itemCount();
+        for (int i = 0; i < n; i++) drawItem(i);
+        uiFull[b] = false;
+        for (int i = 0; i < 64; i++) pend[b][i] = false;
+    } else {
+        for (int i = 0; i < 64; i++) {
+            if (pend[b][i]) {
+                drawItem(i);
+                pend[b][i] = false;
+            }
+        }
+    }
+}
+
+static void updateUI() {
+    bool nu = navEvent(0, in.up);
+    bool nd = navEvent(1, in.down);
+    bool nl = navEvent(2, in.left);
+    bool nr = navEvent(3, in.right);
+    bool ok = in.crossNew;
+    bool back = in.circleNew;
+
+    if (state == S_MENU) {
+        int old = menuSel;
+        if (nu) menuSel = (menuSel + 3) % 4;
+        if (nd) menuSel = (menuSel + 1) % 4;
+        if (menuSel != old) { markPend(old); markPend(menuSel); }
+        if (ok) {
+            if (menuSel == 0) setState(S_LEVELS);
+            else if (menuSel == 1) { settingsSel = 0; setState(S_SETTINGS); }
+            else if (menuSel == 2) setState(S_CREDITS);
+            else exit(0);
+        }
+    } else if (state == S_LEVELS) {
+        int old = levelSel, n = levelSel;
+        if (nl && n > 0) n--;
+        if (nr && n < NUM_LEVELS - 1) n++;
+        if (nu && n >= LEVEL_COLS) n -= LEVEL_COLS;
+        if (nd && n + LEVEL_COLS <= NUM_LEVELS - 1) n += LEVEL_COLS;
+        if (n != old) {
+            levelSel = n;
+            markPend(old);
+            markPend(n);
+            markPend(NUM_LEVELS);
+        }
+        if (ok && levelSel < unlockedLevels) startLevel();
+        else if (back) setState(S_MENU);
+    } else if (state == S_SETTINGS) {
+        int old = settingsSel;
+        if (nu || nd) settingsSel = 1 - settingsSel;
+        if (settingsSel != old) { markPend(old); markPend(settingsSel); }
+        if (settingsSel == 0) {
+            if (nl || nr || ok) {
+                controlMode = 1 - controlMode;
+                markPend(0);
+            }
+        } else if (ok) {
+            setState(S_MENU);
+        }
+        if (back) setState(S_MENU);
+    } else if (state == S_CREDITS) {
+        if (ok || back) setState(S_MENU);
+    }
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -442,24 +799,28 @@ int main(void) {
 
     buildLevel();
     respawn();
+    setState(S_MENU);
 
     for (;;) {
         int b = frameID & 1;
 
-        if (winTimer > 0) {
-            winTimer--;
-            if (winTimer == 0) {
-                deaths = 0;
-                splatCount = 0;
-                respawn();
-                needFull[0] = true;
-                needFull[1] = true;
+        readInput();
+
+        if (state == S_PLAY) {
+            if (in.optionsNew) {
+                setState(S_LEVELS);
+            } else if (winTimer > 0) {
+                winTimer--;
+                if (winTimer == 0) setState(S_LEVELS);
+            } else {
+                update();
             }
         } else {
-            update();
+            updateUI();
         }
 
-        render(b);
+        if (state == S_PLAY) render(b);
+        else drawUI(b);
 
         scene->SubmitFlip(frameID);
         scene->FrameWait(frameID);
