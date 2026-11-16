@@ -16,18 +16,6 @@
 #define PW   44
 #define PH   44
 
-// القيم الحقيقية لأزرار يد PS4 بنظام Orbis
-#define REAL_PAD_UP       0x0010
-#define REAL_PAD_RIGHT    0x0020
-#define REAL_PAD_DOWN     0x0040
-#define REAL_PAD_LEFT     0x0080
-#define REAL_PAD_L1       0x0400
-#define REAL_PAD_R1       0x0800
-#define REAL_PAD_TRIANGLE 0x1000
-#define REAL_PAD_CIRCLE   0x2000
-#define REAL_PAD_CROSS    0x4000
-#define REAL_PAD_SQUARE   0x8000
-
 std::stringstream debugLogStream;
 
 static Scene2D *scene;
@@ -167,13 +155,10 @@ static bool touchingGoal() {
 }
 
 static void update(Controller *ctl) {
-    unsigned int btns = ctl->GetRawButtons();
-    unsigned char lx  = ctl->GetLeftStickX();
-
-    bool left  = (btns & REAL_PAD_LEFT)  != 0 || (lx < 80);
-    bool right = (btns & REAL_PAD_RIGHT) != 0 || (lx > 176);
-    bool run   = (btns & (REAL_PAD_SQUARE | REAL_PAD_L1 | REAL_PAD_R1)) != 0;
-    bool jumpHeld = (btns & REAL_PAD_CROSS) != 0;
+    bool left = ctl->DpadLeftPressed();
+    bool right = ctl->DpadRightPressed();
+    bool run = ctl->SquarePressed();
+    bool jumpHeld = ctl->XPressed();
     bool jumpNew = jumpHeld && !prevJump;
     prevJump = jumpHeld;
 
@@ -254,7 +239,7 @@ static void drawSaw(int cx, int cy) {
     int a = (tick / 2) & 15;
     int cc = CS[a], ss = SN[a];
     for (int dy = -26; dy <= 26; dy++) {
-        for (int dx = -26; dx <= 26; dy++) {
+        for (int dx = -26; dx <= 26; dx++) {
             int d2 = dx * dx + dy * dy;
             if (d2 > 26 * 26) continue;
             int u = (dx * cc + dy * ss) >> 8;
