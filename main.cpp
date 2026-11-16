@@ -28,8 +28,18 @@ static int deaths = 0, winTimer = 0, tick = 0, frameID = 0;
 
 struct Splat { int x, y, s; };
 static Splat splats[96];
-static int splatCount = 0, splatIdx = 0;
+static int splatCount = 0;
 static unsigned int rng = 12345;
+
+struct Rect { int x, y, w, h; };
+static Rect dirty[2][8];
+static int dirtyCount[2] = {0, 0};
+static bool needFull[2] = {true, true};
+static bool needWin[2] = {false, false};
+static int splatShown[2] = {0, 0};
+static int hudShown[2] = {0, 0};
+
+static int clipX0 = 0, clipY0 = 0, clipX1 = FRAME_WIDTH, clipY1 = FRAME_HEIGHT;
 
 static const int CS[16] = {256,237,181,98,0,-98,-181,-237,-256,-237,-181,-98,0,98,181,237};
 static const int SN[16] = {0,98,181,237,256,237,181,98,0,-98,-181,-237,-256,-237,-181,-98};
@@ -46,14 +56,26 @@ static Color mk(int r, int g, int b) {
     return c;
 }
 
+static void setClip(int x, int y, int w, int h) {
+    clipX0 = x < 0 ? 0 : x;
+    clipY0 = y < 0 ? 0 : y;
+    clipX1 = (x + w) > FRAME_WIDTH ? FRAME_WIDTH : (x + w);
+    clipY1 = (y + h) > FRAME_HEIGHT ? FRAME_HEIGHT : (y + h);
+}
+
+static void resetClip() {
+    clipX0 = 0; clipY0 = 0; clipX1 = FRAME_WIDTH; clipY1 = FRAME_HEIGHT;
+}
+
 static void fillRect(int x, int y, int w, int h, Color c) {
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (x + w > FRAME_WIDTH) w = FRAME_WIDTH - x;
-    if (y + h > FRAME_HEIGHT) h = FRAME_HEIGHT - y;
-    for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++)
-            scene->DrawPixel(x + i, y + j, c);
+    int x1 = x + w, y1 = y + h;
+    if (x < clipX0) x = clipX0;
+    if (y < clipY0) y = clipY0;
+    if (x1 > clipX1) x1 = clipX1;
+    if (y1 > clipY1) y1 = clipY1;
+    for (int j = y; j < y1; j++)
+        for (int i = x; i < x1; i++)
+            scene->DrawPixel(i, j, c);
 }
 
 static void setRow(int row, int c0, int c1, char ch) {
@@ -121,12 +143,12 @@ static void respawn() {
 static void die() {
     deaths++;
     for (int i = 0; i < 12; i++) {
-        Splat &s = splats[splatIdx % 96];
-        splatIdx++;
-        s.x = (int)px + rnd(PW + 20) - 10;
-        s.y = (int)py + rnd(PH + 20) - 10;
-        s.s = 6 + rnd(10);
-        if (splatCount < 96) splatCount++;
+        if (splatCount < 96) {
+            Splat &s = splats[splatCount++];
+            s.x = (int)px + rnd(PW + 20) - 10;
+            s.y = (int)py + rnd(PH + 20) - 10;
+            s.s = 6 + rnd(10);
+        }
     }
     respawn();
 }
@@ -223,7 +245,11 @@ static void update(Controller *ctl) {
     }
 
     if (touchingHazard()) { die(); return; }
-    if (touchingGoal()) winTimer = 150;
+    if (touchingGoal()) {
+        winTimer = 150;
+        needWin[0] = true;
+        needWin[1] = true;
+    }
 }
 
 static void drawSpike(int c, int r) {
@@ -263,18 +289,8 @@ static void drawFace(int x, int y, int dirFace, Color eyeWhite) {
     fillRect(x + 25 + off, y + 16, 5, 8, mk(0, 0, 0));
 }
 
-static void draw() {
-    scene->FrameBufferClear();
-
-    if (winTimer > 0) {
-        fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT, mk(20, 150, 60));
-        fillRect(860, 440, 200, 200, mk(255, 140, 170));
-        return;
-    }
-
-    for (int i = 0; i < splatCount; i++)
-        fillRect(splats[i].x, splats[i].y, splats[i].s, splats[i].s, mk(140, 10, 20));
-
+// Static level: walls, spikes, goal (saws are drawn as moving objects)
+static void drawTiles() {
     for (int r = 0; r < ROWS; r++) {
         for (int c = 0; c < COLS; c++) {
             char ch = level[r][c];
@@ -285,8 +301,6 @@ static void draw() {
                     fillRect(x, y, TILE, 5, mk(120, 120, 140));
             } else if (ch == '^') {
                 drawSpike(c, r);
-            } else if (ch == 'O') {
-                drawSaw(x + 30, y + 30);
             } else if (ch == 'G') {
                 int gx = x + 8, gy = y + 16;
                 fillRect(gx, gy, PW, PH, mk(255, 140, 170));
@@ -295,15 +309,81 @@ static void draw() {
             }
         }
     }
+}
 
+static void drawSplat(const Splat &s) {
+    fillRect(s.x, s.y, s.s, s.s, mk(140, 10, 20));
+}
+
+static void addDirty(int b, int x, int y, int w, int h) {
+    if (dirtyCount[b] < 8) {
+        Rect &d = dirty[b][dirtyCount[b]++];
+        d.x = x; d.y = y; d.w = w; d.h = h;
+    }
+}
+
+static void render(int b) {
+    Color bg = mk(22, 22, 30);
+
+    if (winTimer > 0) {
+        if (needWin[b]) {
+            resetClip();
+            fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT, mk(20, 150, 60));
+            fillRect(860, 440, 200, 200, mk(255, 140, 170));
+            needWin[b] = false;
+        }
+        return;
+    }
+
+    if (needFull[b]) {
+        resetClip();
+        fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT, bg);
+        drawTiles();
+        for (int i = 0; i < splatCount; i++) drawSplat(splats[i]);
+        splatShown[b] = splatCount;
+        hudShown[b] = 0;
+        dirtyCount[b] = 0;
+        needFull[b] = false;
+    } else {
+        for (int i = 0; i < dirtyCount[b]; i++) {
+            Rect d = dirty[b][i];
+            setClip(d.x, d.y, d.w, d.h);
+            fillRect(d.x, d.y, d.w, d.h, bg);
+            drawTiles();
+            for (int k = 0; k < splatCount; k++) drawSplat(splats[k]);
+        }
+        resetClip();
+        dirtyCount[b] = 0;
+    }
+
+    // New blood splats
+    for (int i = splatShown[b]; i < splatCount; i++) drawSplat(splats[i]);
+    splatShown[b] = splatCount;
+
+    // Death counter
+    int hudN = deaths < 40 ? deaths : 40;
+    for (int i = hudShown[b]; i < hudN; i++)
+        fillRect(70 + i * 22, 70, 14, 14, mk(205, 25, 35));
+    hudShown[b] = hudN;
+
+    // Saws
+    for (int r = 0; r < ROWS; r++) {
+        for (int c = 0; c < COLS; c++) {
+            if (level[r][c] == 'O') {
+                int cx = c * TILE + 30, cy = r * TILE + 30;
+                drawSaw(cx, cy);
+                addDirty(b, cx - 27, cy - 27, 55, 55);
+            }
+        }
+    }
+
+    // Player
     int x = (int)px, y = (int)py;
     fillRect(x, y, PW, PH, mk(140, 0, 15));
     fillRect(x + 3, y + 3, PW - 6, PH - 6, mk(205, 25, 35));
     drawFace(x, y, facing, mk(255, 255, 255));
     fillRect(x + 15, y + 32, 14, 4, mk(120, 0, 12));
-
-    for (int i = 0; i < deaths && i < 40; i++)
-        fillRect(70 + i * 22, 70, 14, 14, mk(205, 25, 35));
+    addDirty(b, x - 2, y - 2, PW + 4, PH + 4);
 }
 
 int main(void) {
@@ -327,18 +407,22 @@ int main(void) {
     respawn();
 
     for (;;) {
+        int b = frameID & 1;
+
         if (winTimer > 0) {
             winTimer--;
             if (winTimer == 0) {
                 deaths = 0;
                 splatCount = 0;
-                splatIdx = 0;
                 respawn();
+                needFull[0] = true;
+                needFull[1] = true;
             }
         } else {
             update(controller);
         }
-        draw();
+
+        render(b);
 
         scene->SubmitFlip(frameID);
         scene->FrameWait(frameID);
