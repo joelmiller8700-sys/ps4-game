@@ -32,6 +32,7 @@ static OrbisPadData padData;
 
 // ---------- Game state ----------
 static float px, py, vx, vy;
+static float squashX = 1.0f, squashY = 1.0f;
 static bool onGround = false;
 static int coyote = 0, wallLock = 0, facing = 1;
 static int deaths = 0, winTimer = 0, tick = 0, frameID = 0;
@@ -314,6 +315,8 @@ static void respawn() {
     px = (float)(TILE + 8);
     py = (float)((ROWS - 1) * TILE - PH);
     vx = 0; vy = 0;
+    squashX = 1.0f;
+    squashY = 1.0f;
     onGround = false;
     wallLock = 0;
     coyote = 0;
@@ -356,6 +359,21 @@ static bool touchingGoal() {
 }
 
 static void update() {
+    bool wasGround = onGround;
+
+    // Squash & stretch: relax toward the target shape
+    {
+        float k = 0.0f;
+        if (!onGround) {
+            k = iabs((int)vy) / 18.0f;
+            if (k > 1.0f) k = 1.0f;
+        }
+        float tx = 1.0f - 0.22f * k;
+        float ty = 1.0f + 0.30f * k;
+        squashX += (tx - squashX) * 0.3f;
+        squashY += (ty - squashY) * 0.3f;
+    }
+
     bool useAnalog = (controlMode == 1);
     int dir = 0;
     float scale = 1.0f;
@@ -406,11 +424,15 @@ static void update() {
         if (coyote > 0) {
             vy = -17.0f;
             coyote = 0;
+            squashX = 0.72f;
+            squashY = 1.30f;
         } else if (wallL || wallR) {
             vy = -16.0f;
             vx = wallL ? 8.0f : -8.0f;
             wallLock = 9;
             facing = wallL ? 1 : -1;
+            squashX = 0.72f;
+            squashY = 1.30f;
         }
     }
     if (!jumpHeld && vy < -6.0f) vy = -6.0f;
@@ -428,6 +450,12 @@ static void update() {
         if (vy > 0) {
             py = (float)((((int)py + PH - 1) / TILE) * TILE - PH);
             onGround = true;
+            if (!wasGround && vy > 5.0f) {
+                float k = vy / 18.0f;
+                if (k > 1.0f) k = 1.0f;
+                squashY = 1.0f - 0.35f * k;
+                squashX = 1.0f + 0.40f * k;
+            }
         } else if (vy < 0) {
             py = (float)((((int)py) / TILE + 1) * TILE);
         }
@@ -478,6 +506,28 @@ static void drawFace(int x, int y, int dirFace, Color eyeWhite) {
     int off = dirFace > 0 ? 5 : 0;
     fillRect(x + 9 + off, y + 16, 5, 8, mk(0, 0, 0));
     fillRect(x + 25 + off, y + 16, 5, 8, mk(0, 0, 0));
+}
+
+// Player face that follows the squash & stretch shape
+static void drawPlayerFace(int dx, int dy, int dw, int dh, int dirFace) {
+    int ew = dw * 10 / 44; if (ew < 4) ew = 4;
+    int eh = dh * 14 / 44; if (eh < 6) eh = 6;
+    int e1 = dx + dw * 9 / 44;
+    int e2 = dx + dw * 25 / 44;
+    int ey = dy + dh * 12 / 44;
+    int pw = dw * 5 / 44; if (pw < 2) pw = 2;
+    int ph = dh * 8 / 44; if (ph < 3) ph = 3;
+    int poff = dirFace > 0 ? dw * 5 / 44 : 0;
+    int pyy = dy + dh * 16 / 44;
+
+    fillRect(e1, ey, ew, eh, mk(255, 255, 255));
+    fillRect(e2, ey, ew, eh, mk(255, 255, 255));
+    fillRect(e1 + poff, pyy, pw, ph, mk(0, 0, 0));
+    fillRect(e2 + poff, pyy, pw, ph, mk(0, 0, 0));
+
+    int mw = dw * 14 / 44;
+    int mh = dh * 4 / 44; if (mh < 2) mh = 2;
+    fillRect(dx + dw * 15 / 44, dy + dh * 32 / 44, mw, mh, mk(120, 0, 12));
 }
 
 static void drawTiles() {
@@ -564,12 +614,18 @@ static void render(int b) {
         }
     }
 
+    // Player with squash & stretch (anchored at the bottom center)
     int x = (int)px, y = (int)py;
-    fillRect(x, y, PW, PH, mk(140, 0, 15));
-    fillRect(x + 3, y + 3, PW - 6, PH - 6, mk(205, 25, 35));
-    drawFace(x, y, facing, mk(255, 255, 255));
-    fillRect(x + 15, y + 32, 14, 4, mk(120, 0, 12));
-    addDirty(b, x - 2, y - 2, PW + 4, PH + 4);
+    int dw = (int)(PW * squashX);
+    int dh = (int)(PH * squashY);
+    if (dw < 20) dw = 20;
+    if (dh < 20) dh = 20;
+    int dx = x + (PW - dw) / 2;
+    int dy = y + (PH - dh);
+    fillRect(dx, dy, dw, dh, mk(140, 0, 15));
+    fillRect(dx + 3, dy + 3, dw - 6, dh - 6, mk(205, 25, 35));
+    drawPlayerFace(dx, dy, dw, dh, facing);
+    addDirty(b, x - 14, y - 18, PW + 28, PH + 20);
 }
 
 // ---------- UI ----------
