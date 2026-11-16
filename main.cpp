@@ -17,14 +17,21 @@
 #define TILE 60
 #define COLS 168
 #define ROWS 18
+#define ROOM_COLS (FRAME_WIDTH / TILE)
 #define WORLD_WIDTH (COLS * TILE)
 #define WORLD_HEIGHT (ROWS * TILE)
+#define LAST_ROOM ((WORLD_WIDTH - 1) / FRAME_WIDTH)
 
 #define PW 44
 #define PH 44
 
 #define NUM_LEVELS 55
 #define LEVEL_COLS 11
+
+#define NUM_STARS 75
+#define MAX_SPLATS 200
+#define MAX_PARTS 80
+#define MAX_DIRTY 112
 
 std::stringstream debugLogStream;
 
@@ -36,8 +43,7 @@ static OrbisPadData padData;
 
 // ---------- Game state ----------
 static float px, py, vx, vy;
-static float cameraX = 0.0f;
-static float cameraTargetX = 0.0f;
+static int roomIdx = 0;
 
 static float squashX = 1.0f;
 static float squashY = 1.0f;
@@ -49,16 +55,44 @@ static int facing = 1;
 
 static int deaths = 0;
 static int winTimer = 0;
+static int deadTimer = 0;
 static int tick = 0;
 static int frameID = 0;
 
+static unsigned int rng = 12345;
+
 struct Splat {
-    int x, y, s;
+    short x, y, w, h, room;
 };
 
-static Splat splats[96];
+static Splat splats[MAX_SPLATS];
 static int splatCount = 0;
-static unsigned int rng = 12345;
+static bool splatDrawn[2][MAX_SPLATS];
+
+struct Part {
+    float x, y, vx, vy;
+    short life, maxLife;
+    unsigned char kind, size;
+};
+
+static Part parts[MAX_PARTS];
+
+struct Rect {
+    int x, y, w, h;
+};
+
+static Rect dirty[2][MAX_DIRTY];
+static int dirtyCount[2] = {0, 0};
+
+static bool needFull[2] = {true, true};
+static bool needWin[2] = {false, false};
+static int bufRoom[2] = {0, 0};
+static char bufGrid[2][ROWS][ROOM_COLS];
+static bool bufHi[2][ROWS][ROOM_COLS];
+static int bufStar[2] = {0, 0};
+static int hudSq[2] = {0, 0};
+static int hudProg[2] = {0, 0};
+static bool hudNeed[2] = {false, false};
 
 static int clipX0 = 0;
 static int clipY0 = 0;
@@ -115,7 +149,7 @@ static bool prevCross = false;
 static bool prevCircle = false;
 static bool prevOptions = false;
 
-static int holdCnt[4] = {0,0,0,0};
+static int holdCnt[4] = {0, 0, 0, 0};
 
 static int iabs(int a) {
     return a < 0 ? -a : a;
@@ -220,7 +254,7 @@ static bool navEvent(int i, bool pressed) {
     return false;
 }
 
-// ---------- Drawing ----------
+// ---------- Drawing primitives ----------
 static void setClip(int x, int y, int w, int h) {
     clipX0 = x < 0 ? 0 : x;
     clipY0 = y < 0 ? 0 : y;
@@ -408,7 +442,6 @@ static void buildLevel() {
         level[r][COLS] = 0;
     }
 
-    // Outer boundaries
     setRow(0, 0, COLS - 1, '#');
     setRow(ROWS - 1, 0, COLS - 1, '#');
 
@@ -417,10 +450,9 @@ static void buildLevel() {
         level[r][COLS - 1] = '#';
     }
 
-    // Continuous ground
     setRow(17, 1, COLS - 2, '#');
 
-    // SECTION 1: introduction
+    // SECTION 1
     platform(15, 5, 8);
     platform(13, 10, 13);
     platform(11, 15, 18);
@@ -432,7 +464,7 @@ static void buildLevel() {
 
     saw(12, 25);
 
-    // SECTION 2: small jumps
+    // SECTION 2
     platform(14, 34, 38);
     platform(12, 40, 43);
     platform(10, 45, 49);
@@ -443,7 +475,7 @@ static void buildLevel() {
 
     saw(11, 53);
 
-    // SECTION 3: elevated platforms
+    // SECTION 3
     platform(14, 57, 61);
     platform(11, 63, 67);
     platform(9, 69, 73);
@@ -454,7 +486,7 @@ static void buildLevel() {
 
     saw(10, 78);
 
-    // SECTION 4: narrow passages
+    // SECTION 4
     platform(14, 82, 86);
     platform(12, 88, 91);
     platform(10, 93, 97);
@@ -465,7 +497,7 @@ static void buildLevel() {
 
     saw(11, 101);
 
-    // SECTION 5: alternating platforms
+    // SECTION 5
     platform(15, 106, 109);
     platform(12, 111, 115);
     platform(9, 117, 121);
@@ -476,7 +508,7 @@ static void buildLevel() {
 
     saw(10, 125);
 
-    // SECTION 6: final challenge
+    // SECTION 6
     platform(14, 130, 134);
     platform(11, 136, 140);
     platform(9, 142, 146);
@@ -497,6 +529,28 @@ static void buildLevel() {
 }
 
 // ---------- Collision ----------
+static char tileAt(int r, int c) {
+    if (r < 0 || r >= ROWS || c < 0 || c >= COLS)
+        return '#';
+
+    return level[r][c];
+}
+
+static char staticChar(int r, int c) {
+    char ch = tileAt(r, c);
+
+    if (ch == 'O')
+        return '.';
+
+    return ch;
+}
+
+static bool hiAt(int r, int c) {
+    return r > 0 &&
+           staticChar(r, c) == '#' &&
+           staticChar(r - 1, c) != '#';
+}
+
 static bool solidAt(int x, int y) {
     if (x < 0 || y < 0)
         return true;
@@ -543,6 +597,114 @@ static bool circleHit(
     return dx * dx + dy * dy < rad * rad;
 }
 
+// ---------- Blood stains and particles ----------
+static void addSplat(int wx, int wy, int w, int h) {
+    if (splatCount >= MAX_SPLATS)
+        return;
+
+    if (wx < 0 || wy < 0)
+        return;
+
+    int room = wx / FRAME_WIDTH;
+
+    if (room > LAST_ROOM)
+        return;
+
+    Splat &s = splats[splatCount++];
+
+    s.room = (short)room;
+    s.x = (short)(wx - room * FRAME_WIDTH - w / 2);
+    s.y = (short)(wy - h / 2);
+    s.w = (short)w;
+    s.h = (short)h;
+}
+
+static void spawnPart(
+    float x, float y,
+    float pvx, float pvy,
+    int life, int size, int kind
+) {
+    for (int i = 0; i < MAX_PARTS; i++) {
+        if (parts[i].life <= 0) {
+            Part &p = parts[i];
+
+            p.x = x;
+            p.y = y;
+            p.vx = pvx;
+            p.vy = pvy;
+            p.life = (short)life;
+            p.maxLife = (short)life;
+            p.kind = (unsigned char)kind;
+            p.size = (unsigned char)size;
+
+            return;
+        }
+    }
+}
+
+static void spawnDust(float x, float y, int count, float spread) {
+    for (int i = 0; i < count; i++) {
+        float dvx = ((float)(rnd(100) - 50) / 50.0f) * spread;
+        float dvy = -((float)rnd(100) / 100.0f) * 1.6f;
+
+        spawnPart(
+            x + (float)(rnd(20) - 10),
+            y - (float)rnd(4),
+            dvx, dvy,
+            16 + rnd(12),
+            7 + rnd(5),
+            0
+        );
+    }
+}
+
+static void updateParts() {
+    for (int i = 0; i < MAX_PARTS; i++) {
+        Part &p = parts[i];
+
+        if (p.life <= 0)
+            continue;
+
+        p.life--;
+
+        if (p.kind == 0) {
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vx *= 0.9f;
+            p.vy *= 0.92f;
+        } else {
+            float ox = p.x;
+            float oy = p.y;
+
+            p.vy += 0.55f;
+
+            if (p.vy > 16.0f)
+                p.vy = 16.0f;
+
+            p.x += p.vx;
+            p.y += p.vy;
+
+            if (solidAt((int)p.x, (int)p.y)) {
+                if (rnd(100) < 45) {
+                    int s = p.size;
+
+                    if (solidAt((int)ox, (int)p.y)) {
+                        addSplat((int)ox, (int)oy,
+                                 s + 4 + rnd(8), s / 2 + 2);
+                    } else {
+                        addSplat((int)ox, (int)oy,
+                                 s / 2 + 2, s + 4 + rnd(8));
+                    }
+                }
+
+                p.life = 0;
+            } else if (p.y > (float)WORLD_HEIGHT) {
+                p.life = 0;
+            }
+        }
+    }
+}
+
 // ---------- Player ----------
 static void respawn() {
     px = (float)(TILE + 8);
@@ -551,8 +713,7 @@ static void respawn() {
     vx = 0;
     vy = 0;
 
-    cameraX = 0;
-    cameraTargetX = 0;
+    roomIdx = 0;
 
     squashX = 1.0f;
     squashY = 1.0f;
@@ -565,17 +726,35 @@ static void respawn() {
 static void die() {
     deaths++;
 
-    for (int i = 0; i < 12; i++) {
-        if (splatCount < 96) {
-            Splat &s = splats[splatCount++];
+    float cx = px + PW / 2.0f;
+    float cy = py + PH / 2.0f;
 
-            s.x = (int)px + rnd(PW + 20) - 10;
-            s.y = (int)py + rnd(PH + 20) - 10;
-            s.s = 6 + rnd(10);
-        }
+    for (int i = 0; i < 26; i++) {
+        float bvx = (float)(rnd(180) - 90) / 10.0f;
+        float bvy = (float)(rnd(140) - 120) / 10.0f;
+
+        spawnPart(
+            cx + (float)(rnd(20) - 10),
+            cy + (float)(rnd(20) - 10),
+            bvx, bvy,
+            90,
+            5 + rnd(5),
+            1
+        );
     }
 
-    respawn();
+    for (int i = 0; i < 4; i++) {
+        addSplat(
+            (int)cx + rnd(40) - 20,
+            (int)cy + rnd(40) - 20,
+            8 + rnd(10),
+            8 + rnd(10)
+        );
+    }
+
+    vx = 0;
+    vy = 0;
+    deadTimer = 28;
 }
 
 static bool touchingHazard() {
@@ -634,30 +813,19 @@ static bool touchingGoal() {
     return false;
 }
 
-// ---------- Camera ----------
-static void updateCamera() {
-    cameraTargetX = px + PW / 2.0f - FRAME_WIDTH * 0.42f;
-
-    if (cameraTargetX < 0)
-        cameraTargetX = 0;
-
-    float maxCamera = WORLD_WIDTH - FRAME_WIDTH;
-
-    if (cameraTargetX > maxCamera)
-        cameraTargetX = maxCamera;
-
-    // Smooth camera follow
-    cameraX += (cameraTargetX - cameraX) * 0.085f;
-
-    if (cameraX < 0)
-        cameraX = 0;
-
-    if (cameraX > maxCamera)
-        cameraX = maxCamera;
-}
-
 // ---------- Physics ----------
 static void update() {
+    updateParts();
+
+    if (deadTimer > 0) {
+        deadTimer--;
+
+        if (deadTimer == 0)
+            respawn();
+
+        return;
+    }
+
     bool wasGround = onGround;
 
     {
@@ -736,6 +904,9 @@ static void update() {
     if (sliding && vy > 3.0f)
         vy = 3.0f;
 
+    if (sliding && (tick & 3) == 0)
+        spawnDust(wallL ? px : px + PW, py + PH - 6.0f, 1, 1.0f);
+
     if (onGround)
         coyote = 6;
     else if (coyote > 0)
@@ -748,6 +919,8 @@ static void update() {
 
             squashX = 0.72f;
             squashY = 1.30f;
+
+            spawnDust(px + PW / 2.0f, py + PH, 6, 3.0f);
         } else if (wallL || wallR) {
             vy = -16.0f;
             vx = wallL ? 8.0f : -8.0f;
@@ -757,6 +930,8 @@ static void update() {
 
             squashX = 0.72f;
             squashY = 1.30f;
+
+            spawnDust(wallL ? px : px + PW, py + PH / 2.0f, 4, 2.0f);
         }
     }
 
@@ -800,6 +975,13 @@ static void update() {
 
                 squashY = 1.0f - 0.35f * k;
                 squashX = 1.0f + 0.40f * k;
+
+                spawnDust(
+                    px + PW / 2.0f,
+                    py + PH,
+                    4 + (int)(k * 6.0f),
+                    4.0f
+                );
             }
         } else if (vy < 0) {
             py = (float)(
@@ -817,105 +999,29 @@ static void update() {
 
     if (touchingGoal()) {
         winTimer = 150;
+        needWin[0] = true;
+        needWin[1] = true;
     }
 
-    updateCamera();
-}
+    // Room (screen) selection
+    int nr = ((int)px + PW / 2) / FRAME_WIDTH;
 
-// ---------- Background ----------
-static void drawBackground() {
-    // Purple night sky
-    fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT,
-             mk(13, 8, 32));
+    if (nr < 0) nr = 0;
+    if (nr > LAST_ROOM) nr = LAST_ROOM;
 
-    fillRect(0, 0, FRAME_WIDTH, 300,
-             mk(24, 12, 55));
-
-    fillRect(0, 300, FRAME_WIDTH, 300,
-             mk(31, 15, 66));
-
-    fillRect(0, 600, FRAME_WIDTH, 480,
-             mk(17, 10, 42));
-
-    // Moon
-    fillRect(1500, 115, 100, 100,
-             mk(145, 125, 205));
-
-    fillRect(1515, 100, 70, 130,
-             mk(145, 125, 205));
-
-    fillRect(1520, 125, 65, 75,
-             mk(185, 170, 220));
-
-    // Stars
-    for (int i = 0; i < 75; i++) {
-        int sx = (i * 271 + 91) % FRAME_WIDTH;
-        int sy = (i * 137 + 31) % 570;
-
-        int twinkle = (tick / 20 + i) % 4;
-
-        Color star = twinkle == 0 ?
-            mk(130, 115, 185) :
-            mk(220, 210, 255);
-
-        fillRect(sx, sy, 3, 3, star);
-
-        if (i % 7 == 0)
-            fillRect(sx - 2, sy - 2, 7, 7,
-                     mk(70, 55, 110));
-    }
-
-    // Distant mountains - slow parallax
-    int farOffset = ((int)(cameraX * 0.12f)) % 700;
-
-    for (int i = -1; i < 5; i++) {
-        int x = i * 700 - farOffset;
-
-        fillRect(x, 570, 700, 510,
-                 mk(35, 20, 75));
-
-        fillRect(x + 80, 450, 180, 130,
-                 mk(35, 20, 75));
-
-        fillRect(x + 220, 390, 180, 190,
-                 mk(35, 20, 75));
-
-        fillRect(x + 390, 470, 180, 110,
-                 mk(35, 20, 75));
-    }
-
-    // Near mountains - faster parallax
-    int nearOffset = ((int)(cameraX * 0.28f)) % 560;
-
-    for (int i = -1; i < 6; i++) {
-        int x = i * 560 - nearOffset;
-
-        fillRect(x, 700, 560, 380,
-                 mk(25, 14, 55));
-
-        fillRect(x + 70, 590, 160, 120,
-                 mk(25, 14, 55));
-
-        fillRect(x + 220, 530, 180, 180,
-                 mk(25, 14, 55));
-
-        fillRect(x + 380, 630, 130, 80,
-                 mk(25, 14, 55));
-    }
+    roomIdx = nr;
 }
 
 // ---------- Game drawing ----------
-static void drawSpike(int c, int r) {
-    int worldX = c * TILE + TILE / 2;
-    int screenX = worldX - (int)cameraX;
-
+static void drawSpike(int cx, int r) {
+    int center = cx * TILE + TILE / 2;
     int top = r * TILE + 20;
 
     for (int j = 0; j < 40; j++) {
         int half = (j * 26) / 39;
 
         fillRect(
-            screenX - half,
+            center - half,
             top + j,
             2 * half + 1,
             1,
@@ -1022,87 +1128,169 @@ static void drawPlayerFace(
     );
 }
 
-static void drawTiles() {
-    int firstCol = (int)cameraX / TILE;
-    int lastCol = firstCol + FRAME_WIDTH / TILE + 2;
+static void drawTileCell(int r, int cx, char ch, bool hi) {
+    int x = cx * TILE;
+    int y = r * TILE;
 
-    if (firstCol < 0) firstCol = 0;
-    if (lastCol >= COLS) lastCol = COLS - 1;
+    if (ch == '#') {
+        fillRect(x, y, TILE, TILE, mk(58, 48, 82));
 
-    for (int r = 0; r < ROWS; r++) {
-        for (int c = firstCol; c <= lastCol; c++) {
-            char ch = level[r][c];
+        if (hi)
+            fillRect(x, y, TILE, 5, mk(145, 105, 180));
 
-            int x = c * TILE - (int)cameraX;
-            int y = r * TILE;
+        fillRect(x, y + TILE - 5, TILE, 5, mk(38, 30, 58));
+    }
 
-            if (ch == '#') {
-                fillRect(x, y, TILE, TILE,
-                         mk(58, 48, 82));
+    else if (ch == '^') {
+        drawSpike(cx, r);
+    }
 
-                if (r > 0 && level[r - 1][c] != '#') {
-                    fillRect(x, y, TILE, 5,
-                             mk(145, 105, 180));
-                }
+    else if (ch == 'G') {
+        int gx = x + 8;
+        int gy = y + 16;
 
-                fillRect(x, y + TILE - 5, TILE, 5,
-                         mk(38, 30, 58));
-            }
+        fillRect(gx, gy, PW, PH, mk(255, 140, 170));
+        fillRect(gx, gy + 3, PW, 7, mk(240, 230, 200));
 
-            else if (ch == '^') {
-                drawSpike(c, r);
-            }
-
-            else if (ch == 'G') {
-                int gx = x + 8;
-                int gy = y + 16;
-
-                fillRect(gx, gy, PW, PH,
-                         mk(255, 140, 170));
-
-                fillRect(gx, gy + 3, PW, 7,
-                         mk(240, 230, 200));
-
-                drawFace(
-                    gx, gy, -1,
-                    mk(255,255,255)
-                );
-            }
-        }
+        drawFace(gx, gy, -1, mk(255, 255, 255));
     }
 }
 
 static void drawSplat(const Splat &s) {
-    int x = s.x - (int)cameraX;
-
-    fillRect(x, s.y, s.s, s.s,
-             mk(140, 10, 20));
+    fillRect(s.x, s.y, s.w, s.h, mk(140, 10, 20));
+    fillRect(s.x + 1, s.y + 1, s.w / 3 + 1, s.h / 3 + 1,
+             mk(185, 22, 34));
 }
 
-static void drawPlayer() {
-    int x = (int)px - (int)cameraX;
-    int y = (int)py;
-
-    int dw = (int)(PW * squashX);
-    int dh = (int)(PH * squashY);
-
-    if (dw < 20) dw = 20;
-    if (dh < 20) dh = 20;
-
-    int dx = x + (PW - dw) / 2;
-    int dy = y + (PH - dh);
-
-    fillRect(dx, dy, dw, dh,
-             mk(140, 0, 15));
-
-    fillRect(dx + 3, dy + 3, dw - 6, dh - 6,
-             mk(205, 25, 35));
-
-    drawPlayerFace(dx, dy, dw, dh, facing);
+static void starPos(int i, int &sx, int &sy) {
+    sx = (i * 271 + 91) % FRAME_WIDTH;
+    sy = (i * 137 + 31) % 570;
 }
 
-static void drawHUD() {
+static bool starDim(int i, int phase) {
+    return ((phase + i) % 4) == 0;
+}
+
+// Static background (sky, moon, stars, mountains).
+// Painted without overlap so a full draw is as cheap as possible.
+static void paintBackground() {
+    Color farC = mk(35, 20, 75);
+    Color nearC = mk(25, 14, 55);
+
+    fillRect(0, 0, FRAME_WIDTH, 300, mk(24, 12, 55));
+    fillRect(0, 300, FRAME_WIDTH, 270, mk(31, 15, 66));
+    fillRect(0, 570, FRAME_WIDTH, 130, farC);
+    fillRect(0, 700, FRAME_WIDTH, 380, nearC);
+
+    // Moon
+    fillRect(1500, 115, 100, 100, mk(145, 125, 205));
+    fillRect(1515, 100, 70, 130, mk(145, 125, 205));
+    fillRect(1520, 125, 65, 75, mk(185, 170, 220));
+
+    // Stars
+    int phase = tick / 20;
+
+    for (int i = 0; i < NUM_STARS; i++) {
+        int sx, sy;
+        starPos(i, sx, sy);
+
+        if (i % 7 == 0)
+            fillRect(sx - 2, sy - 2, 7, 7, mk(70, 55, 110));
+
+        fillRect(
+            sx, sy, 3, 3,
+            starDim(i, phase) ? mk(130, 115, 185)
+                              : mk(220, 210, 255)
+        );
+    }
+
+    // Far mountains
+    for (int i = 0; i < 3; i++) {
+        int x = i * 700;
+
+        fillRect(x + 80, 450, 180, 130, farC);
+        fillRect(x + 220, 390, 180, 190, farC);
+        fillRect(x + 390, 470, 180, 110, farC);
+    }
+
+    // Near mountains
+    for (int i = 0; i < 4; i++) {
+        int x = i * 560;
+
+        fillRect(x + 70, 590, 160, 120, nearC);
+        fillRect(x + 220, 530, 180, 180, nearC);
+        fillRect(x + 380, 630, 130, 80, nearC);
+    }
+}
+
+static void drawSplatsClipped(int b) {
+    for (int i = 0; i < splatCount; i++) {
+        if (splatDrawn[b][i])
+            drawSplat(splats[i]);
+    }
+}
+
+// Repaint a small area of buffer b from the static layer
+static void restoreRect(
+    int b, int x, int y, int w, int h, bool withSplats
+) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+
+    if (x + w > FRAME_WIDTH) w = FRAME_WIDTH - x;
+    if (y + h > FRAME_HEIGHT) h = FRAME_HEIGHT - y;
+
+    if (w <= 0 || h <= 0)
+        return;
+
+    setClip(x, y, w, h);
+
+    paintBackground();
+
+    int c0 = x / TILE;
+    int c1 = (x + w - 1) / TILE;
+    int r0 = y / TILE;
+    int r1 = (y + h - 1) / TILE;
+
+    for (int r = r0; r <= r1; r++) {
+        for (int c = c0; c <= c1; c++) {
+            char ch = bufGrid[b][r][c];
+
+            if (ch != '.')
+                drawTileCell(r, c, ch, bufHi[b][r][c]);
+        }
+    }
+
+    if (withSplats)
+        drawSplatsClipped(b);
+
+    resetClip();
+}
+
+static void addDirty(int b, int x, int y, int w, int h) {
+    if (dirtyCount[b] < MAX_DIRTY) {
+        Rect &d = dirty[b][dirtyCount[b]++];
+
+        d.x = x;
+        d.y = y;
+        d.w = w;
+        d.h = h;
+    }
+}
+
+static int progressNow() {
+    int p = (int)((px / (float)WORLD_WIDTH) * 520.0f);
+
+    if (p < 0) p = 0;
+    if (p > 520) p = 520;
+
+    return p;
+}
+
+static void drawHUDFull(int b) {
     int hudN = deaths < 40 ? deaths : 40;
+
+    drawText(70, 35, "DEATHS", 3, mk(220, 210, 240));
 
     for (int i = 0; i < hudN; i++) {
         fillRect(
@@ -1113,71 +1301,284 @@ static void drawHUD() {
         );
     }
 
-    drawText(70, 35, "DEATHS", 3,
-             mk(220, 210, 240));
+    int prog = progressNow();
 
-    // Progress bar
-    fillRect(700, 45, 520, 14,
-             mk(45, 35, 70));
+    fillRect(700, 45, 520, 14, mk(45, 35, 70));
+    fillRect(700, 45, prog, 14, mk(205, 40, 100));
 
-    int progress = (int)(
-        (px / (float)WORLD_WIDTH) * 520.0f
-    );
-
-    if (progress < 0) progress = 0;
-    if (progress > 520) progress = 520;
-
-    fillRect(700, 45, progress, 14,
-             mk(205, 40, 100));
+    hudSq[b] = hudN;
+    hudProg[b] = prog;
+    hudNeed[b] = false;
 }
 
-static void renderGame() {
+static void drawRoomSplats(int b) {
+    for (int i = 0; i < splatCount; i++) {
+        if (splats[i].room == bufRoom[b]) {
+            drawSplat(splats[i]);
+            splatDrawn[b][i] = true;
+        }
+    }
+}
+
+static void renderGame(int b) {
     resetClip();
 
-    drawBackground();
-    drawTiles();
+    // Level complete screen (drawn once per buffer)
+    if (winTimer > 0) {
+        if (needWin[b]) {
+            fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT,
+                     mk(20, 90, 60));
 
-    for (int i = 0; i < splatCount; i++)
-        drawSplat(splats[i]);
+            drawTextC(960, 400, "LEVEL COMPLETE", 10,
+                      mk(255, 255, 255));
 
-    // Only draw saws near the camera
-    int firstCol = (int)cameraX / TILE;
-    int lastCol = firstCol + FRAME_WIDTH / TILE + 2;
+            drawTextC(960, 540, "GREAT JOB", 6,
+                      mk(255, 220, 180));
 
-    if (firstCol < 0) firstCol = 0;
-    if (lastCol >= COLS) lastCol = COLS - 1;
+            needWin[b] = false;
+        }
 
+        return;
+    }
+
+    if (needFull[b]) {
+        // Full draw (once per buffer at level start)
+        paintBackground();
+
+        for (int r = 0; r < ROWS; r++) {
+            for (int c = 0; c < ROOM_COLS; c++) {
+                int wc = roomIdx * ROOM_COLS + c;
+
+                char ch = staticChar(r, wc);
+                bool hi = hiAt(r, wc);
+
+                bufGrid[b][r][c] = ch;
+                bufHi[b][r][c] = hi;
+
+                if (ch != '.')
+                    drawTileCell(r, c, ch, hi);
+            }
+        }
+
+        bufRoom[b] = roomIdx;
+
+        for (int i = 0; i < MAX_SPLATS; i++)
+            splatDrawn[b][i] = false;
+
+        drawRoomSplats(b);
+
+        bufStar[b] = tick / 20;
+        dirtyCount[b] = 0;
+
+        drawHUDFull(b);
+
+        needFull[b] = false;
+    }
+
+    else {
+        bool trans = (bufRoom[b] != roomIdx);
+
+        // Erase what was drawn two frames ago in this buffer
+        for (int i = 0; i < dirtyCount[b]; i++) {
+            Rect d = dirty[b][i];
+
+            if (d.y < 100)
+                hudNeed[b] = true;
+
+            restoreRect(b, d.x, d.y, d.w, d.h, !trans);
+        }
+
+        dirtyCount[b] = 0;
+
+        if (trans) {
+            // Erase blood of the old room
+            for (int i = 0; i < splatCount; i++) {
+                if (splatDrawn[b][i]) {
+                    Splat &s = splats[i];
+
+                    restoreRect(
+                        b,
+                        s.x - 1, s.y - 1,
+                        s.w + 2, s.h + 2,
+                        false
+                    );
+
+                    splatDrawn[b][i] = false;
+                }
+            }
+
+            // Update only the tiles that differ between the rooms
+            for (int r = 0; r < ROWS; r++) {
+                for (int c = 0; c < ROOM_COLS; c++) {
+                    int wc = roomIdx * ROOM_COLS + c;
+
+                    char nc = staticChar(r, wc);
+                    bool nh = hiAt(r, wc);
+
+                    char oc = bufGrid[b][r][c];
+                    bool oh = bufHi[b][r][c];
+
+                    if (nc == oc && nh == oh)
+                        continue;
+
+                    bool needBg = (oc != '.') && (nc != '#');
+
+                    if (needBg) {
+                        setClip(c * TILE, r * TILE, TILE, TILE);
+                        paintBackground();
+                        resetClip();
+                    }
+
+                    bufGrid[b][r][c] = nc;
+                    bufHi[b][r][c] = nh;
+
+                    if (nc != '.')
+                        drawTileCell(r, c, nc, nh);
+
+                    if (r <= 1)
+                        hudNeed[b] = true;
+                }
+            }
+
+            bufRoom[b] = roomIdx;
+
+            drawRoomSplats(b);
+        }
+
+        // New blood stains
+        for (int i = 0; i < splatCount; i++) {
+            if (!splatDrawn[b][i] &&
+                splats[i].room == bufRoom[b]) {
+                drawSplat(splats[i]);
+                splatDrawn[b][i] = true;
+            }
+        }
+
+        // Star twinkle
+        int ph = tick / 20;
+
+        if (bufStar[b] != ph) {
+            for (int i = 0; i < NUM_STARS; i++) {
+                if (starDim(i, bufStar[b]) != starDim(i, ph)) {
+                    int sx, sy;
+                    starPos(i, sx, sy);
+
+                    restoreRect(b, sx - 3, sy - 3, 9, 9, true);
+                }
+            }
+
+            bufStar[b] = ph;
+        }
+
+        // HUD
+        int hudN = deaths < 40 ? deaths : 40;
+        int prog = progressNow();
+
+        if (hudNeed[b]) {
+            drawHUDFull(b);
+        } else {
+            for (int i = hudSq[b]; i < hudN; i++) {
+                fillRect(
+                    70 + i * 22, 70,
+                    14, 14,
+                    mk(205, 25, 35)
+                );
+            }
+
+            hudSq[b] = hudN;
+
+            if (prog > hudProg[b]) {
+                fillRect(
+                    700 + hudProg[b], 45,
+                    prog - hudProg[b], 14,
+                    mk(205, 40, 100)
+                );
+            } else if (prog < hudProg[b]) {
+                fillRect(
+                    700 + prog, 45,
+                    hudProg[b] - prog, 14,
+                    mk(45, 35, 70)
+                );
+            }
+
+            hudProg[b] = prog;
+        }
+    }
+
+    // ----- Moving objects -----
+    resetClip();
+
+    int roomX = roomIdx * FRAME_WIDTH;
+
+    // Saws in this room
     for (int r = 0; r < ROWS; r++) {
-        for (int c = firstCol; c <= lastCol; c++) {
+        for (int c = roomIdx * ROOM_COLS;
+             c < roomIdx * ROOM_COLS + ROOM_COLS && c < COLS;
+             c++) {
             if (level[r][c] == 'O') {
-                int cx = c * TILE + 30 - (int)cameraX;
+                int cx = c * TILE + 30 - roomX;
                 int cy = r * TILE + 30;
 
                 drawSaw(cx, cy);
+                addDirty(b, cx - 27, cy - 27, 55, 55);
             }
         }
     }
 
-    drawPlayer();
-    drawHUD();
+    // Blood and dust particles
+    for (int i = 0; i < MAX_PARTS; i++) {
+        Part &p = parts[i];
 
-    if (winTimer > 0) {
-        fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT,
-                 mk(20, 90, 60));
+        if (p.life <= 0)
+            continue;
 
-        drawTextC(
-            960, 400,
-            "LEVEL COMPLETE",
-            10,
-            mk(255,255,255)
-        );
+        int sx = (int)p.x - roomX;
+        int sy = (int)p.y;
 
-        drawTextC(
-            960, 540,
-            "GREAT JOB",
-            6,
-            mk(255,220,180)
-        );
+        if (sx < -20 || sx > FRAME_WIDTH + 20 ||
+            sy < -20 || sy > FRAME_HEIGHT + 20)
+            continue;
+
+        int sz;
+        Color col = mk(0, 0, 0);
+
+        if (p.kind == 0) {
+            sz = 2 + ((int)p.size - 2) * p.life / p.maxLife;
+
+            col = (p.life * 2 > p.maxLife) ?
+                  mk(205, 195, 230) :
+                  mk(150, 140, 185);
+        } else {
+            sz = p.size;
+            col = mk(200, 20, 35);
+        }
+
+        fillRect(sx, sy, sz, sz, col);
+        addDirty(b, sx - 1, sy - 1, sz + 2, sz + 2);
+    }
+
+    // Player (hidden while dying)
+    if (deadTimer == 0) {
+        int x = (int)px - roomX;
+        int y = (int)py;
+
+        int dw = (int)(PW * squashX);
+        int dh = (int)(PH * squashY);
+
+        if (dw < 20) dw = 20;
+        if (dh < 20) dh = 20;
+
+        int dx = x + (PW - dw) / 2;
+        int dy = y + (PH - dh);
+
+        fillRect(dx, dy, dw, dh, mk(140, 0, 15));
+
+        fillRect(dx + 3, dy + 3, dw - 6, dh - 6,
+                 mk(205, 25, 35));
+
+        drawPlayerFace(dx, dy, dw, dh, facing);
+
+        addDirty(b, x - 14, y - 18, PW + 28, PH + 20);
     }
 }
 
@@ -1204,6 +1605,20 @@ static void startLevel() {
     deaths = 0;
     splatCount = 0;
     winTimer = 0;
+    deadTimer = 0;
+
+    for (int i = 0; i < MAX_PARTS; i++)
+        parts[i].life = 0;
+
+    for (int b = 0; b < 2; b++) {
+        for (int i = 0; i < MAX_SPLATS; i++)
+            splatDrawn[b][i] = false;
+
+        needFull[b] = true;
+        needWin[b] = false;
+        hudNeed[b] = false;
+        dirtyCount[b] = 0;
+    }
 
     state = S_PLAY;
 }
@@ -1648,7 +2063,7 @@ int main(void) {
         }
 
         if (state == S_PLAY)
-            renderGame();
+            renderGame(b);
         else
             drawUI(b);
 
