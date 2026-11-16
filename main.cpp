@@ -6,21 +6,34 @@
 
 #include <orbis/Pad.h>
 #include <orbis/UserService.h>
+#ifndef NO_AUDIO
+#include <orbis/AudioOut.h>
+#endif
 
 #include "../../_common/graphics.h"
 #include "../../_common/log.h"
+#include "ar_data.h"
+
+#ifdef NO_ARABIC
+#define ARABIC_OK 0
+#define AR(x) (-1)
+#else
+#define ARABIC_OK 1
+#define AR(x) AR_##x
+#endif
 
 #define FRAME_WIDTH 1920
 #define FRAME_HEIGHT 1080
 #define FRAME_DEPTH 4
 
 #define TILE 60
-#define COLS 168
+#define ROOM_COLS 32
+#define TOTAL_ROOMS 6
+#define COLS (ROOM_COLS * TOTAL_ROOMS)
 #define ROWS 18
-#define ROOM_COLS (FRAME_WIDTH / TILE)
 #define WORLD_WIDTH (COLS * TILE)
 #define WORLD_HEIGHT (ROWS * TILE)
-#define LAST_ROOM ((WORLD_WIDTH - 1) / FRAME_WIDTH)
+#define LAST_ROOM (TOTAL_ROOMS - 1)
 
 #define PW 44
 #define PH 44
@@ -39,7 +52,12 @@ static Scene2D *scene;
 static char level[ROWS][COLS + 1];
 
 static int padHandle = -1;
+static int padUserID = 0;
 static OrbisPadData padData;
+
+#ifndef NO_AUDIO
+static int audioHandle = -1;
+#endif
 
 // ---------- Game state ----------
 static float px, py, vx, vy;
@@ -115,7 +133,8 @@ enum {
     S_LEVELS = 1,
     S_SETTINGS = 2,
     S_CREDITS = 3,
-    S_PLAY = 4
+    S_PLAY = 4,
+    S_STORY = 5
 };
 
 static int state = S_MENU;
@@ -124,10 +143,92 @@ static int levelSel = 0;
 static int settingsSel = 0;
 
 static int controlMode = 1;
+static int lang = 0;            // 0 = English, 1 = Arabic
 static int unlockedLevels = 1;
+static bool introSeen = false;
 
 static bool uiFull[2] = {true, true};
 static bool pend[2][64];
+
+// ---------- Story state ----------
+static int storyId = 0;
+static int storyPage = 0;
+static int typed = 0;
+static bool storyBgDone[2] = {false, false};
+static int storyDrawnPage[2] = {-1, -1};
+static int storyShown[2] = {0, 0};
+
+// ---------- Texts (English + Arabic image id) ----------
+#define TEXT_LIST \
+    X(T_TITLE, "MEAT CUBE", AR(TITLE)) \
+    X(T_B_LEVELS, "LEVELS", AR(B_LEVELS)) \
+    X(T_B_SETTINGS, "SETTINGS", AR(B_SETTINGS)) \
+    X(T_B_CREDITS, "CREDITS", AR(B_CREDITS)) \
+    X(T_LEVELS, "LEVELS", AR(LEVELS)) \
+    X(T_SETTINGS, "SETTINGS", AR(SETTINGS)) \
+    X(T_CREDITS, "CREDITS", AR(CREDITS)) \
+    X(T_EXIT, "EXIT", AR(EXIT)) \
+    X(T_BACK, "BACK", AR(BACK)) \
+    X(T_CTRL_A, "CONTROLS: ANALOG", AR(CTRL_ANALOG)) \
+    X(T_CTRL_B, "CONTROLS: ARROWS", AR(CTRL_ARROWS)) \
+    X(T_LANG, "LANGUAGE: ENGLISH", AR(LANG)) \
+    X(T_H_SELECT, "X: SELECT", AR(SELECT)) \
+    X(T_H_LEVELS, "X: PLAY   O: BACK", AR(LEVELS_HINT)) \
+    X(T_H_BACK, "O: BACK", AR(BACK_HINT)) \
+    X(T_TIP, "LEFT RIGHT OR X: CHANGE", AR(CHANGE_TIP)) \
+    X(T_H_STORY, "X: NEXT   OPTIONS: SKIP", AR(STORY_HINT)) \
+    X(T_PLAYX, "PRESS X TO PLAY", AR(PLAYX)) \
+    X(T_LOCKED, "LOCKED", AR(LOCKED)) \
+    X(T_DESIGNERS, "GAME DESIGNERS", AR(DESIGNERS)) \
+    X(T_KAREEM, "KAREEM", AR(KAREEM)) \
+    X(T_CLAUDE, "CLAUDE", AR(CLAUDE)) \
+    X(T_GAME, "MEAT CUBE", AR(GAME_NAME)) \
+    X(T_DEATHS, "DEATHS", AR(DEATHS)) \
+    X(T_COMPLETE, "LEVEL COMPLETE", AR(COMPLETE)) \
+    X(T_GREAT, "GREAT JOB", AR(GREAT))
+
+enum {
+#define X(id, en, ar) id,
+    TEXT_LIST
+#undef X
+    T_COUNT
+};
+
+static const char *TXT_EN[T_COUNT] = {
+#define X(id, en, ar) en,
+    TEXT_LIST
+#undef X
+};
+
+static const int TXT_AR[T_COUNT] = {
+#define X(id, en, ar) ar,
+    TEXT_LIST
+#undef X
+};
+
+struct Page {
+    int art;
+    int n;
+    const char *en[3];
+    int ar[3];
+};
+
+static const Page PAGES[5] = {
+    {0, 2, {"MEAT CUBE AND BANDAGE GIRL", "LIVED IN THE OLD FOREST.", ""},
+     {AR(P0L0), AR(P0L1), -1}},
+    {1, 2, {"ONE NIGHT THE GRINDER CAME.", "HIS SAWS TOOK HER AWAY.", ""},
+     {AR(P1L0), AR(P1L1), -1}},
+    {2, 2, {"MEAT CUBE WOKE UP ANGRY.", "I WILL BRING YOU BACK!", ""},
+     {AR(P2L0), AR(P2L1), -1}},
+    {3, 3, {"MEAT CUBE REACHED THE TOWER.", "BUT SHE WAS NOT THERE.",
+            "ONLY A NOTE: FOLLOW THE SAWS."},
+     {AR(P3L0), AR(P3L1), AR(P3L2)}},
+    {1, 1, {"TO BE CONTINUED.", "", ""},
+     {AR(P4L0), -1, -1}}
+};
+
+static const int STORY_FIRST[2] = {0, 3};
+static const int STORY_LAST[2] = {3, 5};
 
 // ---------- Input ----------
 struct Input {
@@ -155,6 +256,10 @@ static int iabs(int a) {
     return a < 0 ? -a : a;
 }
 
+static int iclamp(int v, int lo, int hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
 static int rnd(int n) {
     rng = rng * 1103515245u + 12345u;
     return (int)((rng >> 16) % (unsigned int)n);
@@ -169,6 +274,10 @@ static Color mk(int r, int g, int b) {
     return c;
 }
 
+static bool useAr() {
+    return lang == 1 && ARABIC_OK;
+}
+
 // ---------- Controller ----------
 static bool initPad() {
     if (scePadInit() != 0)
@@ -181,6 +290,7 @@ static bool initPad() {
 
     int userID = 0;
     sceUserServiceGetInitialUser(&userID);
+    padUserID = userID;
 
     padHandle = scePadOpen(userID, 0, 0, NULL);
 
@@ -254,6 +364,73 @@ static bool navEvent(int i, bool pressed) {
     return false;
 }
 
+// ---------- Sound (menus only) ----------
+static void initAudio() {
+#ifndef NO_AUDIO
+    sceAudioOutInit();
+    audioHandle = sceAudioOutOpen(padUserID, 0, 0, 256, 48000, 1);
+#endif
+}
+
+static void playTone(int freq, int ms, int vol) {
+#ifndef NO_AUDIO
+    if (audioHandle < 0)
+        return;
+
+    static short buf[256 * 2];
+
+    int total = 48 * ms;
+    int phase = 0;
+    int done = 0;
+
+    while (done < total) {
+        for (int i = 0; i < 256; i++) {
+            int idx = done + i;
+            int s = 0;
+
+            if (idx < total) {
+                phase += freq;
+
+                if (phase >= 48000)
+                    phase -= 48000;
+
+                int tri = phase < 24000 ? phase : 48000 - phase;
+
+                s = ((tri - 12000) * vol) / 12000;
+
+                int remain = total - idx;
+
+                if (remain < 1500)
+                    s = s * remain / 1500;
+            }
+
+            buf[i * 2] = (short)s;
+            buf[i * 2 + 1] = (short)s;
+        }
+
+        sceAudioOutOutput(audioHandle, buf);
+        done += 256;
+    }
+#else
+    (void)freq;
+    (void)ms;
+    (void)vol;
+#endif
+}
+
+static void snd(int k) {
+    if (k == 0) {
+        playTone(880, 25, 3500);
+    } else if (k == 1) {
+        playTone(660, 35, 4500);
+        playTone(990, 55, 4500);
+    } else if (k == 2) {
+        playTone(440, 50, 4000);
+    } else {
+        playTone(220, 90, 4000);
+    }
+}
+
 // ---------- Drawing primitives ----------
 static void setClip(int x, int y, int w, int h) {
     clipX0 = x < 0 ? 0 : x;
@@ -296,8 +473,8 @@ static void fillRect(int x, int y, int w, int h, Color c) {
     }
 }
 
-// ---------- Font ----------
-static const unsigned char FONT[41][7] = {
+// ---------- Latin font ----------
+static const unsigned char FONT[45][7] = {
     {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11},
     {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E},
     {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E},
@@ -340,7 +517,12 @@ static const unsigned char FONT[41][7] = {
     {0x00,0x00,0x00,0x1F,0x00,0x00,0x00},
     {0x02,0x04,0x08,0x10,0x08,0x04,0x02},
     {0x08,0x04,0x02,0x01,0x02,0x04,0x08},
-    {0x00,0x00,0x00,0x00,0x00,0x00,0x00}
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+
+    {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C},
+    {0x04,0x04,0x04,0x04,0x04,0x00,0x04},
+    {0x00,0x00,0x00,0x00,0x0C,0x04,0x08},
+    {0x0E,0x11,0x01,0x02,0x04,0x00,0x04}
 };
 
 static int glyphIndex(char ch) {
@@ -354,6 +536,10 @@ static int glyphIndex(char ch) {
     if (ch == '-') return 37;
     if (ch == '<') return 38;
     if (ch == '>') return 39;
+    if (ch == '.') return 41;
+    if (ch == '!') return 42;
+    if (ch == ',') return 43;
+    if (ch == '?') return 44;
 
     return 40;
 }
@@ -407,31 +593,96 @@ static void intToStr(int v, char *out) {
     }
 }
 
-// ---------- Level construction ----------
-static void setRow(int row, int c0, int c1, char ch) {
-    if (row < 0 || row >= ROWS)
+// ---------- Arabic text images ----------
+static int arW(int id) {
+#if ARABIC_OK
+    return id >= 0 ? AR_IMGS[id].w : 0;
+#else
+    (void)id;
+    return 0;
+#endif
+}
+
+static int arH(int id) {
+#if ARABIC_OK
+    return id >= 0 ? AR_IMGS[id].h : 0;
+#else
+    (void)id;
+    return 0;
+#endif
+}
+
+static void drawArCols(int id, int x, int y, int c0, int c1, Color col) {
+#if ARABIC_OK
+    if (id < 0)
         return;
 
+    const ArImg &im = AR_IMGS[id];
+    int rb = (im.w + 7) / 8;
+
     if (c0 < 0) c0 = 0;
-    if (c1 >= COLS) c1 = COLS - 1;
+    if (c1 > im.w) c1 = im.w;
 
-    for (int c = c0; c <= c1; c++)
-        level[row][c] = ch;
-}
-
-static void platform(int row, int start, int end) {
-    setRow(row, start, end, '#');
-}
-
-static void spikes(int row, int start, int end) {
-    setRow(row, start, end, '^');
-}
-
-static void saw(int row, int col) {
-    if (row >= 0 && row < ROWS &&
-        col >= 0 && col < COLS) {
-        level[row][col] = 'O';
+    for (int cx = c0; cx < c1; cx++) {
+        for (int ry = 0; ry < im.h; ry++) {
+            if (im.bits[ry * rb + (cx >> 3)] & (0x80 >> (cx & 7)))
+                scene->DrawPixel(x + cx, y + ry, col);
+        }
     }
+#else
+    (void)id; (void)x; (void)y; (void)c0; (void)c1; (void)col;
+#endif
+}
+
+// Draws a text id centered in a box, in the selected language
+static void drawLabel(int tid, int cx, int boxY, int boxH,
+                      int sc, Color c) {
+    if (useAr() && TXT_AR[tid] >= 0) {
+        int id = TXT_AR[tid];
+        int w = arW(id);
+        int h = arH(id);
+
+        drawArCols(id, cx - w / 2, boxY + (boxH - h) / 2, 0, w, c);
+    } else {
+        drawTextC(cx, boxY + (boxH - 7 * sc) / 2,
+                  TXT_EN[tid], sc, c);
+    }
+}
+
+static int labelWidth(int tid, int sc) {
+    if (useAr() && TXT_AR[tid] >= 0)
+        return arW(TXT_AR[tid]);
+
+    return textWidth(TXT_EN[tid], sc);
+}
+
+// ---------- Level construction ----------
+static int baseCol = 0;
+
+static void put(int row, int c, char ch) {
+    int g = baseCol + c;
+
+    if (row >= 0 && row < ROWS && g >= 0 && g < COLS)
+        level[row][g] = ch;
+}
+
+static void plat(int row, int a, int b) {
+    for (int c = a; c <= b; c++)
+        put(row, c, '#');
+}
+
+static void wall(int col, int r0, int r1) {
+    for (int r = r0; r <= r1; r++)
+        put(r, col, '#');
+}
+
+static void spk(int row, int a, int b) {
+    for (int c = a; c <= b; c++)
+        put(row, c, '^');
+}
+
+static void sawAt(int row, int col) {
+    put(row, col, 'O');
 }
 
 static void buildLevel() {
@@ -442,90 +693,83 @@ static void buildLevel() {
         level[r][COLS] = 0;
     }
 
-    setRow(0, 0, COLS - 1, '#');
-    setRow(ROWS - 1, 0, COLS - 1, '#');
+    for (int c = 0; c < COLS; c++) {
+        level[0][c] = '#';
+        level[ROWS - 1][c] = '#';
+    }
 
     for (int r = 0; r < ROWS; r++) {
         level[r][0] = '#';
         level[r][COLS - 1] = '#';
     }
 
-    setRow(17, 1, COLS - 2, '#');
+    // Screen 1: first steps
+    baseCol = 0 * ROOM_COLS;
+    spk(16, 9, 10);
+    plat(15, 14, 17);
+    plat(13, 19, 22);
+    plat(11, 24, 27);
+    spk(16, 13, 28);
 
-    // SECTION 1
-    platform(15, 5, 8);
-    platform(13, 10, 13);
-    platform(11, 15, 18);
-    platform(13, 21, 24);
-    platform(11, 27, 30);
+    // Screen 2: wall jump shaft
+    baseCol = 1 * ROOM_COLS;
+    spk(16, 5, 6);
+    wall(12, 4, 14);
+    wall(15, 4, 16);
+    plat(4, 15, 25);
+    spk(16, 16, 23);
+    sawAt(2, 20);
 
-    spikes(16, 7, 9);
-    spikes(16, 17, 20);
+    // Screen 3: pillars over spikes with saws
+    baseCol = 2 * ROOM_COLS;
+    spk(16, 2, 29);
+    plat(15, 3, 4);
+    plat(15, 7, 8);
+    plat(15, 11, 12);
+    plat(15, 15, 16);
+    plat(15, 19, 20);
+    plat(15, 23, 24);
+    plat(15, 27, 28);
+    sawAt(14, 9);
+    sawAt(14, 17);
+    sawAt(14, 25);
 
-    saw(12, 25);
+    // Screen 4: the climb
+    baseCol = 3 * ROOM_COLS;
+    spk(16, 4, 27);
+    plat(15, 5, 7);
+    plat(13, 10, 12);
+    plat(11, 15, 17);
+    plat(9, 20, 22);
+    plat(7, 25, 27);
+    sawAt(10, 18);
+    sawAt(8, 23);
 
-    // SECTION 2
-    platform(14, 34, 38);
-    platform(12, 40, 43);
-    platform(10, 45, 49);
-    platform(13, 51, 54);
+    // Screen 5: up and down
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 2, 29);
+    plat(15, 3, 5);
+    plat(13, 8, 10);
+    plat(11, 13, 15);
+    plat(9, 18, 20);
+    plat(11, 23, 25);
+    plat(13, 28, 30);
+    sawAt(8, 21);
 
-    spikes(16, 33, 37);
-    spikes(16, 42, 46);
+    // Screen 6: the tower
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 3, 28);
+    plat(15, 4, 6);
+    plat(13, 9, 11);
+    plat(15, 14, 16);
+    plat(13, 19, 21);
+    plat(11, 24, 29);
+    sawAt(14, 7);
+    sawAt(12, 22);
+    spk(10, 26, 26);
+    put(10, 28, 'G');
 
-    saw(11, 53);
-
-    // SECTION 3
-    platform(14, 57, 61);
-    platform(11, 63, 67);
-    platform(9, 69, 73);
-    platform(12, 75, 79);
-
-    spikes(16, 60, 64);
-    spikes(16, 70, 74);
-
-    saw(10, 78);
-
-    // SECTION 4
-    platform(14, 82, 86);
-    platform(12, 88, 91);
-    platform(10, 93, 97);
-    platform(13, 99, 103);
-
-    spikes(16, 85, 89);
-    spikes(16, 95, 99);
-
-    saw(11, 101);
-
-    // SECTION 5
-    platform(15, 106, 109);
-    platform(12, 111, 115);
-    platform(9, 117, 121);
-    platform(12, 123, 127);
-
-    spikes(16, 108, 112);
-    spikes(16, 119, 123);
-
-    saw(10, 125);
-
-    // SECTION 6
-    platform(14, 130, 134);
-    platform(11, 136, 140);
-    platform(9, 142, 146);
-    platform(12, 148, 152);
-    platform(10, 154, 158);
-
-    spikes(16, 132, 136);
-    spikes(16, 144, 148);
-    spikes(16, 156, 160);
-
-    saw(10, 151);
-    saw(8, 161);
-
-    // Finish area
-    platform(14, 162, 165);
-
-    level[15][165] = 'G';
+    baseCol = 0;
 }
 
 // ---------- Collision ----------
@@ -706,14 +950,13 @@ static void updateParts() {
 }
 
 // ---------- Player ----------
+// Respawns at the start of the current screen (checkpoint)
 static void respawn() {
-    px = (float)(TILE + 8);
+    px = (float)(roomIdx * FRAME_WIDTH + TILE + 8);
     py = (float)((ROWS - 1) * TILE - PH);
 
     vx = 0;
     vy = 0;
-
-    roomIdx = 0;
 
     squashX = 1.0f;
     squashY = 1.0f;
@@ -1003,7 +1246,7 @@ static void update() {
         needWin[1] = true;
     }
 
-    // Room (screen) selection
+    // Screen (room) selection
     int nr = ((int)px + PW / 2) / FRAME_WIDTH;
 
     if (nr < 0) nr = 0;
@@ -1171,8 +1414,7 @@ static bool starDim(int i, int phase) {
     return ((phase + i) % 4) == 0;
 }
 
-// Static background (sky, moon, stars, mountains).
-// Painted without overlap so a full draw is as cheap as possible.
+// Static background (sky, moon, stars, mountains)
 static void paintBackground() {
     Color farC = mk(35, 20, 75);
     Color nearC = mk(25, 14, 55);
@@ -1182,12 +1424,10 @@ static void paintBackground() {
     fillRect(0, 570, FRAME_WIDTH, 130, farC);
     fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-    // Moon
     fillRect(1500, 115, 100, 100, mk(145, 125, 205));
     fillRect(1515, 100, 70, 130, mk(145, 125, 205));
     fillRect(1520, 125, 65, 75, mk(185, 170, 220));
 
-    // Stars
     int phase = tick / 20;
 
     for (int i = 0; i < NUM_STARS; i++) {
@@ -1204,7 +1444,6 @@ static void paintBackground() {
         );
     }
 
-    // Far mountains
     for (int i = 0; i < 3; i++) {
         int x = i * 700;
 
@@ -1213,7 +1452,6 @@ static void paintBackground() {
         fillRect(x + 390, 470, 180, 110, farC);
     }
 
-    // Near mountains
     for (int i = 0; i < 4; i++) {
         int x = i * 560;
 
@@ -1290,7 +1528,12 @@ static int progressNow() {
 static void drawHUDFull(int b) {
     int hudN = deaths < 40 ? deaths : 40;
 
-    drawText(70, 35, "DEATHS", 3, mk(220, 210, 240));
+    if (useAr() && TXT_AR[T_DEATHS] >= 0) {
+        int id = TXT_AR[T_DEATHS];
+        drawArCols(id, 70, 28, 0, arW(id), mk(220, 210, 240));
+    } else {
+        drawText(70, 35, "DEATHS", 3, mk(220, 210, 240));
+    }
 
     for (int i = 0; i < hudN; i++) {
         fillRect(
@@ -1329,10 +1572,10 @@ static void renderGame(int b) {
             fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT,
                      mk(20, 90, 60));
 
-            drawTextC(960, 400, "LEVEL COMPLETE", 10,
+            drawLabel(T_COMPLETE, 960, 370, 110, 10,
                       mk(255, 255, 255));
 
-            drawTextC(960, 540, "GREAT JOB", 6,
+            drawLabel(T_GREAT, 960, 520, 80, 6,
                       mk(255, 220, 180));
 
             needWin[b] = false;
@@ -1342,7 +1585,6 @@ static void renderGame(int b) {
     }
 
     if (needFull[b]) {
-        // Full draw (once per buffer at level start)
         paintBackground();
 
         for (int r = 0; r < ROWS; r++) {
@@ -1378,7 +1620,6 @@ static void renderGame(int b) {
     else {
         bool trans = (bufRoom[b] != roomIdx);
 
-        // Erase what was drawn two frames ago in this buffer
         for (int i = 0; i < dirtyCount[b]; i++) {
             Rect d = dirty[b][i];
 
@@ -1391,7 +1632,6 @@ static void renderGame(int b) {
         dirtyCount[b] = 0;
 
         if (trans) {
-            // Erase blood of the old room
             for (int i = 0; i < splatCount; i++) {
                 if (splatDrawn[b][i]) {
                     Splat &s = splats[i];
@@ -1407,7 +1647,6 @@ static void renderGame(int b) {
                 }
             }
 
-            // Update only the tiles that differ between the rooms
             for (int r = 0; r < ROWS; r++) {
                 for (int c = 0; c < ROOM_COLS; c++) {
                     int wc = roomIdx * ROOM_COLS + c;
@@ -1445,7 +1684,6 @@ static void renderGame(int b) {
             drawRoomSplats(b);
         }
 
-        // New blood stains
         for (int i = 0; i < splatCount; i++) {
             if (!splatDrawn[b][i] &&
                 splats[i].room == bufRoom[b]) {
@@ -1454,7 +1692,6 @@ static void renderGame(int b) {
             }
         }
 
-        // Star twinkle
         int ph = tick / 20;
 
         if (bufStar[b] != ph) {
@@ -1470,7 +1707,6 @@ static void renderGame(int b) {
             bufStar[b] = ph;
         }
 
-        // HUD
         int hudN = deaths < 40 ? deaths : 40;
         int prog = progressNow();
 
@@ -1510,7 +1746,6 @@ static void renderGame(int b) {
 
     int roomX = roomIdx * FRAME_WIDTH;
 
-    // Saws in this room
     for (int r = 0; r < ROWS; r++) {
         for (int c = roomIdx * ROOM_COLS;
              c < roomIdx * ROOM_COLS + ROOM_COLS && c < COLS;
@@ -1525,7 +1760,6 @@ static void renderGame(int b) {
         }
     }
 
-    // Blood and dust particles
     for (int i = 0; i < MAX_PARTS; i++) {
         Part &p = parts[i];
 
@@ -1557,7 +1791,6 @@ static void renderGame(int b) {
         addDirty(b, sx - 1, sy - 1, sz + 2, sz + 2);
     }
 
-    // Player (hidden while dying)
     if (deadTimer == 0) {
         int x = (int)px - roomX;
         int y = (int)py;
@@ -1582,7 +1815,220 @@ static void renderGame(int b) {
     }
 }
 
-// ---------- UI ----------
+// ---------- Cutscene art ----------
+static void drawCubeK(int x, int y, int k) {
+    fillRect(x, y, 88 * k, 88 * k, mk(140, 0, 15));
+    fillRect(x + 6 * k, y + 6 * k, 76 * k, 76 * k, mk(205, 25, 35));
+
+    fillRect(x + 18 * k, y + 24 * k, 20 * k, 28 * k, mk(255, 255, 255));
+    fillRect(x + 50 * k, y + 24 * k, 20 * k, 28 * k, mk(255, 255, 255));
+
+    fillRect(x + 28 * k, y + 32 * k, 10 * k, 16 * k, mk(0, 0, 0));
+    fillRect(x + 60 * k, y + 32 * k, 10 * k, 16 * k, mk(0, 0, 0));
+
+    fillRect(x + 30 * k, y + 64 * k, 28 * k, 8 * k, mk(120, 0, 12));
+}
+
+static void drawBigCube(int x, int y) {
+    drawCubeK(x, y, 1);
+}
+
+static void drawGirlK(int x, int y, int k) {
+    fillRect(x, y, 88 * k, 88 * k, mk(255, 140, 170));
+    fillRect(x, y + 8 * k, 88 * k, 12 * k, mk(240, 230, 200));
+
+    fillRect(x + 18 * k, y + 30 * k, 20 * k, 26 * k, mk(255, 255, 255));
+    fillRect(x + 50 * k, y + 30 * k, 20 * k, 26 * k, mk(255, 255, 255));
+
+    fillRect(x + 26 * k, y + 38 * k, 10 * k, 16 * k, mk(0, 0, 0));
+    fillRect(x + 58 * k, y + 38 * k, 10 * k, 16 * k, mk(0, 0, 0));
+
+    fillRect(x + 34 * k, y + 66 * k, 20 * k, 6 * k, mk(170, 60, 90));
+}
+
+static void drawBigSaw(int cx, int cy, int R) {
+    int R2 = R * R;
+    int inner = (R * 78) / 100;
+    int in2 = inner * inner;
+    int hub = (R / 5) * (R / 5);
+    int t1 = R / 8;
+    int t2 = R / 6;
+
+    for (int dy = -R; dy <= R; dy++) {
+        for (int dx = -R; dx <= R; dx++) {
+            int d2 = dx * dx + dy * dy;
+
+            if (d2 > R2)
+                continue;
+
+            if (d2 < hub) {
+                scene->DrawPixel(cx + dx, cy + dy, mk(50, 50, 55));
+            } else if (d2 <= in2) {
+                scene->DrawPixel(cx + dx, cy + dy, mk(165, 165, 178));
+            } else if (iabs(dx) < t1 || iabs(dy) < t1 ||
+                       iabs(dx - dy) < t2 || iabs(dx + dy) < t2) {
+                scene->DrawPixel(cx + dx, cy + dy, mk(215, 215, 225));
+            }
+        }
+    }
+}
+
+static void drawStoryArt(int art) {
+    int ax = 460, ay = 90, aw = 1000, ah = 500;
+
+    if (art == 0) {
+        fillRect(ax, ay, aw, ah, mk(20, 25, 60));
+        fillRect(ax + 780, ay + 60, 80, 80, mk(230, 225, 190));
+        fillRect(ax, ay + 380, aw, 120, mk(25, 70, 45));
+
+        for (int i = 0; i < 4; i++) {
+            int x = ax + 60 + i * 240;
+            fillRect(x + 30, ay + 300, 24, 90, mk(70, 45, 30));
+            fillRect(x, ay + 210, 84, 100, mk(15, 55, 35));
+        }
+
+        drawBigCube(ax + 300, ay + 292);
+        drawGirlK(ax + 560, ay + 292, 1);
+    }
+
+    else if (art == 1) {
+        fillRect(ax, ay, aw, ah, mk(45, 10, 25));
+        fillRect(ax, ay + 420, aw, 80, mk(30, 12, 22));
+
+        drawBigSaw(ax + 500, ay + 230, 150);
+        drawBigCube(ax + 120, ay + 332);
+        drawGirlK(ax + 800, ay + 100, 1);
+    }
+
+    else if (art == 2) {
+        fillRect(ax, ay, aw, ah, mk(35, 15, 55));
+        fillRect(ax, ay + 420, aw, 80, mk(25, 12, 40));
+
+        drawCubeK(ax + 368, ay + 150, 3);
+        fillRect(ax + 368 + 42, ay + 150 + 40, 84, 14, mk(60, 0, 10));
+        fillRect(ax + 368 + 150, ay + 150 + 40, 84, 14, mk(60, 0, 10));
+    }
+
+    else {
+        fillRect(ax, ay, aw, ah, mk(20, 18, 40));
+        fillRect(ax, ay + 420, aw, 80, mk(25, 25, 35));
+
+        fillRect(ax + 400, ay + 40, 200, 400, mk(55, 45, 80));
+        fillRect(ax + 470, ay + 90, 60, 60, mk(240, 200, 90));
+        fillRect(ax + 470, ay + 190, 60, 60, mk(240, 200, 90));
+        fillRect(ax + 440, ay + 330, 120, 110, mk(30, 25, 50));
+
+        drawBigCube(ax + 160, ay + 332);
+
+        fillRect(ax + 720, ay + 340, 70, 90, mk(235, 230, 215));
+        fillRect(ax + 732, ay + 360, 46, 6, mk(120, 110, 100));
+        fillRect(ax + 732, ay + 378, 46, 6, mk(120, 110, 100));
+        fillRect(ax + 732, ay + 396, 30, 6, mk(120, 110, 100));
+    }
+}
+
+// ---------- Cutscenes ----------
+static int storyTotal() {
+    const Page &p = PAGES[storyPage];
+    int total = 0;
+
+    if (useAr()) {
+        int cols = 0;
+
+        for (int i = 0; i < p.n; i++)
+            if (p.ar[i] >= 0)
+                cols += arW(p.ar[i]);
+
+        total = cols / 14 + 1;
+    } else {
+        int ch = 0;
+
+        for (int i = 0; i < p.n; i++)
+            ch += (int)strlen(p.en[i]);
+
+        total = ch * 2;
+    }
+
+    return total;
+}
+
+static void storyDrawText(int fromT, int toT) {
+    const Page &p = PAGES[storyPage];
+    bool ar = useAr();
+
+    int f = ar ? fromT * 14 : fromT / 2;
+    int t = ar ? toT * 14 : toT / 2;
+    int before = 0;
+
+    for (int i = 0; i < p.n; i++) {
+        int y = 660 + i * 80;
+
+        if (ar) {
+            int id = p.ar[i];
+
+            if (id < 0)
+                continue;
+
+            int w = arW(id);
+            int h = arH(id);
+
+            int a = iclamp(f - before, 0, w);
+            int b2 = iclamp(t - before, 0, w);
+
+            if (b2 > a) {
+                drawArCols(id, 960 - w / 2, y + (70 - h) / 2,
+                           w - b2, w - a, mk(255, 255, 255));
+            }
+
+            before += w;
+        } else {
+            const char *s = p.en[i];
+            int len = (int)strlen(s);
+
+            int a = iclamp(f - before, 0, len);
+            int b2 = iclamp(t - before, 0, len);
+
+            int x0 = 960 - textWidth(s, 4) / 2;
+
+            for (int k = a; k < b2; k++) {
+                char tmp[2] = { s[k], 0 };
+
+                drawText(x0 + k * 24, y + 21, tmp, 4,
+                         mk(255, 255, 255));
+            }
+
+            before += len;
+        }
+    }
+}
+
+static void renderStory(int b) {
+    resetClip();
+
+    if (!storyBgDone[b]) {
+        fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT, mk(12, 8, 24));
+        storyBgDone[b] = true;
+        storyDrawnPage[b] = -1;
+    }
+
+    if (storyDrawnPage[b] != storyPage) {
+        drawStoryArt(PAGES[storyPage].art);
+
+        fillRect(460, 630, 1000, 300, mk(30, 22, 48));
+
+        fillRect(460, 950, 1000, 60, mk(12, 8, 24));
+        drawLabel(T_H_STORY, 960, 950, 60, 3, mk(200, 190, 220));
+
+        storyDrawnPage[b] = storyPage;
+        storyShown[b] = 0;
+    }
+
+    if (typed > storyShown[b]) {
+        storyDrawText(storyShown[b], typed);
+        storyShown[b] = typed;
+    }
+}
+
 static void markPend(int i) {
     if (i < 0 || i >= 64)
         return;
@@ -1600,6 +2046,8 @@ static void setState(int s) {
 
 static void startLevel() {
     buildLevel();
+
+    roomIdx = 0;
     respawn();
 
     deaths = 0;
@@ -1623,36 +2071,37 @@ static void startLevel() {
     state = S_PLAY;
 }
 
+static void startStory(int id) {
+    storyId = id;
+    storyPage = STORY_FIRST[id];
+    typed = 0;
+
+    storyBgDone[0] = false;
+    storyBgDone[1] = false;
+
+    state = S_STORY;
+}
+
+static void endStory() {
+    if (storyId == 0)
+        startLevel();
+    else
+        setState(S_LEVELS);
+}
+
+// ---------- Menus ----------
+static const int MENU_T[4] = { T_LEVELS, T_SETTINGS, T_CREDITS, T_EXIT };
+
 static int itemCount() {
     if (state == S_MENU) return 4;
     if (state == S_LEVELS) return NUM_LEVELS + 1;
-    if (state == S_SETTINGS) return 2;
+    if (state == S_SETTINGS) return 3;
 
     return 0;
 }
 
-static void drawBigCube(int x, int y) {
-    fillRect(x, y, 88, 88, mk(140,0,15));
-    fillRect(x + 6, y + 6, 76, 76, mk(205,25,35));
-
-    fillRect(x + 18, y + 24, 20, 28,
-             mk(255,255,255));
-
-    fillRect(x + 50, y + 24, 20, 28,
-             mk(255,255,255));
-
-    fillRect(x + 28, y + 32, 10, 16,
-             mk(0,0,0));
-
-    fillRect(x + 60, y + 32, 10, 16,
-             mk(0,0,0));
-
-    fillRect(x + 30, y + 64, 28, 8,
-             mk(120,0,12));
-}
-
 static void drawBanner(
-    const char *title,
+    int tid,
     int scale,
     int y,
     int h,
@@ -1661,13 +2110,7 @@ static void drawBanner(
     fillRect(460, y, 1000, h,
              mk(35,25,55));
 
-    drawTextC(
-        960,
-        y + (h - 7 * scale) / 2,
-        title,
-        scale,
-        mk(225,40,100)
-    );
+    drawLabel(tid, 960, y, h, scale, mk(225,40,100));
 
     if (cubes) {
         drawBigCube(500, y + (h - 88) / 2);
@@ -1675,14 +2118,13 @@ static void drawBanner(
     }
 }
 
-static void drawHint(const char *s) {
-    int w = textWidth(s, 3) + 80;
+static void drawHint(int tid) {
+    int w = labelWidth(tid, 3) + 80;
 
     fillRect(960 - w / 2, 980, w, 60,
              mk(35,25,55));
 
-    drawTextC(960, 999, s, 3,
-              mk(200,190,220));
+    drawLabel(tid, 960, 980, 60, 3, mk(200,190,220));
 }
 
 static void drawLock(int cx, int cy) {
@@ -1699,50 +2141,38 @@ static void drawLock(int cx, int cy) {
 
 static void drawStatic() {
     if (state == S_MENU) {
-        drawBanner("MEAT CUBE", 12, 140, 150, true);
-        drawHint("X: SELECT");
+        drawBanner(T_TITLE, 12, 140, 150, true);
+        drawHint(T_H_SELECT);
     }
 
     else if (state == S_LEVELS) {
-        drawBanner("LEVELS", 8, 130, 110, false);
-        drawHint("X: PLAY   O: BACK");
+        drawBanner(T_B_LEVELS, 8, 130, 110, false);
+        drawHint(T_H_LEVELS);
     }
 
     else if (state == S_SETTINGS) {
-        drawBanner("SETTINGS", 8, 130, 110, false);
+        drawBanner(T_B_SETTINGS, 8, 130, 110, false);
 
-        fillRect(610, 700, 700, 60,
+        fillRect(610, 740, 700, 60,
                  mk(35,25,55));
 
-        drawTextC(
-            960, 719,
-            "LEFT RIGHT OR X: CHANGE",
-            3,
-            mk(200,190,220)
-        );
+        drawLabel(T_TIP, 960, 740, 60, 3, mk(200,190,220));
 
-        drawHint("O: BACK");
+        drawHint(T_H_BACK);
     }
 
     else if (state == S_CREDITS) {
-        drawBanner("CREDITS", 8, 130, 110, false);
+        drawBanner(T_B_CREDITS, 8, 130, 110, false);
 
         fillRect(460, 300, 1000, 540,
                  mk(35,25,55));
 
-        drawTextC(960, 350, "GAME DESIGNERS",
-                  5, mk(200,190,220));
+        drawLabel(T_DESIGNERS, 960, 340, 60, 5, mk(200,190,220));
+        drawLabel(T_KAREEM, 960, 450, 110, 10, mk(225,40,100));
+        drawLabel(T_CLAUDE, 960, 580, 110, 10, mk(225,40,100));
+        drawLabel(T_GAME, 960, 740, 60, 4, mk(140,140,155));
 
-        drawTextC(960, 470, "KAREEM",
-                  10, mk(225,40,100));
-
-        drawTextC(960, 600, "CLAUDE",
-                  10, mk(225,40,100));
-
-        drawTextC(960, 760, "MEAT CUBE",
-                  4, mk(140,140,155));
-
-        drawHint("O: BACK");
+        drawHint(T_H_BACK);
     }
 }
 
@@ -1750,13 +2180,6 @@ static void drawItem(int i) {
     if (state == S_MENU) {
         if (i < 0 || i > 3)
             return;
-
-        const char *labels[4] = {
-            "LEVELS",
-            "SETTINGS",
-            "CREDITS",
-            "EXIT"
-        };
 
         int x = 610;
         int y = 420 + i * 120;
@@ -1768,10 +2191,8 @@ static void drawItem(int i) {
             sel ? mk(205,25,35) : mk(45,35,62)
         );
 
-        drawTextC(
-            960, y + 24,
-            labels[i],
-            6,
+        drawLabel(
+            MENU_T[i], 960, y, 90, 6,
             sel ? mk(255,255,255) : mk(200,190,215)
         );
     }
@@ -1823,33 +2244,32 @@ static void drawItem(int i) {
             fillRect(610, 880, 700, 60,
                      mk(35,25,55));
 
-            char buf[64];
-            char n[4];
+            bool ok = (levelSel < unlockedLevels);
+            Color c = ok ? mk(120,230,140) : mk(255,170,60);
 
-            strcpy(buf, "LEVEL ");
-            intToStr(levelSel + 1, n);
-            strcat(buf, n);
-
-            Color c;
-
-            if (levelSel < unlockedLevels) {
-                strcat(buf, ": PRESS X TO PLAY");
-                c = mk(120,230,140);
+            if (useAr()) {
+                drawLabel(ok ? T_PLAYX : T_LOCKED,
+                          960, 880, 60, 4, c);
             } else {
-                strcat(buf, ": LOCKED");
-                c = mk(255,170,60);
-            }
+                char buf[64];
+                char n[4];
 
-            drawTextC(960, 896, buf, 4, c);
+                strcpy(buf, "LEVEL ");
+                intToStr(levelSel + 1, n);
+                strcat(buf, n);
+                strcat(buf, ok ? ": PRESS X TO PLAY" : ": LOCKED");
+
+                drawTextC(960, 896, buf, 4, c);
+            }
         }
     }
 
     else if (state == S_SETTINGS) {
-        if (i < 0 || i > 1)
+        if (i < 0 || i > 2)
             return;
 
         int x = 510;
-        int y = 420 + i * 120;
+        int y = 380 + i * 110;
 
         bool sel = (i == settingsSel);
 
@@ -1858,22 +2278,18 @@ static void drawItem(int i) {
             sel ? mk(205,25,35) : mk(45,35,62)
         );
 
-        const char *label;
+        int tid;
 
-        if (i == 0) {
-            label = controlMode == 1 ?
-                "CONTROLS: ANALOG" :
-                "CONTROLS: ARROWS";
-        } else {
-            label = "BACK";
-        }
+        if (i == 0)
+            tid = controlMode == 1 ? T_CTRL_A : T_CTRL_B;
+        else if (i == 1)
+            tid = T_LANG;
+        else
+            tid = T_BACK;
 
-        drawTextC(
-            960, y + 24,
-            label,
-            6,
-            sel ? mk(255,255,255) :
-                  mk(200,190,215)
+        drawLabel(
+            tid, 960, y, 90, 6,
+            sel ? mk(255,255,255) : mk(200,190,215)
         );
     }
 }
@@ -1926,22 +2342,30 @@ static void updateUI() {
         if (menuSel != old) {
             markPend(old);
             markPend(menuSel);
+            snd(0);
         }
 
         if (ok) {
-            if (menuSel == 0)
+            if (menuSel == 0) {
+                snd(1);
                 setState(S_LEVELS);
+            }
 
             else if (menuSel == 1) {
+                snd(1);
                 settingsSel = 0;
                 setState(S_SETTINGS);
             }
 
-            else if (menuSel == 2)
+            else if (menuSel == 2) {
+                snd(1);
                 setState(S_CREDITS);
+            }
 
-            else
+            else {
+                snd(2);
                 exit(0);
+            }
         }
     }
 
@@ -1964,44 +2388,78 @@ static void updateUI() {
             markPend(old);
             markPend(n);
             markPend(NUM_LEVELS);
+            snd(0);
         }
 
-        if (ok && levelSel < unlockedLevels)
-            startLevel();
+        if (ok && levelSel < unlockedLevels) {
+            snd(1);
 
-        else if (back)
+            if (!introSeen) {
+                introSeen = true;
+                startStory(0);
+            } else {
+                startLevel();
+            }
+        }
+
+        else if (ok) {
+            snd(3);
+        }
+
+        else if (back) {
+            snd(2);
             setState(S_MENU);
+        }
     }
 
     else if (state == S_SETTINGS) {
         int old = settingsSel;
 
-        if (nu || nd)
-            settingsSel = 1 - settingsSel;
+        if (nu) settingsSel = (settingsSel + 2) % 3;
+        if (nd) settingsSel = (settingsSel + 1) % 3;
 
         if (settingsSel != old) {
             markPend(old);
             markPend(settingsSel);
+            snd(0);
         }
 
         if (settingsSel == 0) {
             if (nl || nr || ok) {
                 controlMode = 1 - controlMode;
                 markPend(0);
+                snd(0);
+            }
+        }
+
+        else if (settingsSel == 1) {
+            if (nl || nr || ok) {
+                if (ARABIC_OK) {
+                    lang = 1 - lang;
+                    snd(1);
+                    setState(S_SETTINGS);
+                } else {
+                    snd(3);
+                }
             }
         }
 
         else if (ok) {
+            snd(2);
             setState(S_MENU);
         }
 
-        if (back)
+        if (back) {
+            snd(2);
             setState(S_MENU);
+        }
     }
 
     else if (state == S_CREDITS) {
-        if (ok || back)
+        if (ok || back) {
+            snd(2);
             setState(S_MENU);
+        }
     }
 }
 
@@ -2031,7 +2489,10 @@ int main(void) {
         for (;;);
     }
 
+    initAudio();
+
     buildLevel();
+    roomIdx = 0;
     respawn();
 
     setState(S_MENU);
@@ -2050,12 +2511,35 @@ int main(void) {
                 winTimer--;
 
                 if (winTimer == 0)
-                    setState(S_LEVELS);
+                    startStory(1);
             }
 
             else {
                 update();
             }
+        }
+
+        else if (state == S_STORY) {
+            int total = storyTotal();
+
+            if (typed < total)
+                typed++;
+
+            if (in.crossNew) {
+                if (typed < total) {
+                    typed = total;
+                } else {
+                    snd(0);
+                    storyPage++;
+                    typed = 0;
+
+                    if (storyPage >= STORY_LAST[storyId])
+                        endStory();
+                }
+            }
+
+            if (state == S_STORY && in.optionsNew)
+                endStory();
         }
 
         else {
@@ -2064,6 +2548,8 @@ int main(void) {
 
         if (state == S_PLAY)
             renderGame(b);
+        else if (state == S_STORY)
+            renderStory(b);
         else
             drawUI(b);
 
