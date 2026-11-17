@@ -8,6 +8,11 @@ except Exception:
 
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
+try:
+    LAYOUT_BASIC = ImageFont.Layout.BASIC
+except Exception:
+    LAYOUT_BASIC = ImageFont.LAYOUT_BASIC
+
 ITEMS = [
     ("TITLE", "مكعب اللحم", 100),
     ("B_LEVELS", "المراحل", 70),
@@ -41,16 +46,43 @@ ITEMS = [
     ("P1L1", "وأخذت مناشيره بنت الضمادة بعيداً", 50),
     ("P2L0", "استيقظ مكعب اللحم غاضباً", 50),
     ("P2L1", "سأعيدك مهما كان!", 50),
-    ("P3L0", "وصل مكعب اللحم إلى البرج", 50),
-    ("P3L1", "لكنها لم تكن هناك", 50),
-    ("P3L2", "وجد ورقة: اتبع المناشير", 50),
-    ("P4L0", "يتبع...", 50),
+    ("P3L0", "آثار المناشير تتجه شرقاً", 50),
+    ("P3L1", "نحو الوادي الصخري", 50),
+    ("P4L0", "ينتهي الوادي عند وادٍ أخضر", 50),
+    ("P4L1", "وتقف أطلال حجرية بين الأعشاب", 50),
+    ("P5L0", "تغوص الآثار تحت التل", 50),
+    ("P5L1", "داخل كهف بلوري مظلم", 50),
+    ("P6L0", "ينفتح الكهف على المصنع", 50),
+    ("P6L1", "والجدران مبللة بالدماء", 50),
+    ("P7L0", "يرتفع البرج أمامه", 50),
+    ("P7L1", "وبنت الضمادة بالداخل بلا شك", 50),
+    ("P8L0", "وجد في القمة ورقة فقط", 50),
+    ("P8L1", "إنها في مكان آخر", 50),
+    ("P8L2", "يتبع...", 50),
+    ("TIP_RUN0", "اضغط زر المربع للركض", 40),
+    ("TIP_RUN1", "اركض ثم اقفز لتعبر الفجوات الكبيرة", 40),
+    ("TIP_RUN2", "واصل الركض. الفجوات تصبح أعلى", 40),
+    ("TIP_GRASS", "العشب يتحرك عندما تمشي عليه", 40),
+    ("TIP_WALL", "ادفع نحو الجدار ثم اقفز لتتسلق", 40),
+    ("TIP_WALL2", "واصل التسلق. أنت قادر على ذلك", 40),
+    ("TIP_SAW", "لا تقفز تحت المناشير. فقط امشِ", 40),
+    ("TIP_HOP", "المس زر X لقفزة قصيرة", 40),
+    ("TIP_MIX", "استخدم كل ما تعلمته", 40),
+    ("TIP_FINAL", "البرج. لا مزيد من النصائح", 40),
 ]
 
 
+def visual(text):
+    shaped = arabic_reshaper.reshape(text)
+    try:
+        return get_display(shaped, base_dir="R")
+    except TypeError:
+        return get_display(shaped)
+
+
 def render(text, size):
-    shaped = get_display(arabic_reshaper.reshape(text))
-    font = ImageFont.truetype(FONT, size)
+    shaped = visual(text)
+    font = ImageFont.truetype(FONT, size, layout_engine=LAYOUT_BASIC)
     probe = ImageDraw.Draw(Image.new("L", (8, 8), 0))
     l, t, r, b = probe.textbbox((0, 0), shaped, font=font)
     w, h = r - l + 4, b - t + 4
