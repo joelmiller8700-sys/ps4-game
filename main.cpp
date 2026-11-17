@@ -44,7 +44,9 @@
 #define NUM_STARS 75
 #define MAX_SPLATS 200
 #define MAX_PARTS 80
-#define MAX_DIRTY 112
+#define MAX_PLANTS 260
+#define MAX_AMB 16
+#define MAX_DIRTY 256
 
 std::stringstream debugLogStream;
 
@@ -62,6 +64,8 @@ static int audioHandle = -1;
 // ---------- Game state ----------
 static float px, py, vx, vy;
 static int roomIdx = 0;
+static int currentLevel = 0;
+static int currentBiome = 0;
 
 static float squashX = 1.0f;
 static float squashY = 1.0f;
@@ -94,6 +98,28 @@ struct Part {
 };
 
 static Part parts[MAX_PARTS];
+
+// Interactive world plants (grass, wheat, desert scrub, snow reeds, lava ferns)
+struct Plant {
+    short room;
+    short x, y;
+    float angle;
+    float vel;
+    unsigned char height;
+    unsigned char style;
+    unsigned char seed;
+};
+
+static Plant plants[MAX_PLANTS];
+static int plantCount = 0;
+
+// Ambient living world particles (leaves, pollen, sand, snow, embers)
+struct AmbPart {
+    float x, y, vx, vy;
+    unsigned char sz, seed;
+};
+
+static AmbPart ambParts[MAX_AMB];
 
 struct Rect {
     int x, y, w, h;
@@ -144,7 +170,7 @@ static int settingsSel = 0;
 
 static int controlMode = 1;
 static int lang = 0;            // 0 = English, 1 = Arabic
-static int unlockedLevels = 1;
+static int unlockedLevels = 6;  // First 6 levels unlocked (5 new biome tutorials + original tower)
 static bool introSeen = false;
 
 static bool uiFull[2] = {true, true};
@@ -154,6 +180,7 @@ static bool pend[2][64];
 static int storyId = 0;
 static int storyPage = 0;
 static int typed = 0;
+static int storyAnimTick = 0;
 static bool storyBgDone[2] = {false, false};
 static int storyDrawnPage[2] = {-1, -1};
 static int storyShown[2] = {0, 0};
@@ -213,7 +240,7 @@ struct Page {
     int ar[3];
 };
 
-static const Page PAGES[5] = {
+static const Page PAGES[10] = {
     {0, 2, {"MEAT CUBE AND BANDAGE GIRL", "LIVED IN THE OLD FOREST.", ""},
      {AR(P0L0), AR(P0L1), -1}},
     {1, 2, {"ONE NIGHT THE GRINDER CAME.", "HIS SAWS TOOK HER AWAY.", ""},
@@ -224,11 +251,33 @@ static const Page PAGES[5] = {
             "ONLY A NOTE: FOLLOW THE SAWS."},
      {AR(P3L0), AR(P3L1), AR(P3L2)}},
     {1, 1, {"TO BE CONTINUED.", "", ""},
-     {AR(P4L0), -1, -1}}
+     {AR(P4L0), -1, -1}},
+
+    // 5 Animated Gameplay Tutorial Cutscenes (Pages 5..9)
+    {10, 3, {"STAGE 1: GREEN FOREST - JUMPING",
+             "TAP X FOR SHORT JUMP, HOLD X FOR HIGH JUMP.",
+             "MOVE THROUGH THE LIVING GRASS AND CLEAR SPIKES!"},
+     {AR(T1L0), AR(T1L1), AR(T1L2)}},
+    {11, 3, {"STAGE 2: COUNTRYSIDE - SPRINTING",
+             "HOLD SQUARE TO SPRINT AT MAXIMUM SPEED.",
+             "SPRINT AND PRESS X TO LEAP ACROSS WIDE GAPS!"},
+     {AR(T2L0), AR(T2L1), AR(T2L2)}},
+    {12, 3, {"STAGE 3: GOLDEN DESERT - WALL JUMP",
+             "PUSH AGAINST A WALL TO SLIDE DOWN SLOWLY.",
+             "PRESS X WHILE SLIDING TO JUMP BETWEEN WALLS!"},
+     {AR(T3L0), AR(T3L1), AR(T3L2)}},
+    {13, 3, {"STAGE 4: SNOWY PEAKS - SAW TIMING",
+             "WATCH THE SPINNING SAWS AND TIME YOUR JUMPS.",
+             "JUMP AT THE VERY EDGE OF LEDGES TO CROSS FAR!"},
+     {AR(T4L0), AR(T4L1), AR(T4L2)}},
+    {14, 3, {"STAGE 5: LAVA VALLEY - MASTER COMBO",
+             "COMBINE SPRINTING WITH WALL JUMPS AND TIMING.",
+             "OVERCOME EVERY HAZARD TO REACH THE TOWER!"},
+     {AR(T5L0), AR(T5L1), AR(T5L2)}}
 };
 
-static const int STORY_FIRST[2] = {0, 3};
-static const int STORY_LAST[2] = {3, 5};
+static const int STORY_FIRST[7] = {0, 3, 5, 6, 7, 8, 9};
+static const int STORY_LAST[7]  = {3, 5, 6, 7, 8, 9, 10};
 
 // ---------- Input ----------
 struct Input {
@@ -685,7 +734,88 @@ static void sawAt(int row, int col) {
     put(row, col, 'O');
 }
 
-static void buildLevel() {
+static void initAmbientParticles() {
+    for (int i = 0; i < MAX_AMB; i++) {
+        AmbPart &a = ambParts[i];
+        a.x = (float)((i * 173 + 47) % FRAME_WIDTH);
+        a.y = (float)((i * 113 + 80) % (FRAME_HEIGHT - 160));
+        a.seed = (unsigned char)i;
+
+        if (currentBiome == 0) {
+            a.vx = 0.6f + (i % 3) * 0.25f;
+            a.vy = 0.8f + (i % 2) * 0.35f;
+            a.sz = 6;
+        } else if (currentBiome == 1) {
+            a.vx = 0.9f + (i % 3) * 0.3f;
+            a.vy = 0.3f + (i % 2) * 0.2f;
+            a.sz = 5;
+        } else if (currentBiome == 2) {
+            a.vx = 3.2f + (i % 4) * 0.6f;
+            a.vy = 0.4f;
+            a.sz = 4;
+        } else if (currentBiome == 3) {
+            a.vx = -0.5f + (i % 3) * 0.4f;
+            a.vy = 1.4f + (i % 3) * 0.4f;
+            a.sz = 5;
+        } else if (currentBiome == 4) {
+            a.vx = -0.3f + (i % 3) * 0.3f;
+            a.vy = -1.3f - (i % 3) * 0.4f;
+            a.sz = 5;
+        } else {
+            a.vx = 0.3f;
+            a.vy = -0.4f;
+            a.sz = 4;
+        }
+    }
+}
+
+static void populateLevelPlants() {
+    plantCount = 0;
+
+    for (int r = 2; r < ROWS; r++) {
+        for (int c = 1; c < COLS - 1; c++) {
+            if (level[r][c] != '#')
+                continue;
+            if (level[r - 1][c] != '.')
+                continue;
+
+            // Avoid placing plants right next to saws or goal
+            bool nearSaw = false;
+            for (int dr = -2; dr <= 0; dr++) {
+                for (int dc = -1; dc <= 1; dc++) {
+                    int nr = r + dr;
+                    int nc = c + dc;
+                    if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+                        if (level[nr][nc] == 'O' || level[nr][nc] == 'G')
+                            nearSaw = true;
+                    }
+                }
+            }
+            if (nearSaw)
+                continue;
+
+            // Place natural clusters of interactive plants on platforms and ground
+            if (((c * 7 + r * 13) % 3) != 0) {
+                if (plantCount < MAX_PLANTS) {
+                    int rm = c / ROOM_COLS;
+                    int lc = c % ROOM_COLS;
+
+                    Plant &p = plants[plantCount++];
+                    p.room = (short)rm;
+                    p.x = (short)(lc * TILE + 18 + ((c * 11 + r * 5) % 24));
+                    p.y = (short)(r * TILE);
+                    p.angle = 0.0f;
+                    p.vel = 0.0f;
+                    p.height = (unsigned char)(16 + ((c * 3 + r * 7) % 10));
+                    p.style = (unsigned char)((c + r) % 3);
+                    p.seed = (unsigned char)((c * 5 + r * 9) & 15);
+                }
+            }
+        }
+    }
+}
+
+static void clearLevelGrid() {
     for (int r = 0; r < ROWS; r++) {
         for (int c = 0; c < COLS; c++)
             level[r][c] = '.';
@@ -702,7 +832,10 @@ static void buildLevel() {
         level[r][0] = '#';
         level[r][COLS - 1] = '#';
     }
+}
 
+// Original classic level (preserved 100% as Level 6)
+static void buildClassicLevel() {
     // Screen 1: first steps
     baseCol = 0 * ROOM_COLS;
     spk(16, 9, 10);
@@ -770,6 +903,276 @@ static void buildLevel() {
     put(10, 28, 'G');
 
     baseCol = 0;
+}
+
+// Level 1: Green Forest (Tutorial: Short Jump vs High Jump)
+static void buildForestLevel() {
+    baseCol = 0 * ROOM_COLS;
+    plat(15, 6, 9);
+    spk(16, 12, 12);
+    plat(14, 15, 18);
+    spk(16, 21, 22);
+    plat(15, 24, 28);
+
+    baseCol = 1 * ROOM_COLS;
+    plat(15, 5, 9);
+    plat(13, 12, 16);
+    plat(11, 19, 23);
+    plat(14, 25, 29);
+    spk(16, 10, 24);
+
+    baseCol = 2 * ROOM_COLS;
+    plat(12, 8, 18);
+    spk(16, 10, 10);
+    spk(16, 15, 15);
+    plat(14, 21, 24);
+    plat(12, 26, 29);
+    spk(16, 21, 28);
+
+    baseCol = 3 * ROOM_COLS;
+    spk(16, 5, 27);
+    plat(15, 4, 8);
+    plat(13, 10, 14);
+    plat(11, 16, 20);
+    plat(13, 22, 26);
+    plat(15, 27, 30);
+
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 5, 27);
+    plat(15, 4, 7);
+    plat(14, 9, 12);
+    plat(12, 14, 17);
+    plat(14, 19, 22);
+    plat(15, 24, 28);
+
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 6, 27);
+    plat(15, 5, 9);
+    plat(13, 11, 15);
+    plat(11, 17, 21);
+    plat(10, 23, 29);
+    put(9, 27, 'G');
+
+    baseCol = 0;
+}
+
+// Level 2: Golden Countryside (Tutorial: Sprinting with Square + Long Jumps)
+static void buildCountryLevel() {
+    baseCol = 0 * ROOM_COLS;
+    spk(16, 11, 14);
+    spk(16, 22, 25);
+
+    baseCol = 1 * ROOM_COLS;
+    plat(15, 4, 10);
+    plat(15, 15, 21);
+    plat(14, 25, 29);
+    spk(16, 8, 28);
+
+    baseCol = 2 * ROOM_COLS;
+    plat(15, 4, 8);
+    plat(13, 10, 15);
+    plat(14, 20, 27);
+    spk(16, 8, 26);
+
+    baseCol = 3 * ROOM_COLS;
+    spk(16, 5, 28);
+    plat(15, 4, 9);
+    plat(13, 14, 19);
+    plat(11, 24, 29);
+
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 5, 28);
+    plat(15, 4, 8);
+    plat(14, 13, 17);
+    plat(14, 22, 28);
+
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 5, 28);
+    plat(15, 4, 9);
+    plat(13, 14, 19);
+    plat(11, 24, 29);
+    put(10, 27, 'G');
+
+    baseCol = 0;
+}
+
+// Level 3: Sandy Desert (Tutorial: Wall Slide & Wall Jump)
+static void buildDesertLevel() {
+    baseCol = 0 * ROOM_COLS;
+    wall(12, 11, 16);
+    plat(11, 12, 21);
+    spk(16, 13, 21);
+    plat(14, 24, 28);
+
+    baseCol = 1 * ROOM_COLS;
+    wall(10, 6, 14);
+    wall(13, 6, 16);
+    plat(6, 13, 23);
+    spk(16, 14, 23);
+    plat(13, 25, 29);
+
+    baseCol = 2 * ROOM_COLS;
+    plat(14, 4, 7);
+    plat(11, 9, 13);
+    wall(17, 7, 14);
+    plat(15, 17, 22);
+    plat(13, 24, 28);
+    spk(16, 8, 27);
+
+    baseCol = 3 * ROOM_COLS;
+    wall(9, 8, 14);
+    wall(12, 6, 16);
+    plat(6, 12, 18);
+    plat(12, 21, 27);
+    spk(16, 10, 26);
+
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 5, 27);
+    plat(15, 4, 7);
+    wall(10, 9, 15);
+    wall(13, 8, 15);
+    plat(9, 15, 19);
+    plat(13, 22, 28);
+
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 6, 28);
+    plat(15, 4, 7);
+    wall(10, 7, 14);
+    wall(13, 6, 16);
+    plat(6, 13, 19);
+    plat(9, 22, 29);
+    put(8, 27, 'G');
+
+    baseCol = 0;
+}
+
+// Level 4: Snowy Peaks (Tutorial: Spinning Saws & Ledge Timing)
+static void buildSnowLevel() {
+    baseCol = 0 * ROOM_COLS;
+    plat(13, 10, 16);
+    sawAt(16, 13);
+    plat(13, 20, 26);
+    sawAt(16, 23);
+
+    baseCol = 1 * ROOM_COLS;
+    spk(16, 5, 27);
+    plat(15, 4, 9);
+    sawAt(14, 11);
+    plat(15, 13, 18);
+    sawAt(14, 20);
+    plat(15, 22, 28);
+
+    baseCol = 2 * ROOM_COLS;
+    spk(16, 5, 27);
+    plat(15, 4, 9);
+    plat(12, 11, 19);
+    sawAt(11, 15);
+    plat(14, 21, 28);
+
+    baseCol = 3 * ROOM_COLS;
+    spk(16, 5, 27);
+    plat(15, 4, 8);
+    plat(13, 10, 14);
+    sawAt(12, 16);
+    plat(11, 18, 22);
+    plat(13, 24, 28);
+
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 4, 28);
+    plat(15, 4, 7);
+    plat(14, 9, 12);
+    sawAt(13, 14);
+    plat(14, 16, 19);
+    sawAt(13, 21);
+    plat(15, 23, 28);
+
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 5, 28);
+    plat(15, 4, 8);
+    plat(13, 10, 14);
+    sawAt(12, 16);
+    plat(11, 18, 22);
+    plat(10, 24, 29);
+    put(9, 27, 'G');
+
+    baseCol = 0;
+}
+
+// Level 5: Lava Valley (Tutorial: Combining Sprinting, Wall Jumps, and Saws)
+static void buildLavaLevel() {
+    baseCol = 0 * ROOM_COLS;
+    spk(16, 5, 27);
+    plat(15, 4, 9);
+    sawAt(14, 12);
+    plat(15, 15, 20);
+    plat(13, 23, 28);
+
+    baseCol = 1 * ROOM_COLS;
+    wall(10, 5, 14);
+    wall(13, 5, 16);
+    plat(5, 13, 25);
+    sawAt(4, 19);
+    spk(16, 14, 25);
+    plat(13, 26, 29);
+
+    baseCol = 2 * ROOM_COLS;
+    spk(16, 4, 28);
+    plat(15, 4, 8);
+    plat(13, 11, 15);
+    sawAt(12, 17);
+    plat(13, 19, 23);
+    plat(14, 25, 29);
+
+    baseCol = 3 * ROOM_COLS;
+    spk(16, 4, 28);
+    plat(15, 4, 8);
+    wall(11, 8, 14);
+    plat(12, 14, 18);
+    wall(21, 7, 13);
+    plat(11, 24, 29);
+
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 4, 28);
+    plat(15, 4, 7);
+    plat(13, 9, 13);
+    sawAt(12, 15);
+    plat(11, 17, 21);
+    sawAt(10, 23);
+    plat(13, 25, 29);
+
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 4, 28);
+    plat(15, 4, 8);
+    plat(13, 10, 13);
+    wall(16, 8, 13);
+    plat(9, 19, 23);
+    plat(11, 25, 29);
+    put(10, 28, 'G');
+
+    baseCol = 0;
+}
+
+static void buildLevel() {
+    clearLevelGrid();
+
+    int kind = currentLevel % 6;
+    currentBiome = kind;
+
+    if (kind == 0)
+        buildForestLevel();
+    else if (kind == 1)
+        buildCountryLevel();
+    else if (kind == 2)
+        buildDesertLevel();
+    else if (kind == 3)
+        buildSnowLevel();
+    else if (kind == 4)
+        buildLavaLevel();
+    else
+        buildClassicLevel();
+
+    populateLevelPlants();
+    initAmbientParticles();
 }
 
 // ---------- Collision ----------
@@ -949,6 +1352,60 @@ static void updateParts() {
     }
 }
 
+static void updatePlantsAndAmbient(bool landedOrJumped) {
+    float pcx = (px - (float)(roomIdx * FRAME_WIDTH)) + PW * 0.5f;
+    float pby = py + PH;
+
+    for (int i = 0; i < plantCount; i++) {
+        Plant &p = plants[i];
+        if (p.room != roomIdx)
+            continue;
+
+        // Gentle wind wave across the room
+        int wIdx = ((tick / 5) + (p.x / 48) + p.seed) & 15;
+        float wind = (float)SN[wIdx] / 256.0f * 2.6f;
+
+        if (deadTimer == 0) {
+            float dx = pcx - (float)p.x;
+            float dy = pby - (float)p.y;
+            float adx = dx < 0 ? -dx : dx;
+
+            if (adx < 44.0f && dy > -22.0f && dy < 32.0f) {
+                float prox = 1.0f - (adx / 44.0f);
+                p.vel += vx * 0.36f * prox;
+
+                float push = (dx < 0.0f ? 6.5f : -6.5f) * prox;
+                wind += push;
+
+                if (landedOrJumped)
+                    p.vel += (dx < 0.0f ? 4.5f : -4.5f) * prox;
+            }
+        }
+
+        float force = (wind - p.angle) * 0.16f;
+        p.vel = (p.vel + force) * 0.80f;
+        p.angle += p.vel;
+
+        if (p.angle > 14.0f) p.angle = 14.0f;
+        if (p.angle < -14.0f) p.angle = -14.0f;
+    }
+
+    for (int i = 0; i < MAX_AMB; i++) {
+        AmbPart &a = ambParts[i];
+        int swayIdx = ((tick / 8) + a.seed * 3) & 15;
+        float sway = (float)CS[swayIdx] / 256.0f * 0.4f;
+
+        a.x += a.vx + sway;
+        a.y += a.vy;
+
+        if (a.x > (float)(FRAME_WIDTH - 20)) a.x = 20.0f;
+        if (a.x < 20.0f) a.x = (float)(FRAME_WIDTH - 25);
+
+        if (a.y > (float)(FRAME_HEIGHT - 130)) a.y = 70.0f;
+        if (a.y < 65.0f) a.y = (float)(FRAME_HEIGHT - 140);
+    }
+}
+
 // ---------- Player ----------
 // Respawns at the start of the current screen (checkpoint)
 static void respawn() {
@@ -1061,6 +1518,7 @@ static void update() {
     updateParts();
 
     if (deadTimer > 0) {
+        updatePlantsAndAmbient(false);
         deadTimer--;
 
         if (deadTimer == 0)
@@ -1070,6 +1528,7 @@ static void update() {
     }
 
     bool wasGround = onGround;
+    bool didJumpOrLand = false;
 
     {
         float k = 0.0f;
@@ -1164,6 +1623,7 @@ static void update() {
             squashY = 1.30f;
 
             spawnDust(px + PW / 2.0f, py + PH, 6, 3.0f);
+            didJumpOrLand = true;
         } else if (wallL || wallR) {
             vy = -16.0f;
             vx = wallL ? 8.0f : -8.0f;
@@ -1175,6 +1635,7 @@ static void update() {
             squashY = 1.30f;
 
             spawnDust(wallL ? px : px + PW, py + PH / 2.0f, 4, 2.0f);
+            didJumpOrLand = true;
         }
     }
 
@@ -1225,6 +1686,7 @@ static void update() {
                     4 + (int)(k * 6.0f),
                     4.0f
                 );
+                didJumpOrLand = true;
             }
         } else if (vy < 0) {
             py = (float)(
@@ -1234,6 +1696,8 @@ static void update() {
 
         vy = 0;
     }
+
+    updatePlantsAndAmbient(didJumpOrLand);
 
     if (touchingHazard()) {
         die();
@@ -1260,6 +1724,14 @@ static void drawSpike(int cx, int r) {
     int center = cx * TILE + TILE / 2;
     int top = r * TILE + 20;
 
+    Color spCol = mk(205, 205, 215);
+    if (currentBiome == 2)
+        spCol = mk(230, 195, 145);
+    else if (currentBiome == 3)
+        spCol = mk(195, 235, 255);
+    else if (currentBiome == 4)
+        spCol = mk(255, 130, 70);
+
     for (int j = 0; j < 40; j++) {
         int half = (j * 26) / 39;
 
@@ -1268,7 +1740,7 @@ static void drawSpike(int cx, int r) {
             top + j,
             2 * half + 1,
             1,
-            mk(205, 205, 215)
+            spCol
         );
     }
 }
@@ -1376,12 +1848,43 @@ static void drawTileCell(int r, int cx, char ch, bool hi) {
     int y = r * TILE;
 
     if (ch == '#') {
-        fillRect(x, y, TILE, TILE, mk(58, 48, 82));
+        Color mainC = mk(58, 48, 82);
+        Color topC  = mk(145, 105, 180);
+        Color botC  = mk(38, 30, 58);
+
+        if (currentBiome == 0) {
+            // Green Forest: rich earth & lush green grass cap
+            mainC = mk(82, 54, 38);
+            topC  = mk(65, 190, 75);
+            botC  = mk(55, 36, 24);
+        } else if (currentBiome == 1) {
+            // Golden Countryside: warm country wood/soil & golden turf
+            mainC = mk(102, 62, 40);
+            topC  = mk(225, 175, 55);
+            botC  = mk(70, 42, 26);
+        } else if (currentBiome == 2) {
+            // Sandy Desert: sandstone blocks & bright sand top
+            mainC = mk(165, 118, 68);
+            topC  = mk(240, 200, 115);
+            botC  = mk(120, 82, 46);
+        } else if (currentBiome == 3) {
+            // Snowy Peaks: frozen slate rock & thick snow cap
+            mainC = mk(65, 88, 118);
+            topC  = mk(230, 245, 255);
+            botC  = mk(42, 58, 82);
+        } else if (currentBiome == 4) {
+            // Lava Valley: dark basalt & glowing magma crust
+            mainC = mk(55, 36, 46);
+            topC  = mk(235, 90, 35);
+            botC  = mk(34, 20, 28);
+        }
+
+        fillRect(x, y, TILE, TILE, mainC);
 
         if (hi)
-            fillRect(x, y, TILE, 5, mk(145, 105, 180));
+            fillRect(x, y, TILE, 7, topC);
 
-        fillRect(x, y + TILE - 5, TILE, 5, mk(38, 30, 58));
+        fillRect(x, y + TILE - 5, TILE, 5, botC);
     }
 
     else if (ch == '^') {
@@ -1396,6 +1899,66 @@ static void drawTileCell(int r, int cx, char ch, bool hi) {
         fillRect(gx, gy + 3, PW, 7, mk(240, 230, 200));
 
         drawFace(gx, gy, -1, mk(255, 255, 255));
+    }
+}
+
+// Draws an interactive plant tuft that bends smoothly with player movement
+static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style) {
+    Color stemDark = mk(40, 145, 55);
+    Color stemBright = mk(75, 205, 85);
+    Color tipCol = mk(255, 220, 75);
+
+    if (biome == 0) {
+        stemDark = mk(38, 145, 55);
+        stemBright = mk(80, 215, 90);
+        tipCol = (style == 0) ? mk(255, 95, 125) : mk(255, 225, 75);
+    } else if (biome == 1) {
+        stemDark = mk(185, 135, 40);
+        stemBright = mk(240, 195, 70);
+        tipCol = mk(255, 225, 110);
+    } else if (biome == 2) {
+        stemDark = mk(105, 145, 60);
+        stemBright = mk(155, 195, 85);
+        tipCol = mk(255, 130, 60);
+    } else if (biome == 3) {
+        stemDark = mk(120, 185, 225);
+        stemBright = mk(205, 240, 255);
+        tipCol = mk(255, 255, 255);
+    } else if (biome == 4) {
+        stemDark = mk(175, 50, 35);
+        stemBright = mk(245, 120, 40);
+        tipCol = mk(255, 220, 80);
+    } else {
+        stemDark = mk(85, 60, 135);
+        stemBright = mk(145, 110, 205);
+        tipCol = mk(210, 180, 255);
+    }
+
+    for (int b = -1; b <= 1; b++) {
+        int ox = bx + b * 7;
+        int bh = h - (b == 0 ? 0 : 4);
+        if (bh < 8) bh = 8;
+
+        int segH = bh / 3;
+        if (segH < 3) segH = 3;
+
+        int b1 = (bend * 2) / 7 + b;
+        int b2 = (bend * 4) / 7 + b * 2;
+        int b3 = bend + b * 2;
+
+        // Base segment
+        fillRect(ox - 2, by - segH, 4, segH, stemDark);
+        // Middle curved segment
+        fillRect(ox - 2 + b1, by - segH * 2, 4, segH, stemBright);
+        // Upper curved segment
+        fillRect(ox - 2 + b2, by - segH * 3, 3, segH, stemBright);
+
+        // Flower bud / wheat ear / glowing tip on center or side blades
+        if (biome == 1) {
+            fillRect(ox - 2 + b3, by - segH * 3 - 5, 5, 6, tipCol);
+        } else if (b == 0 && style != 2) {
+            fillRect(ox - 3 + b3, by - segH * 3 - 4, 6, 5, tipCol);
+        }
     }
 }
 
@@ -1414,8 +1977,178 @@ static bool starDim(int i, int phase) {
     return ((phase + i) % 4) == 0;
 }
 
-// Static background (sky, moon, stars, mountains)
+// Static background themed for each of the 6 biomes
 static void paintBackground() {
+    if (currentBiome == 0) {
+        // Biome 0: Lush Green Forest (Sunny Day + Forest Canopy)
+        Color sky1 = mk(75, 170, 235);
+        Color sky2 = mk(115, 200, 245);
+        Color farC = mk(42, 110, 75);
+        Color nearC = mk(26, 78, 52);
+
+        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
+        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
+        fillRect(0, 570, FRAME_WIDTH, 130, farC);
+        fillRect(0, 700, FRAME_WIDTH, 380, nearC);
+
+        // Warm sun
+        fillRect(1480, 95, 110, 110, mk(255, 235, 120));
+        fillRect(1495, 80, 80, 140, mk(255, 245, 160));
+
+        // Soft clouds
+        for (int i = 0; i < 4; i++) {
+            int cx = 180 + i * 440;
+            int cy = 130 + (i & 1) * 55;
+            fillRect(cx, cy, 170, 38, mk(235, 248, 255));
+            fillRect(cx + 30, cy - 20, 110, 24, mk(245, 252, 255));
+        }
+
+        // Distant forest trees
+        for (int i = 0; i < 5; i++) {
+            int x = i * 400 + 60;
+            fillRect(x + 60, 430, 140, 140, farC);
+            fillRect(x + 90, 380, 80, 60, farC);
+            fillRect(x + 220, 460, 130, 110, farC);
+        }
+
+        // Near forest trees
+        for (int i = 0; i < 6; i++) {
+            int x = i * 330 + 40;
+            fillRect(x + 70, 620, 36, 90, mk(68, 44, 28));
+            fillRect(x + 20, 510, 136, 120, nearC);
+            fillRect(x + 44, 465, 88, 55, nearC);
+        }
+        return;
+    }
+
+    if (currentBiome == 1) {
+        // Biome 1: Golden Countryside (Warm Sunset + Hills + Windmill)
+        Color sky1 = mk(195, 95, 75);
+        Color sky2 = mk(240, 155, 85);
+        Color farC = mk(135, 82, 52);
+        Color nearC = mk(92, 55, 36);
+
+        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
+        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
+        fillRect(0, 570, FRAME_WIDTH, 130, farC);
+        fillRect(0, 700, FRAME_WIDTH, 380, nearC);
+
+        // Setting golden sun
+        fillRect(1420, 210, 130, 130, mk(255, 215, 95));
+        fillRect(1440, 195, 90, 160, mk(255, 230, 130));
+
+        // Rolling countryside hills
+        for (int i = 0; i < 4; i++) {
+            int x = i * 500;
+            fillRect(x + 40, 470, 260, 100, farC);
+            fillRect(x + 90, 440, 160, 40, farC);
+        }
+
+        // Country barn & windmill silhouettes
+        fillRect(420, 450, 140, 120, nearC);
+        fillRect(445, 415, 90, 40, nearC);
+        fillRect(1180, 390, 60, 180, nearC);
+        fillRect(1120, 410, 180, 14, mk(75, 42, 28));
+        fillRect(1203, 330, 14, 180, mk(75, 42, 28));
+        return;
+    }
+
+    if (currentBiome == 2) {
+        // Biome 2: Sandy Desert (Scorching Sun + Pyramids + Dunes)
+        Color sky1 = mk(230, 145, 65);
+        Color sky2 = mk(248, 198, 115);
+        Color farC = mk(195, 135, 68);
+        Color nearC = mk(158, 102, 48);
+
+        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
+        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
+        fillRect(0, 570, FRAME_WIDTH, 130, farC);
+        fillRect(0, 700, FRAME_WIDTH, 380, nearC);
+
+        // Blazing desert sun
+        fillRect(1490, 105, 120, 120, mk(255, 245, 175));
+        fillRect(1510, 90, 80, 150, mk(255, 250, 205));
+
+        // Distant pyramids
+        for (int i = 0; i < 3; i++) {
+            int px0 = 260 + i * 560;
+            for (int step = 0; step < 8; step++) {
+                int w = (step + 1) * 32;
+                fillRect(px0 - w / 2, 410 + step * 20, w, 20, farC);
+            }
+        }
+
+        // Sand dunes
+        for (int i = 0; i < 4; i++) {
+            int x = i * 500;
+            fillRect(x + 60, 610, 280, 90, nearC);
+            fillRect(x + 120, 580, 160, 40, nearC);
+        }
+        return;
+    }
+
+    if (currentBiome == 3) {
+        // Biome 3: Snowy Mountain Peaks (Arctic Sky + Snow-Capped Mountains)
+        Color sky1 = mk(38, 62, 102);
+        Color sky2 = mk(68, 105, 152);
+        Color farC = mk(95, 135, 178);
+        Color nearC = mk(62, 95, 135);
+
+        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
+        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
+        fillRect(0, 570, FRAME_WIDTH, 130, farC);
+        fillRect(0, 700, FRAME_WIDTH, 380, nearC);
+
+        // Pale ice moon
+        fillRect(1500, 110, 96, 96, mk(220, 240, 255));
+
+        for (int i = 0; i < 3; i++) {
+            int x = i * 660;
+            fillRect(x + 80, 410, 200, 160, farC);
+            fillRect(x + 110, 370, 140, 50, mk(230, 245, 255));
+            fillRect(x + 340, 440, 180, 130, farC);
+            fillRect(x + 365, 410, 130, 40, mk(230, 245, 255));
+        }
+
+        for (int i = 0; i < 4; i++) {
+            int x = i * 520;
+            fillRect(x + 70, 550, 200, 150, nearC);
+            fillRect(x + 105, 520, 130, 40, mk(210, 232, 250));
+        }
+        return;
+    }
+
+    if (currentBiome == 4) {
+        // Biome 4: Volcanic Lava Valley
+        Color sky1 = mk(42, 14, 24);
+        Color sky2 = mk(78, 24, 32);
+        Color farC = mk(58, 22, 30);
+        Color nearC = mk(38, 15, 22);
+
+        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
+        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
+        fillRect(0, 570, FRAME_WIDTH, 130, farC);
+        fillRect(0, 700, FRAME_WIDTH, 380, nearC);
+
+        // Glowing crimson moon
+        fillRect(1500, 115, 100, 100, mk(235, 95, 50));
+        fillRect(1520, 130, 65, 70, mk(255, 155, 70));
+
+        // Volcano silhouettes with glowing craters
+        for (int i = 0; i < 3; i++) {
+            int x = i * 680;
+            fillRect(x + 120, 400, 220, 170, farC);
+            fillRect(x + 180, 395, 100, 18, mk(245, 95, 35));
+        }
+
+        for (int i = 0; i < 4; i++) {
+            int x = i * 540;
+            fillRect(x + 80, 540, 200, 160, nearC);
+        }
+        return;
+    }
+
+    // Biome 5: Original Classic Night Sky (100% preserved)
     Color farC = mk(35, 20, 75);
     Color nearC = mk(25, 14, 55);
 
@@ -1694,7 +2427,7 @@ static void renderGame(int b) {
 
         int ph = tick / 20;
 
-        if (bufStar[b] != ph) {
+        if (currentBiome == 5 && bufStar[b] != ph) {
             for (int i = 0; i < NUM_STARS; i++) {
                 if (starDim(i, bufStar[b]) != starDim(i, ph)) {
                     int sx, sy;
@@ -1741,10 +2474,40 @@ static void renderGame(int b) {
         }
     }
 
-    // ----- Moving objects -----
+    // ----- Moving & Living objects -----
     resetClip();
 
     int roomX = roomIdx * FRAME_WIDTH;
+
+    // Ambient biome particles (leaves, pollen, sand, snow, embers)
+    Color ambCol = mk(235, 245, 255);
+    if (currentBiome == 0) ambCol = mk(140, 235, 110);
+    else if (currentBiome == 1) ambCol = mk(255, 230, 130);
+    else if (currentBiome == 2) ambCol = mk(245, 215, 145);
+    else if (currentBiome == 3) ambCol = mk(240, 250, 255);
+    else if (currentBiome == 4) ambCol = mk(255, 145, 45);
+    else ambCol = mk(175, 155, 235);
+
+    for (int i = 0; i < MAX_AMB; i++) {
+        AmbPart &a = ambParts[i];
+        int ax = (int)a.x;
+        int ay = (int)a.y;
+        int sz = a.sz;
+
+        fillRect(ax, ay, sz, sz, ambCol);
+        addDirty(b, ax - 1, ay - 1, sz + 2, sz + 2);
+    }
+
+    // Interactive world plants (grass, wheat, desert scrub, frost reeds, lava ferns)
+    for (int i = 0; i < plantCount; i++) {
+        Plant &p = plants[i];
+        if (p.room != roomIdx)
+            continue;
+
+        int bend = (int)p.angle;
+        drawPlantTuft(p.x, p.y, p.height, bend, currentBiome, p.style);
+        addDirty(b, p.x - 24, p.y - p.height - 8, 48, p.height + 10);
+    }
 
     for (int r = 0; r < ROWS; r++) {
         for (int c = roomIdx * ROOM_COLS;
@@ -1815,7 +2578,7 @@ static void renderGame(int b) {
     }
 }
 
-// ---------- Cutscene art ----------
+// ---------- Cutscene art & Real-Time Animated Gameplay Tutorials ----------
 static void drawCubeK(int x, int y, int k) {
     fillRect(x, y, 88 * k, 88 * k, mk(140, 0, 15));
     fillRect(x + 6 * k, y + 6 * k, 76 * k, 76 * k, mk(205, 25, 35));
@@ -1831,6 +2594,12 @@ static void drawCubeK(int x, int y, int k) {
 
 static void drawBigCube(int x, int y) {
     drawCubeK(x, y, 1);
+}
+
+static void drawMiniDemoCube(int x, int y, int dw, int dh, int dir) {
+    fillRect(x, y, dw, dh, mk(140, 0, 15));
+    fillRect(x + 3, y + 3, dw - 6, dh - 6, mk(205, 25, 35));
+    drawPlayerFace(x, y, dw, dh, dir);
 }
 
 static void drawGirlK(int x, int y, int k) {
@@ -1873,8 +2642,34 @@ static void drawBigSaw(int cx, int cy, int R) {
     }
 }
 
+// Draws a controller button prompt badge inside tutorial cutscenes
+static void drawPadPrompt(int x, int y, bool dirL, bool dirR, bool sqOn, bool xOn, const char *label) {
+    fillRect(x, y, 420, 74, mk(22, 16, 38));
+    fillRect(x + 3, y + 3, 414, 68, mk(38, 28, 62));
+
+    // Direction arrows badge
+    fillRect(x + 18, y + 16, 42, 42, dirL ? mk(90, 200, 255) : mk(55, 45, 80));
+    drawTextC(x + 39, y + 27, "<", 3, mk(255, 255, 255));
+
+    fillRect(x + 68, y + 16, 42, 42, dirR ? mk(90, 200, 255) : mk(55, 45, 80));
+    drawTextC(x + 89, y + 27, ">", 3, mk(255, 255, 255));
+
+    // Square button badge (Sprint)
+    fillRect(x + 130, y + 16, 54, 42, sqOn ? mk(235, 65, 145) : mk(55, 45, 80));
+    fillRect(x + 147, y + 25, 20, 20, mk(255, 255, 255));
+    fillRect(x + 151, y + 29, 12, 12, sqOn ? mk(235, 65, 145) : mk(55, 45, 80));
+
+    // Cross (X) button badge (Jump)
+    fillRect(x + 196, y + 16, 54, 42, xOn ? mk(65, 165, 255) : mk(55, 45, 80));
+    drawTextC(x + 223, y + 27, "X", 3, mk(255, 255, 255));
+
+    // Action label
+    drawTextC(x + 332, y + 29, label, 2, (xOn || sqOn) ? mk(255, 235, 110) : mk(190, 180, 215));
+}
+
 static void drawStoryArt(int art) {
     int ax = 460, ay = 90, aw = 1000, ah = 500;
+    int t = storyAnimTick;
 
     if (art == 0) {
         fillRect(ax, ay, aw, ah, mk(20, 25, 60));
@@ -1887,29 +2682,39 @@ static void drawStoryArt(int art) {
             fillRect(x, ay + 210, 84, 100, mk(15, 55, 35));
         }
 
-        drawBigCube(ax + 300, ay + 292);
-        drawGirlK(ax + 560, ay + 292, 1);
+        int sway = SN[(t / 5) & 15] / 32;
+        for (int i = 0; i < 9; i++)
+            drawPlantTuft(ax + 80 + i * 105, ay + 380, 22, sway, 0, i % 3);
+
+        int bob = (t / 12) & 1 ? -6 : 0;
+        drawBigCube(ax + 300, ay + 292 + bob);
+        drawGirlK(ax + 560, ay + 292 - bob, 1);
+        return;
     }
 
-    else if (art == 1) {
+    if (art == 1) {
         fillRect(ax, ay, aw, ah, mk(45, 10, 25));
         fillRect(ax, ay + 420, aw, 80, mk(30, 12, 22));
 
-        drawBigSaw(ax + 500, ay + 230, 150);
+        int shift = (t % 80) - 40;
+        drawBigSaw(ax + 500 + shift, ay + 230, 150);
         drawBigCube(ax + 120, ay + 332);
-        drawGirlK(ax + 800, ay + 100, 1);
+        drawGirlK(ax + 800, ay + 100 + (SN[(t / 4) & 15] / 32), 1);
+        return;
     }
 
-    else if (art == 2) {
+    if (art == 2) {
         fillRect(ax, ay, aw, ah, mk(35, 15, 55));
         fillRect(ax, ay + 420, aw, 80, mk(25, 12, 40));
 
-        drawCubeK(ax + 368, ay + 150, 3);
-        fillRect(ax + 368 + 42, ay + 150 + 40, 84, 14, mk(60, 0, 10));
-        fillRect(ax + 368 + 150, ay + 150 + 40, 84, 14, mk(60, 0, 10));
+        int shake = ((t / 3) & 1) ? 3 : -3;
+        drawCubeK(ax + 368 + shake, ay + 150, 3);
+        fillRect(ax + 368 + 42 + shake, ay + 150 + 40, 84, 14, mk(60, 0, 10));
+        fillRect(ax + 368 + 150 + shake, ay + 150 + 40, 84, 14, mk(60, 0, 10));
+        return;
     }
 
-    else {
+    if (art == 3) {
         fillRect(ax, ay, aw, ah, mk(20, 18, 40));
         fillRect(ax, ay + 420, aw, 80, mk(25, 25, 35));
 
@@ -1924,7 +2729,279 @@ static void drawStoryArt(int art) {
         fillRect(ax + 732, ay + 360, 46, 6, mk(120, 110, 100));
         fillRect(ax + 732, ay + 378, 46, 6, mk(120, 110, 100));
         fillRect(ax + 732, ay + 396, 30, 6, mk(120, 110, 100));
+        return;
     }
+
+    // ---------- Animated Gameplay Tutorial Cutscenes (art 10..14) ----------
+    if (art == 10) {
+        // Tutorial 1: Green Forest - Short Jump vs High Jump + Interactive Grass
+        fillRect(ax, ay, aw, ah, mk(65, 160, 225));
+        fillRect(ax + 820, ay + 35, 70, 70, mk(255, 235, 120));
+
+        // Ground & high ledge
+        fillRect(ax, ay + 400, aw, 100, mk(82, 54, 38));
+        fillRect(ax, ay + 400, aw, 8, mk(65, 190, 75));
+        fillRect(ax + 700, ay + 290, 240, 110, mk(82, 54, 38));
+        fillRect(ax + 700, ay + 290, 240, 8, mk(65, 190, 75));
+
+        // Spike obstacle
+        for (int j = 0; j < 34; j++) {
+            int half = (j * 22) / 33;
+            fillRect(ax + 370 - half, ay + 366 + j, 2 * half + 1, 1, mk(215, 215, 225));
+        }
+
+        int cyc = t % 180;
+        int cx = ax + 90 + (cyc * 4);
+        if (cx > ax + 820) cx = ax + 820;
+        int cy = ay + 356;
+        int dw = 44, dh = 44;
+        bool xOn = false;
+        const char *lbl = "WALK";
+
+        if (cyc >= 45 && cyc < 85) {
+            // Short jump over spike
+            int jt = cyc - 45;
+            cy = ay + 356 - (jt * (40 - jt)) / 4;
+            xOn = (jt < 12);
+            lbl = "TAP X";
+            if (jt < 6) { dw = 36; dh = 52; }
+        } else if (cyc >= 110 && cyc < 160) {
+            // High jump (Holding X) onto high platform
+            int jt = cyc - 110;
+            cy = ay + 356 - (jt * (55 - jt)) / 4;
+            if (jt > 32 && cy > ay + 246) cy = ay + 246;
+            xOn = (jt < 34);
+            lbl = "HOLD X";
+            if (jt < 8) { dw = 34; dh = 54; }
+        } else if (cyc >= 160) {
+            cy = ay + 246;
+            lbl = "GREAT!";
+        }
+
+        // Interactive grass tufts bending as demo cube passes
+        for (int i = 0; i < 7; i++) {
+            int gx = ax + 110 + i * 80;
+            if (i == 3) continue;
+            int bend = (iabs(cx + 22 - gx) < 42 && cy > ay + 320) ? 12 : (SN[(t / 5 + i) & 15] / 32);
+            drawPlantTuft(gx, ay + 400, 22, bend, 0, i % 3);
+        }
+        drawPlantTuft(ax + 760, ay + 290, 22, (iabs(cx + 22 - (ax + 760)) < 42) ? 11 : 2, 0, 1);
+
+        drawMiniDemoCube(cx, cy + (44 - dh), dw, dh, 1);
+        drawPadPrompt(ax + 290, ay + 20, false, cyc < 165, false, xOn, lbl);
+        return;
+    }
+
+    if (art == 11) {
+        // Tutorial 2: Golden Countryside - Sprinting with Square + Long Jump
+        fillRect(ax, ay, aw, ah, mk(215, 125, 75));
+        fillRect(ax + 820, ay + 120, 90, 90, mk(255, 215, 95));
+
+        // Left & Right runways with a wide chasm in between
+        fillRect(ax, ay + 400, 420, 100, mk(102, 62, 40));
+        fillRect(ax, ay + 400, 420, 8, mk(225, 175, 55));
+        fillRect(ax + 660, ay + 400, 340, 100, mk(102, 62, 40));
+        fillRect(ax + 660, ay + 400, 340, 8, mk(225, 175, 55));
+
+        // Spikes in chasm
+        for (int s = 0; s < 5; s++) {
+            int scx = ax + 450 + s * 46;
+            for (int j = 0; j < 32; j++) {
+                int half = (j * 18) / 31;
+                fillRect(scx - half, ay + 468 + j, 2 * half + 1, 1, mk(215, 215, 225));
+            }
+        }
+
+        int cyc = t % 160;
+        int cx = ax + 70 + cyc * 6;
+        if (cx > ax + 850) cx = ax + 850;
+        int cy = ay + 356;
+        bool sqOn = (cyc < 140);
+        bool xOn = (cyc >= 50 && cyc < 85);
+        const char *lbl = "HOLD SQ";
+
+        if (cyc >= 50 && cyc < 102) {
+            int jt = cyc - 50;
+            cy = ay + 356 - (jt * (52 - jt)) / 5;
+            lbl = "SPRINT+X";
+        } else if (cyc >= 102) {
+            lbl = "LONG JUMP";
+        }
+
+        // Golden wheat bending sharply as player sprints through
+        for (int i = 0; i < 5; i++) {
+            int wx = ax + 80 + i * 70;
+            int bend = (cx > wx - 25 && cx < wx + 70) ? 14 : (SN[(t / 5 + i) & 15] / 28);
+            drawPlantTuft(wx, ay + 400, 26, bend, 1, i % 2);
+        }
+        for (int i = 0; i < 3; i++) {
+            int wx = ax + 700 + i * 80;
+            int bend = (cx > wx - 25 && cx < wx + 70) ? 14 : 3;
+            drawPlantTuft(wx, ay + 400, 26, bend, 1, i % 2);
+        }
+
+        // Sprint speed dust trail
+        if (sqOn && cyc < 52) {
+            fillRect(cx - 18, cy + 32, 10, 10, mk(245, 225, 180));
+            fillRect(cx - 34, cy + 35, 7, 7, mk(215, 195, 150));
+        }
+
+        drawMiniDemoCube(cx, cy, 44, 44, 1);
+        drawPadPrompt(ax + 290, ay + 20, false, cyc < 140, sqOn, xOn, lbl);
+        return;
+    }
+
+    if (art == 12) {
+        // Tutorial 3: Sandy Desert - Wall Slide & Wall Jump
+        fillRect(ax, ay, aw, ah, mk(235, 165, 85));
+        fillRect(ax, ay + 420, aw, 80, mk(165, 118, 68));
+        fillRect(ax, ay + 420, aw, 8, mk(240, 200, 115));
+
+        // Left & Right desert canyon walls
+        fillRect(ax + 340, ay + 150, 55, 270, mk(150, 105, 58));
+        fillRect(ax + 590, ay + 120, 55, 300, mk(150, 105, 58));
+        fillRect(ax + 590, ay + 120, 220, 45, mk(165, 118, 68));
+        fillRect(ax + 590, ay + 120, 220, 7, mk(240, 200, 115));
+
+        drawPlantTuft(ax + 160, ay + 420, 20, SN[(t / 5) & 15] / 32, 2, 0);
+        drawPlantTuft(ax + 250, ay + 420, 22, SN[(t / 5 + 3) & 15] / 32, 2, 1);
+        drawPlantTuft(ax + 720, ay + 120, 20, SN[(t / 5 + 6) & 15] / 32, 2, 0);
+
+        int cyc = t % 190;
+        int cx = ax + 220;
+        int cy = ay + 376;
+        int dir = 1;
+        bool dirL = false, dirR = false, xOn = false;
+        const char *lbl = "JUMP";
+
+        if (cyc < 35) {
+            cx = ax + 220 + (cyc * 326) / 35;
+            cy = ay + 376 - (cyc * 140) / 35;
+            dirR = true;
+            xOn = (cyc < 10);
+        } else if (cyc < 75) {
+            // Sliding down right wall
+            cx = ax + 546;
+            cy = ay + 236 + ((cyc - 35) * 60) / 40;
+            dirR = true;
+            lbl = "SLIDE";
+            fillRect(cx + 42, cy + 10, 8, 8, mk(240, 220, 180));
+        } else if (cyc < 115) {
+            // Wall Jump #1 to left wall
+            int wt = cyc - 75;
+            cx = ax + 546 - (wt * 151) / 40;
+            cy = ay + 296 - (wt * 120) / 40;
+            dir = -1;
+            dirL = true;
+            xOn = (wt < 12);
+            lbl = "WALL X!";
+        } else if (cyc < 155) {
+            // Wall Jump #2 to top right ledge
+            int wt = cyc - 115;
+            cx = ax + 395 + (wt * 225) / 40;
+            cy = ay + 176 - (wt * 100) / 40;
+            if (cy < ay + 76) cy = ay + 76;
+            dir = 1;
+            dirR = true;
+            xOn = (wt < 12);
+            lbl = "WALL X!";
+        } else {
+            cx = ax + 640;
+            cy = ay + 76;
+            lbl = "CLIMBED!";
+        }
+
+        drawMiniDemoCube(cx, cy, 44, 44, dir);
+        drawPadPrompt(ax + 290, ay + 20, dirL, dirR, false, xOn, lbl);
+        return;
+    }
+
+    if (art == 13) {
+        // Tutorial 4: Snowy Peaks - Spinning Saws & Ledge Timing
+        fillRect(ax, ay, aw, ah, mk(52, 85, 130));
+        fillRect(ax, ay + 400, 410, 100, mk(65, 88, 118));
+        fillRect(ax, ay + 400, 410, 8, mk(230, 245, 255));
+        fillRect(ax + 590, ay + 400, 410, 100, mk(65, 88, 118));
+        fillRect(ax + 590, ay + 400, 410, 8, mk(230, 245, 255));
+
+        // Live spinning saw in the center gap
+        drawSaw(ax + 500, ay + 370);
+
+        int cyc = t % 160;
+        int cx = ax + 110 + cyc * 5;
+        if (cx > ax + 820) cx = ax + 820;
+        int cy = ay + 356;
+        bool xOn = (cyc >= 50 && cyc < 80);
+        const char *lbl = "TIMING";
+
+        if (cyc >= 50 && cyc < 106) {
+            int jt = cyc - 50;
+            cy = ay + 356 - (jt * (56 - jt)) / 4;
+            lbl = "EDGE JUMP";
+        }
+
+        for (int i = 0; i < 4; i++) {
+            int gx = ax + 100 + i * 85;
+            int bend = (iabs(cx + 22 - gx) < 42) ? 12 : 2;
+            drawPlantTuft(gx, ay + 400, 22, bend, 3, i % 2);
+        }
+        drawPlantTuft(ax + 680, ay + 400, 22, (iabs(cx + 22 - (ax + 680)) < 42) ? 12 : -2, 3, 1);
+
+        drawMiniDemoCube(cx, cy, 44, 44, 1);
+        drawPadPrompt(ax + 290, ay + 20, false, cyc < 140, false, xOn, lbl);
+        return;
+    }
+
+    // Tutorial 5 (art == 14): Lava Valley - Master Combo
+    fillRect(ax, ay, aw, ah, mk(55, 20, 30));
+    fillRect(ax, ay + 410, 430, 90, mk(55, 36, 46));
+    fillRect(ax, ay + 410, 430, 8, mk(235, 90, 35));
+
+    // Middle wall & upper goal platform
+    fillRect(ax + 580, ay + 190, 50, 240, mk(55, 36, 46));
+    fillRect(ax + 700, ay + 250, 260, 250, mk(55, 36, 46));
+    fillRect(ax + 700, ay + 250, 260, 8, mk(235, 90, 35));
+
+    drawSaw(ax + 310, ay + 380);
+
+    // Bandage Girl waiting at the goal
+    fillRect(ax + 860, ay + 206, PW, PH, mk(255, 140, 170));
+    fillRect(ax + 860, ay + 209, PW, 7, mk(240, 230, 200));
+    drawFace(ax + 860, ay + 206, -1, mk(255, 255, 255));
+
+    int cyc = t % 180;
+    int cx = ax + 80;
+    int cy = ay + 366;
+    bool sqOn = (cyc < 140);
+    bool xOn = (cyc >= 25 && cyc < 50) || (cyc >= 95 && cyc < 115);
+    const char *lbl = "COMBO!";
+
+    if (cyc < 25) {
+        cx = ax + 80 + cyc * 6;
+    } else if (cyc < 75) {
+        int jt = cyc - 25;
+        cx = ax + 230 + (jt * 306) / 50;
+        cy = ay + 366 - (jt * (50 - jt)) / 4 - jt * 2;
+    } else if (cyc < 95) {
+        cx = ax + 536;
+        cy = ay + 266 + (cyc - 75);
+        lbl = "WALL!";
+    } else if (cyc < 140) {
+        int wt = cyc - 95;
+        cx = ax + 536 + (wt * 240) / 45;
+        cy = ay + 286 - (wt * (45 - wt)) / 5 - (wt * 80) / 45;
+        lbl = "LEAP!";
+    } else {
+        cx = ax + 780;
+        cy = ay + 206 - ((t / 6) & 1) * 6;
+        lbl = "VICTORY!";
+    }
+
+    drawPlantTuft(ax + 130, ay + 410, 22, (iabs(cx - (ax + 130)) < 45) ? 13 : 3, 4, 0);
+    drawPlantTuft(ax + 750, ay + 250, 22, (iabs(cx - (ax + 750)) < 45) ? 13 : 3, 4, 1);
+
+    drawMiniDemoCube(cx, cy, 44, 44, 1);
+    drawPadPrompt(ax + 290, ay + 20, false, cyc < 140, sqOn, xOn, lbl);
 }
 
 // ---------- Cutscenes ----------
@@ -2012,8 +3089,6 @@ static void renderStory(int b) {
     }
 
     if (storyDrawnPage[b] != storyPage) {
-        drawStoryArt(PAGES[storyPage].art);
-
         fillRect(460, 630, 1000, 300, mk(30, 22, 48));
 
         fillRect(460, 950, 1000, 60, mk(12, 8, 24));
@@ -2022,6 +3097,9 @@ static void renderStory(int b) {
         storyDrawnPage[b] = storyPage;
         storyShown[b] = 0;
     }
+
+    // Animate the cutscene / gameplay tutorial viewport in real-time
+    drawStoryArt(PAGES[storyPage].art);
 
     if (typed > storyShown[b]) {
         storyDrawText(storyShown[b], typed);
@@ -2045,6 +3123,7 @@ static void setState(int s) {
 }
 
 static void startLevel() {
+    currentLevel = levelSel;
     buildLevel();
 
     roomIdx = 0;
@@ -2075,6 +3154,7 @@ static void startStory(int id) {
     storyId = id;
     storyPage = STORY_FIRST[id];
     typed = 0;
+    storyAnimTick = 0;
 
     storyBgDone[0] = false;
     storyBgDone[1] = false;
@@ -2083,10 +3163,14 @@ static void startStory(int id) {
 }
 
 static void endStory() {
-    if (storyId == 0)
+    if (storyId == 0) {
+        // After the intro story, show Stage 1's animated gameplay tutorial
+        startStory(2);
+    } else if (storyId >= 2 && storyId <= 6) {
         startLevel();
-    else
+    } else {
         setState(S_LEVELS);
+    }
 }
 
 // ---------- Menus ----------
@@ -2393,10 +3477,13 @@ static void updateUI() {
 
         if (ok && levelSel < unlockedLevels) {
             snd(1);
+            currentLevel = levelSel;
 
-            if (!introSeen) {
+            if (levelSel == 0 && !introSeen) {
                 introSeen = true;
                 startStory(0);
+            } else if (levelSel >= 0 && levelSel <= 4) {
+                startStory(2 + levelSel);
             } else {
                 startLevel();
             }
@@ -2510,8 +3597,22 @@ int main(void) {
             else if (winTimer > 0) {
                 winTimer--;
 
-                if (winTimer == 0)
-                    startStory(1);
+                if (winTimer == 0) {
+                    if (currentLevel + 2 > unlockedLevels && unlockedLevels < NUM_LEVELS)
+                        unlockedLevels = currentLevel + 2;
+
+                    if (currentLevel < 4) {
+                        currentLevel++;
+                        levelSel = currentLevel;
+                        startStory(2 + currentLevel);
+                    } else if (currentLevel == 4) {
+                        currentLevel++;
+                        levelSel = currentLevel;
+                        startLevel();
+                    } else {
+                        startStory(1);
+                    }
+                }
             }
 
             else {
@@ -2521,6 +3622,7 @@ int main(void) {
 
         else if (state == S_STORY) {
             int total = storyTotal();
+            storyAnimTick++;
 
             if (typed < total)
                 typed++;
@@ -2532,6 +3634,7 @@ int main(void) {
                     snd(0);
                     storyPage++;
                     typed = 0;
+                    storyAnimTick = 0;
 
                     if (storyPage >= STORY_LAST[storyId])
                         endStory();
