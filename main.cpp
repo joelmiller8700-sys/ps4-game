@@ -46,7 +46,8 @@
 #define MAX_PARTS 80
 #define MAX_PLANTS 260
 #define MAX_AMB 16
-#define MAX_DIRTY 256
+#define MAX_BOSS_SHOTS 8
+#define MAX_DIRTY 320
 
 std::stringstream debugLogStream;
 
@@ -59,6 +60,7 @@ static OrbisPadData padData;
 
 #ifndef NO_AUDIO
 static int audioHandle = -1;
+static int audioGran = 768;
 #endif
 
 // ---------- Game state ----------
@@ -83,6 +85,29 @@ static int frameID = 0;
 
 static unsigned int rng = 12345;
 
+// ---------- Boss Fight state (Every 5 levels: Level 5, 10, 15...) ----------
+static bool bossActive = false;
+static float bossX = 0.0f;
+static float bossY = 0.0f;
+static float bossVX = 0.0f;
+static float bossVY = 0.0f;
+static int bossW = 104;
+static int bossH = 104;
+static int bossHP = 5;
+static int bossMaxHP = 5;
+static int bossHurt = 0;
+static int bossState = 0;
+static int bossTimer = 0;
+static int bossSwitchCooldown = 0;
+static int bossBeamTimer = 0;
+
+struct BossShot {
+    float x, y, vx, vy;
+    bool active;
+};
+
+static BossShot bossShots[MAX_BOSS_SHOTS];
+
 struct Splat {
     short x, y, w, h, room;
 };
@@ -99,7 +124,7 @@ struct Part {
 
 static Part parts[MAX_PARTS];
 
-// Interactive world plants (grass, wheat, desert scrub, snow reeds, lava ferns)
+// Interactive world plants
 struct Plant {
     short room;
     short x, y;
@@ -113,7 +138,7 @@ struct Plant {
 static Plant plants[MAX_PLANTS];
 static int plantCount = 0;
 
-// Ambient living world particles (leaves, pollen, sand, snow, embers)
+// Ambient living world particles
 struct AmbPart {
     float x, y, vx, vy;
     unsigned char sz, seed;
@@ -170,7 +195,7 @@ static int settingsSel = 0;
 
 static int controlMode = 1;
 static int lang = 0;            // 0 = English, 1 = Arabic
-static int unlockedLevels = 6;  // First 6 levels unlocked (5 new biome tutorials + original tower)
+static int unlockedLevels = 12; // All 12 stages (including Boss 5 & Boss 10) unlocked
 static bool introSeen = false;
 
 static bool uiFull[2] = {true, true};
@@ -211,6 +236,7 @@ static int storyShown[2] = {0, 0};
     X(T_CLAUDE, "CLAUDE", AR(CLAUDE)) \
     X(T_GAME, "MEAT CUBE", AR(GAME_NAME)) \
     X(T_DEATHS, "DEATHS", AR(DEATHS)) \
+    X(T_BOSS_HP, "BOSS HP", AR(BOSS_HP)) \
     X(T_COMPLETE, "LEVEL COMPLETE", AR(COMPLETE)) \
     X(T_GREAT, "GREAT JOB", AR(GREAT))
 
@@ -240,7 +266,7 @@ struct Page {
     int ar[3];
 };
 
-static const Page PAGES[10] = {
+static const Page PAGES[11] = {
     {0, 2, {"MEAT CUBE AND BANDAGE GIRL", "LIVED IN THE OLD FOREST.", ""},
      {AR(P0L0), AR(P0L1), -1}},
     {1, 2, {"ONE NIGHT THE GRINDER CAME.", "HIS SAWS TOOK HER AWAY.", ""},
@@ -253,7 +279,7 @@ static const Page PAGES[10] = {
     {1, 1, {"TO BE CONTINUED.", "", ""},
      {AR(P4L0), -1, -1}},
 
-    // 5 Animated Gameplay Tutorial Cutscenes (Pages 5..9)
+    // Animated Gameplay & Boss Tutorial Cutscenes (Pages 5..10)
     {10, 3, {"STAGE 1: GREEN FOREST - JUMPING",
              "TAP X FOR SHORT JUMP, HOLD X FOR HIGH JUMP.",
              "MOVE THROUGH THE LIVING GRASS AND CLEAR SPIKES!"},
@@ -262,22 +288,26 @@ static const Page PAGES[10] = {
              "HOLD SQUARE TO SPRINT AT MAXIMUM SPEED.",
              "SPRINT AND PRESS X TO LEAP ACROSS WIDE GAPS!"},
      {AR(T2L0), AR(T2L1), AR(T2L2)}},
-    {12, 3, {"STAGE 3: GOLDEN DESERT - WALL JUMP",
-             "PUSH AGAINST A WALL TO SLIDE DOWN SLOWLY.",
-             "PRESS X WHILE SLIDING TO JUMP BETWEEN WALLS!"},
+    {12, 3, {"STAGE 3: GOLDEN DESERT - TWO-WALL JUMP",
+             "ENTER BETWEEN TWO WALLS AND SLIDE SLOWLY.",
+             "PRESS X TO JUMP BACK AND FORTH BETWEEN WALLS!"},
      {AR(T3L0), AR(T3L1), AR(T3L2)}},
     {13, 3, {"STAGE 4: SNOWY PEAKS - SAW TIMING",
              "WATCH THE SPINNING SAWS AND TIME YOUR JUMPS.",
              "JUMP AT THE VERY EDGE OF LEDGES TO CROSS FAR!"},
      {AR(T4L0), AR(T4L1), AR(T4L2)}},
-    {14, 3, {"STAGE 5: LAVA VALLEY - MASTER COMBO",
-             "COMBINE SPRINTING WITH WALL JUMPS AND TIMING.",
-             "OVERCOME EVERY HAZARD TO REACH THE TOWER!"},
-     {AR(T5L0), AR(T5L1), AR(T5L2)}}
+    {14, 3, {"STAGE 5: BOSS FIGHT - MAGMA CRUSHER!",
+             "STOMP ON THE BOSS HEAD OR HIT THE TOP SWITCH.",
+             "DODGE THE FIRE SAWS AND DEFEAT THE BOSS!"},
+     {AR(T5L0), AR(T5L1), AR(T5L2)}},
+    {15, 3, {"STAGE 10: BOSS FIGHT - SAW OVERLORD!",
+             "THIS ARMORED BOSS FIRES DOUBLE SAW BLADES.",
+             "USE THE SIDE WALLS TO BOUNCE ON ITS HEAD!"},
+     {AR(T10L0), AR(T10L1), AR(T10L2)}}
 };
 
-static const int STORY_FIRST[7] = {0, 3, 5, 6, 7, 8, 9};
-static const int STORY_LAST[7]  = {3, 5, 6, 7, 8, 9, 10};
+static const int STORY_FIRST[8] = {0, 3, 5, 6, 7, 8, 9, 10};
+static const int STORY_LAST[8]  = {3, 5, 6, 7, 8, 9, 10, 11};
 
 // ---------- Input ----------
 struct Input {
@@ -325,6 +355,10 @@ static Color mk(int r, int g, int b) {
 
 static bool useAr() {
     return lang == 1 && ARABIC_OK;
+}
+
+static bool isBossStage(int lvl) {
+    return ((lvl + 1) % 5) == 0;
 }
 
 // ---------- Controller ----------
@@ -413,71 +447,213 @@ static bool navEvent(int i, bool pressed) {
     return false;
 }
 
-// ---------- Sound (menus only) ----------
+// ---------- Halal Audio Engine (Menu SFX + Gameplay Percussion & Vocal Hum) ----------
+static int sfxKind = -1;
+static int sfxPos = 0;
+static int sfxLen = 0;
+static int sfxPhase = 0;
+static int bgmSample = 0;
+static int humPhase1 = 0;
+static int humPhase2 = 0;
+static int duffPhase = 0;
+static unsigned int noiseRng = 987654321u;
+
 static void initAudio() {
 #ifndef NO_AUDIO
     sceAudioOutInit();
-    audioHandle = sceAudioOutOpen(padUserID, 0, 0, 256, 48000, 1);
+    audioGran = 768;
+    audioHandle = sceAudioOutOpen(padUserID, 0, 0, audioGran, 48000, 1);
+    if (audioHandle < 0) {
+        audioHandle = sceAudioOutOpen(0xFF, 0, 0, audioGran, 48000, 1);
+    }
+    if (audioHandle < 0) {
+        audioGran = 256;
+        audioHandle = sceAudioOutOpen(padUserID, 0, 0, audioGran, 48000, 1);
+        if (audioHandle < 0)
+            audioHandle = sceAudioOutOpen(0xFF, 0, 0, audioGran, 48000, 1);
+    }
 #endif
 }
 
-static void playTone(int freq, int ms, int vol) {
+// Triggers non-blocking sound effect for menus & gameplay actions
+// 0=cursor, 1=select, 2=back, 3=locked, 4=jump, 5=walljump, 6=die, 7=bosshit, 8=win
+static void snd(int k) {
+    sfxKind = k;
+    sfxPos = 0;
+    sfxPhase = 0;
+
+    if (k == 0) sfxLen = 1400;       // Menu move: crisp wooden/duff tap
+    else if (k == 1) sfxLen = 4200;  // Menu confirm: warm double chime
+    else if (k == 2) sfxLen = 2800;  // Menu back
+    else if (k == 3) sfxLen = 3600;  // Locked thud
+    else if (k == 4) sfxLen = 3200;  // Player Jump whoosh
+    else if (k == 5) sfxLen = 3600;  // Wall Jump kick
+    else if (k == 6) sfxLen = 6400;  // Player Death impact
+    else if (k == 7) sfxLen = 7200;  // Boss Hit impact
+    else sfxLen = 12000;             // Victory vocal fanfare
+}
+
+static void updateAudioFrame() {
 #ifndef NO_AUDIO
     if (audioHandle < 0)
         return;
 
-    static short buf[256 * 2];
+    bool playBgm = (state == S_PLAY && winTimer == 0);
+    if (!playBgm && sfxKind < 0)
+        return;
 
-    int total = 48 * ms;
-    int phase = 0;
-    int done = 0;
+    static short outBuf[768 * 2];
+    int nSamples = audioGran;
 
-    while (done < total) {
-        for (int i = 0; i < 256; i++) {
-            int idx = done + i;
-            int s = 0;
+    // Rhythmic tempo: faster during Boss Fights
+    int stepSamples = bossActive ? 5000 : 6000; // 16th-note duration at 48kHz
 
-            if (idx < total) {
-                phase += freq;
+    // Vocal acapella hum frequencies (warm natural fifth intervals, no instruments)
+    static const int HUM_BASE[4] = { 110, 130, 146, 130 };
+    static const int HUM_HARMONY[4] = { 165, 195, 220, 195 };
 
-                if (phase >= 48000)
-                    phase -= 48000;
+    // 16-step Halal Percussion Pattern (1 = Dum / low duff, 2 = Tak / crisp rim, 3 = light shaker)
+    static const unsigned char BEAT_PAT[16] = {
+        1, 0, 3, 2,  1, 0, 2, 0,
+        1, 1, 3, 2,  0, 2, 3, 2
+    };
 
-                int tri = phase < 24000 ? phase : 48000 - phase;
+    for (int i = 0; i < nSamples; i++) {
+        int mix = 0;
 
-                s = ((tri - 12000) * vol) / 12000;
+        // 1) Halal Gameplay Rhythm (Duff percussion + Acapella Vocal Hum)
+        if (playBgm) {
+            int step = (bgmSample / stepSamples) & 15;
+            int inStep = bgmSample % stepSamples;
+            int bar = (bgmSample / (stepSamples * 16)) & 3;
+            bgmSample++;
 
-                int remain = total - idx;
+            unsigned char hit = BEAT_PAT[step];
 
-                if (remain < 1500)
-                    s = s * remain / 1500;
+            // Deep Duff "Dum" (warm membrane thud)
+            if (hit == 1 && inStep < 3200) {
+                int env = 3200 - inStep;
+                int freq = 62 + (env >> 6);
+                duffPhase += freq;
+                if (duffPhase >= 48000) duffPhase -= 48000;
+                int wave = duffPhase < 24000 ? (duffPhase - 12000) : (36000 - duffPhase);
+                mix += (wave * env) / 14000;
+            }
+            // Crisp Duff "Tak" (hand percussion tap)
+            else if (hit == 2 && inStep < 1400) {
+                int env = 1400 - inStep;
+                noiseRng = noiseRng * 1664525u + 1013904223u;
+                int nz = ((int)(noiseRng >> 20) & 511) - 256;
+                duffPhase += 280;
+                if (duffPhase >= 48000) duffPhase -= 48000;
+                int body = duffPhase < 24000 ? 180 : -180;
+                mix += ((nz + body) * env) / 800;
+            }
+            // Subtle breath/shaker pulse
+            else if (hit == 3 && inStep < 700) {
+                int env = 700 - inStep;
+                noiseRng = noiseRng * 1664525u + 1013904223u;
+                int nz = ((int)(noiseRng >> 22) & 255) - 128;
+                mix += (nz * env) / 900;
             }
 
-            buf[i * 2] = (short)s;
-            buf[i * 2 + 1] = (short)s;
+            // Warm Acapella Vocal Hum (formant-smoothed triangle choir pad)
+            int f1 = HUM_BASE[bar];
+            int f2 = HUM_HARMONY[bar];
+            if (bossActive) {
+                f1 += 22;
+                f2 += 33;
+            }
+
+            humPhase1 += f1;
+            if (humPhase1 >= 48000) humPhase1 -= 48000;
+            humPhase2 += f2;
+            if (humPhase2 >= 48000) humPhase2 -= 48000;
+
+            int v1 = humPhase1 < 24000 ? (humPhase1 - 12000) : (36000 - humPhase1);
+            int v2 = humPhase2 < 24000 ? (humPhase2 - 12000) : (36000 - humPhase2);
+
+            // Breathing envelope across each step
+            int breath = inStep < (stepSamples / 2) ? inStep : (stepSamples - inStep);
+            int humAmp = 450 + (breath / 12);
+            mix += ((v1 + v2) * humAmp) / 24000;
         }
 
-        sceAudioOutOutput(audioHandle, buf);
-        done += 256;
-    }
-#else
-    (void)freq;
-    (void)ms;
-    (void)vol;
-#endif
-}
+        // 2) Active Sound Effect (Menu UI & Gameplay SFX)
+        if (sfxKind >= 0) {
+            int rem = sfxLen - sfxPos;
+            if (rem <= 0) {
+                sfxKind = -1;
+            } else {
+                int s = 0;
+                int f = 440;
 
-static void snd(int k) {
-    if (k == 0) {
-        playTone(880, 25, 3500);
-    } else if (k == 1) {
-        playTone(660, 35, 4500);
-        playTone(990, 55, 4500);
-    } else if (k == 2) {
-        playTone(440, 50, 4000);
-    } else {
-        playTone(220, 90, 4000);
+                if (sfxKind == 0) {
+                    // Menu cursor tap
+                    f = 520 + (rem >> 3);
+                } else if (sfxKind == 1) {
+                    // Menu confirm
+                    f = (sfxPos < 1800) ? 540 : 760;
+                } else if (sfxKind == 2) {
+                    // Menu back
+                    f = (sfxPos < 1400) ? 480 : 340;
+                } else if (sfxKind == 3) {
+                    // Locked
+                    f = 170;
+                } else if (sfxKind == 4) {
+                    // Jump rising whoosh
+                    f = 240 + (sfxPos >> 3);
+                } else if (sfxKind == 5) {
+                    // Wall-jump double kick
+                    f = 320 + (sfxPos >> 2);
+                } else if (sfxKind == 6) {
+                    // Death thud + noise
+                    f = 140 - (sfxPos >> 6);
+                    if (f < 55) f = 55;
+                } else if (sfxKind == 7) {
+                    // Boss hit boom
+                    f = 190 - (sfxPos >> 6);
+                    if (f < 65) f = 65;
+                } else {
+                    // Victory vocal chord
+                    f = (sfxPos < 3500) ? 440 : ((sfxPos < 7000) ? 550 : 660);
+                }
+
+                sfxPhase += f;
+                if (sfxPhase >= 48000) sfxPhase -= 48000;
+
+                int tri = sfxPhase < 24000 ? (sfxPhase - 12000) : (36000 - sfxPhase);
+                s = (tri * 3800) / 12000;
+
+                if (sfxKind == 6 || sfxKind == 7) {
+                    noiseRng = noiseRng * 1664525u + 1013904223u;
+                    int nz = ((int)(noiseRng >> 19) & 1023) - 512;
+                    s += nz * 4;
+                }
+
+                if (rem < 1200)
+                    s = (s * rem) / 1200;
+
+                mix += s;
+                sfxPos++;
+            }
+        }
+
+        // Smooth edge taper (first & last 24 samples) so buffer transitions never click
+        if (i < 24)
+            mix = (mix * i) / 24;
+        else if (i > nSamples - 25)
+            mix = (mix * (nSamples - 1 - i)) / 24;
+
+        if (mix > 28000) mix = 28000;
+        if (mix < -28000) mix = -28000;
+
+        outBuf[i * 2]     = (short)mix;
+        outBuf[i * 2 + 1] = (short)mix;
     }
+
+    sceAudioOutOutput(audioHandle, outBuf);
+#endif
 }
 
 // ---------- Drawing primitives ----------
@@ -683,7 +859,6 @@ static void drawArCols(int id, int x, int y, int c0, int c1, Color col) {
 #endif
 }
 
-// Draws a text id centered in a box, in the selected language
 static void drawLabel(int tid, int cx, int boxY, int boxH,
                       int sc, Color c) {
     if (useAr() && TXT_AR[tid] >= 0) {
@@ -779,7 +954,6 @@ static void populateLevelPlants() {
             if (level[r - 1][c] != '.')
                 continue;
 
-            // Avoid placing plants right next to saws or goal
             bool nearSaw = false;
             for (int dr = -2; dr <= 0; dr++) {
                 for (int dc = -1; dc <= 1; dc++) {
@@ -794,7 +968,6 @@ static void populateLevelPlants() {
             if (nearSaw)
                 continue;
 
-            // Place natural clusters of interactive plants on platforms and ground
             if (((c * 7 + r * 13) % 3) != 0) {
                 if (plantCount < MAX_PLANTS) {
                     int rm = c / ROOM_COLS;
@@ -836,7 +1009,6 @@ static void clearLevelGrid() {
 
 // Original classic level (preserved 100% as Level 6)
 static void buildClassicLevel() {
-    // Screen 1: first steps
     baseCol = 0 * ROOM_COLS;
     spk(16, 9, 10);
     plat(15, 14, 17);
@@ -844,7 +1016,6 @@ static void buildClassicLevel() {
     plat(11, 24, 27);
     spk(16, 13, 28);
 
-    // Screen 2: wall jump shaft
     baseCol = 1 * ROOM_COLS;
     spk(16, 5, 6);
     wall(12, 4, 14);
@@ -853,7 +1024,6 @@ static void buildClassicLevel() {
     spk(16, 16, 23);
     sawAt(2, 20);
 
-    // Screen 3: pillars over spikes with saws
     baseCol = 2 * ROOM_COLS;
     spk(16, 2, 29);
     plat(15, 3, 4);
@@ -867,7 +1037,6 @@ static void buildClassicLevel() {
     sawAt(14, 17);
     sawAt(14, 25);
 
-    // Screen 4: the climb
     baseCol = 3 * ROOM_COLS;
     spk(16, 4, 27);
     plat(15, 5, 7);
@@ -878,7 +1047,6 @@ static void buildClassicLevel() {
     sawAt(10, 18);
     sawAt(8, 23);
 
-    // Screen 5: up and down
     baseCol = 4 * ROOM_COLS;
     spk(16, 2, 29);
     plat(15, 3, 5);
@@ -889,7 +1057,6 @@ static void buildClassicLevel() {
     plat(13, 28, 30);
     sawAt(8, 21);
 
-    // Screen 6: the tower
     baseCol = 5 * ROOM_COLS;
     spk(16, 3, 28);
     plat(15, 4, 6);
@@ -996,50 +1163,58 @@ static void buildCountryLevel() {
     baseCol = 0;
 }
 
-// Level 3: Sandy Desert (Tutorial: Wall Slide & Wall Jump)
+// Level 3: Sandy Desert (FIXED: Every room has TWO parallel walls to jump between!)
 static void buildDesertLevel() {
+    // Room 1: First two-wall chimney (walk under left wall col 11, jump between col 11 & col 14)
     baseCol = 0 * ROOM_COLS;
-    wall(12, 11, 16);
-    plat(11, 12, 21);
-    spk(16, 13, 21);
-    plat(14, 24, 28);
+    wall(11, 7, 14);
+    wall(14, 7, 16);
+    plat(7, 14, 23);
+    spk(16, 15, 23);
+    plat(12, 25, 29);
 
+    // Room 2: Taller two-wall chimney
     baseCol = 1 * ROOM_COLS;
-    wall(10, 6, 14);
-    wall(13, 6, 16);
-    plat(6, 13, 23);
-    spk(16, 14, 23);
-    plat(13, 25, 29);
+    wall(10, 5, 14);
+    wall(13, 5, 16);
+    plat(5, 13, 22);
+    spk(16, 14, 22);
+    plat(13, 24, 29);
 
+    // Room 3: Two consecutive two-wall chimneys!
     baseCol = 2 * ROOM_COLS;
-    plat(14, 4, 7);
-    plat(11, 9, 13);
-    wall(17, 7, 14);
-    plat(15, 17, 22);
-    plat(13, 24, 28);
-    spk(16, 8, 27);
+    wall(8, 8, 14);
+    wall(11, 8, 16);
+    plat(8, 11, 16);
+    wall(19, 6, 14);
+    wall(22, 6, 16);
+    plat(6, 22, 28);
+    spk(16, 12, 18);
+    spk(16, 23, 28);
 
+    // Room 4: High desert canyon two-wall shaft
     baseCol = 3 * ROOM_COLS;
-    wall(9, 8, 14);
-    wall(12, 6, 16);
-    plat(6, 12, 18);
-    plat(12, 21, 27);
-    spk(16, 10, 26);
+    wall(10, 4, 14);
+    wall(13, 4, 16);
+    plat(4, 13, 20);
+    plat(10, 22, 28);
+    spk(16, 14, 27);
 
+    // Room 5: Platform into floating two-wall shaft
     baseCol = 4 * ROOM_COLS;
     spk(16, 5, 27);
-    plat(15, 4, 7);
-    wall(10, 9, 15);
-    wall(13, 8, 15);
-    plat(9, 15, 19);
-    plat(13, 22, 28);
-
-    baseCol = 5 * ROOM_COLS;
-    spk(16, 6, 28);
-    plat(15, 4, 7);
-    wall(10, 7, 14);
-    wall(13, 6, 16);
+    plat(15, 4, 8);
+    wall(10, 6, 14);
+    wall(13, 6, 15);
     plat(6, 13, 19);
+    plat(11, 21, 28);
+
+    // Room 6: Final two-wall climb to Bandage Girl
+    baseCol = 5 * ROOM_COLS;
+    wall(10, 5, 14);
+    wall(13, 5, 16);
+    plat(5, 13, 20);
+    spk(16, 14, 28);
     plat(9, 22, 29);
     put(8, 27, 'G');
 
@@ -1098,78 +1273,352 @@ static void buildSnowLevel() {
     baseCol = 0;
 }
 
-// Level 5: Lava Valley (Tutorial: Combining Sprinting, Wall Jumps, and Saws)
-static void buildLavaLevel() {
+// Boss Arena Builder (Used for Level 5, Level 10, and every 5th level!)
+static void buildBossArena(int tier) {
+    baseCol = 0;
+
+    // Close the single-screen arena at column 31 so player & boss fight inside Room 0
+    for (int r = 0; r < ROWS; r++)
+        level[r][ROOM_COLS - 1] = '#';
+
+    // Two side wall-jump pillars so player can wall-jump high above the Boss
+    wall(3, 7, 13);
+    wall(28, 7, 13);
+
+    // Mid-level side platforms
+    plat(12, 6, 10);
+    plat(12, 21, 25);
+
+    // Upper platform holding the Boss Strike Switch (cols 14..17)
+    plat(7, 13, 18);
+
+    bossActive = true;
+    bossW = 104;
+    bossH = 104;
+    bossX = (float)(22 * TILE);
+    bossY = (float)((ROWS - 1) * TILE - bossH);
+    bossVX = (tier >= 2) ? -5.2f : -4.0f;
+    bossVY = 0.0f;
+    bossMaxHP = (tier >= 2) ? 7 : 5;
+    bossHP = bossMaxHP;
+    bossHurt = 0;
+    bossState = 0;
+    bossTimer = 0;
+    bossSwitchCooldown = 0;
+    bossBeamTimer = 0;
+
+    for (int i = 0; i < MAX_BOSS_SHOTS; i++)
+        bossShots[i].active = false;
+}
+
+// Level 7: Crystal Cavern (Two-wall shafts + spinning saws)
+static void buildCrystalLevel() {
     baseCol = 0 * ROOM_COLS;
-    spk(16, 5, 27);
-    plat(15, 4, 9);
-    sawAt(14, 12);
-    plat(15, 15, 20);
-    plat(13, 23, 28);
+    spk(16, 6, 26);
+    plat(15, 4, 8);
+    wall(11, 7, 14);
+    wall(14, 7, 16);
+    plat(7, 14, 20);
+    sawAt(6, 17);
+    plat(12, 22, 28);
 
     baseCol = 1 * ROOM_COLS;
-    wall(10, 5, 14);
-    wall(13, 5, 16);
-    plat(5, 13, 25);
-    sawAt(4, 19);
-    spk(16, 14, 25);
-    plat(13, 26, 29);
+    spk(16, 4, 28);
+    plat(15, 3, 7);
+    plat(13, 10, 14);
+    sawAt(12, 12);
+    plat(11, 17, 21);
+    plat(13, 24, 29);
 
     baseCol = 2 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 4, 8);
-    plat(13, 11, 15);
-    sawAt(12, 17);
-    plat(13, 19, 23);
-    plat(14, 25, 29);
+    wall(9, 5, 14);
+    wall(12, 5, 16);
+    plat(5, 12, 22);
+    sawAt(4, 16);
+    sawAt(4, 19);
+    spk(16, 13, 23);
+    plat(12, 24, 29);
 
     baseCol = 3 * ROOM_COLS;
     spk(16, 4, 28);
     plat(15, 4, 8);
-    wall(11, 8, 14);
-    plat(12, 14, 18);
-    wall(21, 7, 13);
-    plat(11, 24, 29);
+    plat(12, 11, 15);
+    wall(18, 6, 13);
+    wall(21, 6, 15);
+    plat(6, 21, 28);
 
     baseCol = 4 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 4, 7);
-    plat(13, 9, 13);
-    sawAt(12, 15);
-    plat(11, 17, 21);
-    sawAt(10, 23);
-    plat(13, 25, 29);
+    spk(16, 3, 29);
+    plat(15, 3, 6);
+    sawAt(14, 8);
+    plat(14, 10, 13);
+    sawAt(13, 15);
+    plat(13, 17, 20);
+    sawAt(12, 22);
+    plat(12, 24, 29);
 
     baseCol = 5 * ROOM_COLS;
     spk(16, 4, 28);
-    plat(15, 4, 8);
+    plat(15, 4, 7);
+    wall(10, 6, 14);
+    wall(13, 6, 16);
+    plat(6, 13, 19);
+    plat(10, 22, 29);
+    put(9, 27, 'G');
+
+    baseCol = 0;
+}
+
+// Level 8: Autumn Winds (High-speed sprint jumps + saws)
+static void buildAutumnLevel() {
+    baseCol = 0 * ROOM_COLS;
+    spk(16, 9, 14);
+    plat(14, 15, 20);
+    spk(16, 21, 26);
+
+    baseCol = 1 * ROOM_COLS;
+    spk(16, 4, 28);
+    plat(15, 3, 8);
+    plat(14, 13, 18);
+    sawAt(13, 15);
+    plat(13, 23, 29);
+
+    baseCol = 2 * ROOM_COLS;
+    spk(16, 4, 28);
+    plat(15, 3, 7);
+    plat(12, 11, 16);
+    plat(15, 20, 24);
+    plat(13, 26, 30);
+
+    baseCol = 3 * ROOM_COLS;
+    wall(9, 6, 14);
+    wall(12, 6, 16);
+    plat(6, 12, 18);
+    spk(16, 13, 28);
+    plat(10, 22, 29);
+
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(15, 3, 7);
+    sawAt(14, 9);
+    plat(14, 11, 15);
+    sawAt(13, 17);
+    plat(13, 19, 23);
+    plat(12, 25, 29);
+
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 4, 28);
+    plat(15, 3, 8);
+    plat(13, 13, 18);
+    plat(11, 23, 29);
+    put(10, 27, 'G');
+
+    baseCol = 0;
+}
+
+// Level 9: Mystic Swamp (Pillars + Double Wall Chimneys)
+static void buildSwampLevel() {
+    baseCol = 0 * ROOM_COLS;
+    spk(16, 5, 27);
+    plat(15, 4, 6);
+    plat(14, 9, 11);
+    plat(13, 14, 16);
+    plat(14, 19, 21);
+    plat(15, 24, 28);
+
+    baseCol = 1 * ROOM_COLS;
+    wall(8, 5, 14);
+    wall(11, 5, 16);
+    plat(5, 11, 17);
+    wall(20, 5, 14);
+    wall(23, 5, 16);
+    plat(5, 23, 29);
+    spk(16, 12, 19);
+
+    baseCol = 2 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(15, 3, 6);
+    sawAt(13, 8);
     plat(13, 10, 13);
-    wall(16, 8, 13);
-    plat(9, 19, 23);
-    plat(11, 25, 29);
-    put(10, 28, 'G');
+    sawAt(11, 15);
+    plat(11, 17, 20);
+    plat(13, 23, 29);
+
+    baseCol = 3 * ROOM_COLS;
+    spk(16, 4, 28);
+    plat(15, 4, 7);
+    wall(10, 6, 14);
+    wall(13, 6, 15);
+    plat(6, 13, 18);
+    sawAt(5, 16);
+    plat(11, 21, 28);
+
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(15, 3, 6);
+    plat(13, 9, 12);
+    plat(11, 15, 18);
+    plat(13, 21, 24);
+    plat(14, 26, 29);
+    sawAt(12, 13);
+    sawAt(12, 19);
+
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 4, 28);
+    plat(15, 3, 6);
+    wall(9, 6, 14);
+    wall(12, 6, 16);
+    plat(6, 12, 18);
+    plat(10, 21, 29);
+    put(9, 27, 'G');
+
+    baseCol = 0;
+}
+
+// Level 11: Sky Citadel (High altitude platforming)
+static void buildSkyLevel() {
+    baseCol = 0 * ROOM_COLS;
+    spk(16, 4, 28);
+    plat(15, 3, 7);
+    plat(12, 10, 14);
+    plat(9, 17, 21);
+    plat(12, 24, 29);
+
+    baseCol = 1 * ROOM_COLS;
+    spk(16, 3, 29);
+    wall(8, 4, 14);
+    wall(11, 4, 16);
+    plat(4, 11, 18);
+    sawAt(3, 15);
+    plat(10, 21, 29);
+
+    baseCol = 2 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(14, 3, 7);
+    sawAt(13, 9);
+    plat(12, 11, 15);
+    sawAt(11, 17);
+    plat(10, 19, 23);
+    plat(12, 25, 29);
+
+    baseCol = 3 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(15, 3, 6);
+    wall(9, 6, 14);
+    wall(12, 6, 15);
+    plat(6, 12, 17);
+    wall(20, 5, 13);
+    wall(23, 5, 15);
+    plat(5, 23, 29);
+
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(15, 3, 7);
+    plat(13, 11, 15);
+    sawAt(12, 13);
+    plat(11, 19, 23);
+    sawAt(10, 21);
+    plat(13, 25, 29);
+
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(15, 3, 7);
+    plat(12, 10, 14);
+    plat(9, 17, 21);
+    plat(10, 24, 29);
+    put(9, 27, 'G');
+
+    baseCol = 0;
+}
+
+// Level 12: Dark Obsidian Tower (Grand Finale Gauntlet)
+static void buildObsidianLevel() {
+    baseCol = 0 * ROOM_COLS;
+    spk(16, 4, 28);
+    plat(15, 3, 6);
+    sawAt(14, 8);
+    plat(13, 10, 13);
+    wall(16, 6, 13);
+    wall(19, 6, 15);
+    plat(6, 19, 24);
+    plat(12, 26, 29);
+
+    baseCol = 1 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(15, 3, 7);
+    sawAt(14, 9);
+    plat(13, 11, 15);
+    sawAt(12, 17);
+    plat(11, 19, 23);
+    plat(13, 25, 29);
+
+    baseCol = 2 * ROOM_COLS;
+    wall(7, 5, 14);
+    wall(10, 5, 16);
+    plat(5, 10, 16);
+    sawAt(4, 13);
+    wall(19, 5, 14);
+    wall(22, 5, 16);
+    plat(5, 22, 29);
+    spk(16, 11, 18);
+
+    baseCol = 3 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(15, 3, 6);
+    plat(13, 9, 12);
+    sawAt(12, 14);
+    plat(11, 16, 19);
+    sawAt(10, 21);
+    plat(12, 23, 29);
+
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(15, 3, 6);
+    wall(9, 5, 14);
+    wall(12, 5, 15);
+    plat(5, 12, 18);
+    plat(10, 20, 24);
+    plat(13, 26, 29);
+
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(15, 3, 6);
+    sawAt(14, 8);
+    plat(13, 10, 13);
+    wall(16, 6, 13);
+    wall(19, 6, 15);
+    plat(6, 19, 23);
+    plat(10, 24, 29);
+    put(9, 28, 'G');
 
     baseCol = 0;
 }
 
 static void buildLevel() {
     clearLevelGrid();
+    bossActive = false;
 
-    int kind = currentLevel % 6;
-    currentBiome = kind;
+    // Every 5th level (Level 5, Level 10, Level 15...) is a Boss Fight!
+    if (isBossStage(currentLevel)) {
+        int tier = (currentLevel + 1) / 5;
+        currentBiome = (tier & 1) ? 4 : 5;
+        buildBossArena(tier);
+        populateLevelPlants();
+        initAmbientParticles();
+        return;
+    }
 
-    if (kind == 0)
-        buildForestLevel();
-    else if (kind == 1)
-        buildCountryLevel();
-    else if (kind == 2)
-        buildDesertLevel();
-    else if (kind == 3)
-        buildSnowLevel();
-    else if (kind == 4)
-        buildLavaLevel();
-    else
-        buildClassicLevel();
+    int idx = currentLevel % 12;
+    if (idx == 0)      { currentBiome = 0; buildForestLevel(); }
+    else if (idx == 1) { currentBiome = 1; buildCountryLevel(); }
+    else if (idx == 2) { currentBiome = 2; buildDesertLevel(); }
+    else if (idx == 3) { currentBiome = 3; buildSnowLevel(); }
+    else if (idx == 5) { currentBiome = 5; buildClassicLevel(); }
+    else if (idx == 6) { currentBiome = 3; buildCrystalLevel(); }
+    else if (idx == 7) { currentBiome = 1; buildAutumnLevel(); }
+    else if (idx == 8) { currentBiome = 0; buildSwampLevel(); }
+    else if (idx == 10){ currentBiome = 2; buildSkyLevel(); }
+    else               { currentBiome = 4; buildObsidianLevel(); }
 
     populateLevelPlants();
     initAmbientParticles();
@@ -1361,7 +1810,6 @@ static void updatePlantsAndAmbient(bool landedOrJumped) {
         if (p.room != roomIdx)
             continue;
 
-        // Gentle wind wave across the room
         int wIdx = ((tick / 5) + (p.x / 48) + p.seed) & 15;
         float wind = (float)SN[wIdx] / 256.0f * 2.6f;
 
@@ -1407,7 +1855,6 @@ static void updatePlantsAndAmbient(bool landedOrJumped) {
 }
 
 // ---------- Player ----------
-// Respawns at the start of the current screen (checkpoint)
 static void respawn() {
     px = (float)(roomIdx * FRAME_WIDTH + TILE + 8);
     py = (float)((ROWS - 1) * TILE - PH);
@@ -1421,10 +1868,18 @@ static void respawn() {
     onGround = false;
     wallLock = 0;
     coyote = 0;
+
+    if (bossActive && bossHP > 0) {
+        bossX = (float)(22 * TILE);
+        bossY = (float)((ROWS - 1) * TILE - bossH);
+        for (int i = 0; i < MAX_BOSS_SHOTS; i++)
+            bossShots[i].active = false;
+    }
 }
 
 static void die() {
     deaths++;
+    snd(6);
 
     float cx = px + PW / 2.0f;
     float cy = py + PH / 2.0f;
@@ -1455,6 +1910,151 @@ static void die() {
     vx = 0;
     vy = 0;
     deadTimer = 28;
+}
+
+static void damageBoss() {
+    if (bossHurt > 0 || bossHP <= 0)
+        return;
+
+    bossHP--;
+    bossHurt = 45;
+    hudNeed[0] = true;
+    hudNeed[1] = true;
+    snd(7);
+
+    float bcx = bossX + bossW * 0.5f;
+    float bcy = bossY + bossH * 0.5f;
+
+    for (int i = 0; i < 24; i++) {
+        float pvx = (float)(rnd(200) - 100) / 10.0f;
+        float pvy = (float)(rnd(160) - 130) / 10.0f;
+        spawnPart(bcx, bcy, pvx, pvy, 60, 7 + rnd(5), 1);
+    }
+
+    if (bossHP <= 0) {
+        // Boss defeated! Clear shots and spawn Bandage Girl in the arena
+        for (int i = 0; i < MAX_BOSS_SHOTS; i++)
+            bossShots[i].active = false;
+
+        level[16][15] = 'G';
+        needFull[0] = true;
+        needFull[1] = true;
+    }
+}
+
+static void spawnBossShot(float sx, float sy, float svx, float svy) {
+    for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
+        if (!bossShots[i].active) {
+            bossShots[i].x = sx;
+            bossShots[i].y = sy;
+            bossShots[i].vx = svx;
+            bossShots[i].vy = svy;
+            bossShots[i].active = true;
+            return;
+        }
+    }
+}
+
+static void updateBoss() {
+    if (!bossActive || bossHP <= 0)
+        return;
+
+    if (bossHurt > 0)
+        bossHurt--;
+    if (bossSwitchCooldown > 0)
+        bossSwitchCooldown--;
+    if (bossBeamTimer > 0)
+        bossBeamTimer--;
+
+    bossTimer++;
+    int tier = (currentLevel + 1) / 5;
+    float speedMul = (tier >= 2) ? 1.3f : 1.0f;
+    float floorY = (float)((ROWS - 1) * TILE - bossH);
+
+    // Boss movement & jump patterns
+    bossX += bossVX * speedMul;
+
+    if (bossX < (float)(5 * TILE)) {
+        bossX = (float)(5 * TILE);
+        bossVX = 4.2f;
+    } else if (bossX > (float)(24 * TILE)) {
+        bossX = (float)(24 * TILE);
+        bossVX = -4.2f;
+    }
+
+    // Periodic leap slam
+    if (bossTimer % 110 == 50 && bossY >= floorY - 2.0f) {
+        bossVY = -14.5f;
+    }
+
+    bossVY += 0.65f;
+    bossY += bossVY;
+    if (bossY >= floorY) {
+        bossY = floorY;
+        bossVY = 0.0f;
+    }
+
+    // Periodic projectile attack
+    int fireRate = (tier >= 2) ? 65 : 85;
+    if (bossTimer % fireRate == 0) {
+        float dir = (px < bossX) ? -1.0f : 1.0f;
+        spawnBossShot(bossX + bossW * 0.5f, bossY + bossH - 28.0f, dir * 6.5f, 0.0f);
+        if (tier >= 2) {
+            spawnBossShot(bossX + bossW * 0.5f, bossY + 24.0f, dir * 5.5f, -2.5f);
+        }
+    }
+
+    // Update boss projectiles
+    for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
+        BossShot &s = bossShots[i];
+        if (!s.active)
+            continue;
+
+        s.x += s.vx;
+        s.y += s.vy;
+
+        if (s.x < (float)TILE || s.x > (float)(FRAME_WIDTH - TILE) ||
+            s.y < (float)TILE || s.y > (float)(FRAME_HEIGHT - TILE)) {
+            s.active = false;
+            continue;
+        }
+
+        if (deadTimer == 0 && rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8,
+                                          (int)s.x - 14, (int)s.y - 14, 28, 28)) {
+            die();
+            return;
+        }
+    }
+
+    if (deadTimer > 0)
+        return;
+
+    // Check if player activates the top Arena Strike Switch (cols 15..16, row 6)
+    int swX = 15 * TILE;
+    int swY = 6 * TILE + 20;
+    if (bossSwitchCooldown == 0 &&
+        rectOverlap((int)px, (int)py, PW, PH, swX, swY, 120, 40)) {
+        bossSwitchCooldown = 140;
+        bossBeamTimer = 25;
+        vy = -12.0f;
+        damageBoss();
+        return;
+    }
+
+    // Check player vs Boss collision: Stomp on top of Boss head vs Side hazard
+    if (rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8,
+                    (int)bossX + 8, (int)bossY + 8, bossW - 16, bossH - 16)) {
+        if (vy > 0.0f && (py + PH) < (bossY + 46.0f)) {
+            // Player stomped the Boss's head!
+            py = bossY - PH;
+            vy = -16.5f;
+            squashX = 0.70f;
+            squashY = 1.32f;
+            damageBoss();
+        } else if (bossHurt == 0) {
+            die();
+        }
+    }
 }
 
 static bool touchingHazard() {
@@ -1624,6 +2224,7 @@ static void update() {
 
             spawnDust(px + PW / 2.0f, py + PH, 6, 3.0f);
             didJumpOrLand = true;
+            snd(4);
         } else if (wallL || wallR) {
             vy = -16.0f;
             vx = wallL ? 8.0f : -8.0f;
@@ -1636,6 +2237,7 @@ static void update() {
 
             spawnDust(wallL ? px : px + PW, py + PH / 2.0f, 4, 2.0f);
             didJumpOrLand = true;
+            snd(5);
         }
     }
 
@@ -1699,6 +2301,12 @@ static void update() {
 
     updatePlantsAndAmbient(didJumpOrLand);
 
+    if (bossActive)
+        updateBoss();
+
+    if (deadTimer > 0)
+        return;
+
     if (touchingHazard()) {
         die();
         return;
@@ -1708,6 +2316,7 @@ static void update() {
         winTimer = 150;
         needWin[0] = true;
         needWin[1] = true;
+        snd(8);
     }
 
     // Screen (room) selection
@@ -1853,27 +2462,22 @@ static void drawTileCell(int r, int cx, char ch, bool hi) {
         Color botC  = mk(38, 30, 58);
 
         if (currentBiome == 0) {
-            // Green Forest: rich earth & lush green grass cap
             mainC = mk(82, 54, 38);
             topC  = mk(65, 190, 75);
             botC  = mk(55, 36, 24);
         } else if (currentBiome == 1) {
-            // Golden Countryside: warm country wood/soil & golden turf
             mainC = mk(102, 62, 40);
             topC  = mk(225, 175, 55);
             botC  = mk(70, 42, 26);
         } else if (currentBiome == 2) {
-            // Sandy Desert: sandstone blocks & bright sand top
             mainC = mk(165, 118, 68);
             topC  = mk(240, 200, 115);
             botC  = mk(120, 82, 46);
         } else if (currentBiome == 3) {
-            // Snowy Peaks: frozen slate rock & thick snow cap
             mainC = mk(65, 88, 118);
             topC  = mk(230, 245, 255);
             botC  = mk(42, 58, 82);
         } else if (currentBiome == 4) {
-            // Lava Valley: dark basalt & glowing magma crust
             mainC = mk(55, 36, 46);
             topC  = mk(235, 90, 35);
             botC  = mk(34, 20, 28);
@@ -1902,7 +2506,6 @@ static void drawTileCell(int r, int cx, char ch, bool hi) {
     }
 }
 
-// Draws an interactive plant tuft that bends smoothly with player movement
 static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style) {
     Color stemDark = mk(40, 145, 55);
     Color stemBright = mk(75, 205, 85);
@@ -1946,14 +2549,10 @@ static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style)
         int b2 = (bend * 4) / 7 + b * 2;
         int b3 = bend + b * 2;
 
-        // Base segment
         fillRect(ox - 2, by - segH, 4, segH, stemDark);
-        // Middle curved segment
         fillRect(ox - 2 + b1, by - segH * 2, 4, segH, stemBright);
-        // Upper curved segment
         fillRect(ox - 2 + b2, by - segH * 3, 3, segH, stemBright);
 
-        // Flower bud / wheat ear / glowing tip on center or side blades
         if (biome == 1) {
             fillRect(ox - 2 + b3, by - segH * 3 - 5, 5, 6, tipCol);
         } else if (b == 0 && style != 2) {
@@ -1977,10 +2576,8 @@ static bool starDim(int i, int phase) {
     return ((phase + i) % 4) == 0;
 }
 
-// Static background themed for each of the 6 biomes
 static void paintBackground() {
     if (currentBiome == 0) {
-        // Biome 0: Lush Green Forest (Sunny Day + Forest Canopy)
         Color sky1 = mk(75, 170, 235);
         Color sky2 = mk(115, 200, 245);
         Color farC = mk(42, 110, 75);
@@ -1991,11 +2588,9 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        // Warm sun
         fillRect(1480, 95, 110, 110, mk(255, 235, 120));
         fillRect(1495, 80, 80, 140, mk(255, 245, 160));
 
-        // Soft clouds
         for (int i = 0; i < 4; i++) {
             int cx = 180 + i * 440;
             int cy = 130 + (i & 1) * 55;
@@ -2003,7 +2598,6 @@ static void paintBackground() {
             fillRect(cx + 30, cy - 20, 110, 24, mk(245, 252, 255));
         }
 
-        // Distant forest trees
         for (int i = 0; i < 5; i++) {
             int x = i * 400 + 60;
             fillRect(x + 60, 430, 140, 140, farC);
@@ -2011,7 +2605,6 @@ static void paintBackground() {
             fillRect(x + 220, 460, 130, 110, farC);
         }
 
-        // Near forest trees
         for (int i = 0; i < 6; i++) {
             int x = i * 330 + 40;
             fillRect(x + 70, 620, 36, 90, mk(68, 44, 28));
@@ -2022,7 +2615,7 @@ static void paintBackground() {
     }
 
     if (currentBiome == 1) {
-        // Biome 1: Golden Countryside (Warm Sunset + Hills + Windmill)
+        // Biome 1: Golden Countryside (Fixed: Round Dome Silo & Trees, NO cross shape!)
         Color sky1 = mk(195, 95, 75);
         Color sky2 = mk(240, 155, 85);
         Color farC = mk(135, 82, 52);
@@ -2033,28 +2626,25 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        // Setting golden sun
         fillRect(1420, 210, 130, 130, mk(255, 215, 95));
         fillRect(1440, 195, 90, 160, mk(255, 230, 130));
 
-        // Rolling countryside hills
         for (int i = 0; i < 4; i++) {
             int x = i * 500;
             fillRect(x + 40, 470, 260, 100, farC);
             fillRect(x + 90, 440, 160, 40, farC);
         }
 
-        // Country barn & windmill silhouettes
-        fillRect(420, 450, 140, 120, nearC);
-        fillRect(445, 415, 90, 40, nearC);
-        fillRect(1180, 390, 60, 180, nearC);
-        fillRect(1120, 410, 180, 14, mk(75, 42, 28));
-        fillRect(1203, 330, 14, 180, mk(75, 42, 28));
+        // Country Barn + Rounded Grain Silo + Cypress Trees (no cross shapes)
+        fillRect(420, 450, 150, 120, nearC);
+        fillRect(445, 420, 100, 35, nearC);
+        fillRect(1160, 420, 76, 150, nearC);
+        fillRect(1172, 398, 52, 26, nearC);
+        fillRect(1265, 455, 110, 115, nearC);
         return;
     }
 
     if (currentBiome == 2) {
-        // Biome 2: Sandy Desert (Scorching Sun + Pyramids + Dunes)
         Color sky1 = mk(230, 145, 65);
         Color sky2 = mk(248, 198, 115);
         Color farC = mk(195, 135, 68);
@@ -2065,11 +2655,9 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        // Blazing desert sun
         fillRect(1490, 105, 120, 120, mk(255, 245, 175));
         fillRect(1510, 90, 80, 150, mk(255, 250, 205));
 
-        // Distant pyramids
         for (int i = 0; i < 3; i++) {
             int px0 = 260 + i * 560;
             for (int step = 0; step < 8; step++) {
@@ -2078,7 +2666,6 @@ static void paintBackground() {
             }
         }
 
-        // Sand dunes
         for (int i = 0; i < 4; i++) {
             int x = i * 500;
             fillRect(x + 60, 610, 280, 90, nearC);
@@ -2088,7 +2675,6 @@ static void paintBackground() {
     }
 
     if (currentBiome == 3) {
-        // Biome 3: Snowy Mountain Peaks (Arctic Sky + Snow-Capped Mountains)
         Color sky1 = mk(38, 62, 102);
         Color sky2 = mk(68, 105, 152);
         Color farC = mk(95, 135, 178);
@@ -2099,7 +2685,6 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        // Pale ice moon
         fillRect(1500, 110, 96, 96, mk(220, 240, 255));
 
         for (int i = 0; i < 3; i++) {
@@ -2119,7 +2704,6 @@ static void paintBackground() {
     }
 
     if (currentBiome == 4) {
-        // Biome 4: Volcanic Lava Valley
         Color sky1 = mk(42, 14, 24);
         Color sky2 = mk(78, 24, 32);
         Color farC = mk(58, 22, 30);
@@ -2130,11 +2714,9 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        // Glowing crimson moon
         fillRect(1500, 115, 100, 100, mk(235, 95, 50));
         fillRect(1520, 130, 65, 70, mk(255, 155, 70));
 
-        // Volcano silhouettes with glowing craters
         for (int i = 0; i < 3; i++) {
             int x = i * 680;
             fillRect(x + 120, 400, 220, 170, farC);
@@ -2148,7 +2730,7 @@ static void paintBackground() {
         return;
     }
 
-    // Biome 5: Original Classic Night Sky (100% preserved)
+    // Biome 5: Classic Night Sky
     Color farC = mk(35, 20, 75);
     Color nearC = mk(25, 14, 55);
 
@@ -2201,7 +2783,6 @@ static void drawSplatsClipped(int b) {
     }
 }
 
-// Repaint a small area of buffer b from the static layer
 static void restoreRect(
     int b, int x, int y, int w, int h, bool withSplats
 ) {
@@ -2250,6 +2831,11 @@ static void addDirty(int b, int x, int y, int w, int h) {
 }
 
 static int progressNow() {
+    if (bossActive) {
+        if (bossMaxHP <= 0) return 0;
+        return (bossHP * 520) / bossMaxHP;
+    }
+
     int p = (int)((px / (float)WORLD_WIDTH) * 520.0f);
 
     if (p < 0) p = 0;
@@ -2279,8 +2865,15 @@ static void drawHUDFull(int b) {
 
     int prog = progressNow();
 
-    fillRect(700, 45, 520, 14, mk(45, 35, 70));
-    fillRect(700, 45, prog, 14, mk(205, 40, 100));
+    if (bossActive) {
+        drawLabel(T_BOSS_HP, 960, 10, 32, 3, mk(255, 215, 90));
+        fillRect(696, 42, 528, 22, mk(30, 18, 45));
+        fillRect(700, 45, 520, 16, mk(65, 25, 35));
+        fillRect(700, 45, prog, 16, mk(245, 55, 40));
+    } else {
+        fillRect(700, 45, 520, 14, mk(45, 35, 70));
+        fillRect(700, 45, prog, 14, mk(205, 40, 100));
+    }
 
     hudSq[b] = hudN;
     hudProg[b] = prog;
@@ -2296,10 +2889,37 @@ static void drawRoomSplats(int b) {
     }
 }
 
+static void drawBossChar(int bx, int by, int bw, int bh, bool hurt) {
+    Color armorDark = hurt ? mk(255, 240, 180) : mk(85, 22, 32);
+    Color armorMain = hurt ? mk(255, 255, 255) : mk(175, 35, 45);
+    Color coreCol   = (tick & 4) ? mk(255, 215, 65) : mk(255, 110, 30);
+
+    // Armored body
+    fillRect(bx, by, bw, bh, armorDark);
+    fillRect(bx + 8, by + 8, bw - 16, bh - 16, armorMain);
+
+    // Glowing vulnerable top crown (shows player they can stomp the head!)
+    fillRect(bx + 20, by - 8, bw - 40, 10, coreCol);
+
+    // Fierce boss eyes
+    fillRect(bx + 18, by + 26, 24, 20, mk(255, 240, 90));
+    fillRect(bx + bw - 42, by + 26, 24, 20, mk(255, 240, 90));
+    fillRect(bx + 24, by + 32, 12, 12, mk(20, 0, 0));
+    fillRect(bx + bw - 36, by + 32, 12, 12, mk(20, 0, 0));
+
+    // Angry brow
+    fillRect(bx + 14, by + 20, 32, 6, armorDark);
+    fillRect(bx + bw - 46, by + 20, 32, 6, armorDark);
+
+    // Grille mouth
+    fillRect(bx + 22, by + 68, bw - 44, 20, mk(35, 10, 18));
+    for (int k = 0; k < 4; k++)
+        fillRect(bx + 28 + k * 14, by + 70, 6, 16, coreCol);
+}
+
 static void renderGame(int b) {
     resetClip();
 
-    // Level complete screen (drawn once per buffer)
     if (winTimer > 0) {
         if (needWin[b]) {
             fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT,
@@ -2460,13 +3080,13 @@ static void renderGame(int b) {
                 fillRect(
                     700 + hudProg[b], 45,
                     prog - hudProg[b], 14,
-                    mk(205, 40, 100)
+                    bossActive ? mk(245, 55, 40) : mk(205, 40, 100)
                 );
             } else if (prog < hudProg[b]) {
                 fillRect(
                     700 + prog, 45,
                     hudProg[b] - prog, 14,
-                    mk(45, 35, 70)
+                    bossActive ? mk(65, 25, 35) : mk(45, 35, 70)
                 );
             }
 
@@ -2479,7 +3099,6 @@ static void renderGame(int b) {
 
     int roomX = roomIdx * FRAME_WIDTH;
 
-    // Ambient biome particles (leaves, pollen, sand, snow, embers)
     Color ambCol = mk(235, 245, 255);
     if (currentBiome == 0) ambCol = mk(140, 235, 110);
     else if (currentBiome == 1) ambCol = mk(255, 230, 130);
@@ -2498,7 +3117,6 @@ static void renderGame(int b) {
         addDirty(b, ax - 1, ay - 1, sz + 2, sz + 2);
     }
 
-    // Interactive world plants (grass, wheat, desert scrub, frost reeds, lava ferns)
     for (int i = 0; i < plantCount; i++) {
         Plant &p = plants[i];
         if (p.room != roomIdx)
@@ -2520,6 +3138,40 @@ static void renderGame(int b) {
                 drawSaw(cx, cy);
                 addDirty(b, cx - 27, cy - 27, 55, 55);
             }
+        }
+    }
+
+    // ----- Boss Arena Objects (Switch, Laser Beam, Boss, Projectiles) -----
+    if (bossActive && bossHP > 0) {
+        int swX = 15 * TILE + 20;
+        int swY = 7 * TILE - 18;
+        Color swCol = (bossSwitchCooldown == 0) ?
+                      ((tick & 8) ? mk(80, 255, 120) : mk(40, 200, 85)) :
+                      mk(90, 80, 100);
+        fillRect(swX, swY, 80, 18, swCol);
+        addDirty(b, swX - 2, swY - 2, 84, 22);
+
+        int bx = (int)bossX;
+        int by = (int)bossY;
+
+        if (bossBeamTimer > 0) {
+            int beamX = bx + bossW / 2 - 16;
+            fillRect(beamX, 7 * TILE, 32, by - 7 * TILE + 20, mk(120, 255, 220));
+            addDirty(b, beamX - 4, 7 * TILE, 40, by - 7 * TILE + 24);
+        }
+
+        drawBossChar(bx, by, bossW, bossH, (bossHurt & 2) != 0);
+        addDirty(b, bx - 6, by - 12, bossW + 12, bossH + 16);
+
+        for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
+            BossShot &s = bossShots[i];
+            if (!s.active)
+                continue;
+            int sx = (int)s.x;
+            int sy = (int)s.y;
+            fillRect(sx - 14, sy - 14, 28, 28, mk(255, 95, 35));
+            fillRect(sx - 8, sy - 8, 16, 16, mk(255, 235, 90));
+            addDirty(b, sx - 16, sy - 16, 32, 32);
         }
     }
 
@@ -2642,28 +3294,23 @@ static void drawBigSaw(int cx, int cy, int R) {
     }
 }
 
-// Draws a controller button prompt badge inside tutorial cutscenes
 static void drawPadPrompt(int x, int y, bool dirL, bool dirR, bool sqOn, bool xOn, const char *label) {
     fillRect(x, y, 420, 74, mk(22, 16, 38));
     fillRect(x + 3, y + 3, 414, 68, mk(38, 28, 62));
 
-    // Direction arrows badge
     fillRect(x + 18, y + 16, 42, 42, dirL ? mk(90, 200, 255) : mk(55, 45, 80));
     drawTextC(x + 39, y + 27, "<", 3, mk(255, 255, 255));
 
     fillRect(x + 68, y + 16, 42, 42, dirR ? mk(90, 200, 255) : mk(55, 45, 80));
     drawTextC(x + 89, y + 27, ">", 3, mk(255, 255, 255));
 
-    // Square button badge (Sprint)
     fillRect(x + 130, y + 16, 54, 42, sqOn ? mk(235, 65, 145) : mk(55, 45, 80));
     fillRect(x + 147, y + 25, 20, 20, mk(255, 255, 255));
     fillRect(x + 151, y + 29, 12, 12, sqOn ? mk(235, 65, 145) : mk(55, 45, 80));
 
-    // Cross (X) button badge (Jump)
     fillRect(x + 196, y + 16, 54, 42, xOn ? mk(65, 165, 255) : mk(55, 45, 80));
     drawTextC(x + 223, y + 27, "X", 3, mk(255, 255, 255));
 
-    // Action label
     drawTextC(x + 332, y + 29, label, 2, (xOn || sqOn) ? mk(255, 235, 110) : mk(190, 180, 215));
 }
 
@@ -2732,19 +3379,16 @@ static void drawStoryArt(int art) {
         return;
     }
 
-    // ---------- Animated Gameplay Tutorial Cutscenes (art 10..14) ----------
+    // ---------- Animated Gameplay & Boss Tutorial Cutscenes (art 10..15) ----------
     if (art == 10) {
-        // Tutorial 1: Green Forest - Short Jump vs High Jump + Interactive Grass
         fillRect(ax, ay, aw, ah, mk(65, 160, 225));
         fillRect(ax + 820, ay + 35, 70, 70, mk(255, 235, 120));
 
-        // Ground & high ledge
         fillRect(ax, ay + 400, aw, 100, mk(82, 54, 38));
         fillRect(ax, ay + 400, aw, 8, mk(65, 190, 75));
         fillRect(ax + 700, ay + 290, 240, 110, mk(82, 54, 38));
         fillRect(ax + 700, ay + 290, 240, 8, mk(65, 190, 75));
 
-        // Spike obstacle
         for (int j = 0; j < 34; j++) {
             int half = (j * 22) / 33;
             fillRect(ax + 370 - half, ay + 366 + j, 2 * half + 1, 1, mk(215, 215, 225));
@@ -2759,14 +3403,12 @@ static void drawStoryArt(int art) {
         const char *lbl = "WALK";
 
         if (cyc >= 45 && cyc < 85) {
-            // Short jump over spike
             int jt = cyc - 45;
             cy = ay + 356 - (jt * (40 - jt)) / 4;
             xOn = (jt < 12);
             lbl = "TAP X";
             if (jt < 6) { dw = 36; dh = 52; }
         } else if (cyc >= 110 && cyc < 160) {
-            // High jump (Holding X) onto high platform
             int jt = cyc - 110;
             cy = ay + 356 - (jt * (55 - jt)) / 4;
             if (jt > 32 && cy > ay + 246) cy = ay + 246;
@@ -2778,7 +3420,6 @@ static void drawStoryArt(int art) {
             lbl = "GREAT!";
         }
 
-        // Interactive grass tufts bending as demo cube passes
         for (int i = 0; i < 7; i++) {
             int gx = ax + 110 + i * 80;
             if (i == 3) continue;
@@ -2793,17 +3434,14 @@ static void drawStoryArt(int art) {
     }
 
     if (art == 11) {
-        // Tutorial 2: Golden Countryside - Sprinting with Square + Long Jump
         fillRect(ax, ay, aw, ah, mk(215, 125, 75));
         fillRect(ax + 820, ay + 120, 90, 90, mk(255, 215, 95));
 
-        // Left & Right runways with a wide chasm in between
         fillRect(ax, ay + 400, 420, 100, mk(102, 62, 40));
         fillRect(ax, ay + 400, 420, 8, mk(225, 175, 55));
         fillRect(ax + 660, ay + 400, 340, 100, mk(102, 62, 40));
         fillRect(ax + 660, ay + 400, 340, 8, mk(225, 175, 55));
 
-        // Spikes in chasm
         for (int s = 0; s < 5; s++) {
             int scx = ax + 450 + s * 46;
             for (int j = 0; j < 32; j++) {
@@ -2828,7 +3466,6 @@ static void drawStoryArt(int art) {
             lbl = "LONG JUMP";
         }
 
-        // Golden wheat bending sharply as player sprints through
         for (int i = 0; i < 5; i++) {
             int wx = ax + 80 + i * 70;
             int bend = (cx > wx - 25 && cx < wx + 70) ? 14 : (SN[(t / 5 + i) & 15] / 28);
@@ -2840,7 +3477,6 @@ static void drawStoryArt(int art) {
             drawPlantTuft(wx, ay + 400, 26, bend, 1, i % 2);
         }
 
-        // Sprint speed dust trail
         if (sqOn && cyc < 52) {
             fillRect(cx - 18, cy + 32, 10, 10, mk(245, 225, 180));
             fillRect(cx - 34, cy + 35, 7, 7, mk(215, 195, 150));
@@ -2852,13 +3488,11 @@ static void drawStoryArt(int art) {
     }
 
     if (art == 12) {
-        // Tutorial 3: Sandy Desert - Wall Slide & Wall Jump
         fillRect(ax, ay, aw, ah, mk(235, 165, 85));
         fillRect(ax, ay + 420, aw, 80, mk(165, 118, 68));
         fillRect(ax, ay + 420, aw, 8, mk(240, 200, 115));
 
-        // Left & Right desert canyon walls
-        fillRect(ax + 340, ay + 150, 55, 270, mk(150, 105, 58));
+        fillRect(ax + 340, ay + 150, 55, 200, mk(150, 105, 58));
         fillRect(ax + 590, ay + 120, 55, 300, mk(150, 105, 58));
         fillRect(ax + 590, ay + 120, 220, 45, mk(165, 118, 68));
         fillRect(ax + 590, ay + 120, 220, 7, mk(240, 200, 115));
@@ -2880,14 +3514,12 @@ static void drawStoryArt(int art) {
             dirR = true;
             xOn = (cyc < 10);
         } else if (cyc < 75) {
-            // Sliding down right wall
             cx = ax + 546;
             cy = ay + 236 + ((cyc - 35) * 60) / 40;
             dirR = true;
             lbl = "SLIDE";
             fillRect(cx + 42, cy + 10, 8, 8, mk(240, 220, 180));
         } else if (cyc < 115) {
-            // Wall Jump #1 to left wall
             int wt = cyc - 75;
             cx = ax + 546 - (wt * 151) / 40;
             cy = ay + 296 - (wt * 120) / 40;
@@ -2896,7 +3528,6 @@ static void drawStoryArt(int art) {
             xOn = (wt < 12);
             lbl = "WALL X!";
         } else if (cyc < 155) {
-            // Wall Jump #2 to top right ledge
             int wt = cyc - 115;
             cx = ax + 395 + (wt * 225) / 40;
             cy = ay + 176 - (wt * 100) / 40;
@@ -2917,14 +3548,12 @@ static void drawStoryArt(int art) {
     }
 
     if (art == 13) {
-        // Tutorial 4: Snowy Peaks - Spinning Saws & Ledge Timing
         fillRect(ax, ay, aw, ah, mk(52, 85, 130));
         fillRect(ax, ay + 400, 410, 100, mk(65, 88, 118));
         fillRect(ax, ay + 400, 410, 8, mk(230, 245, 255));
         fillRect(ax + 590, ay + 400, 410, 100, mk(65, 88, 118));
         fillRect(ax + 590, ay + 400, 410, 8, mk(230, 245, 255));
 
-        // Live spinning saw in the center gap
         drawSaw(ax + 500, ay + 370);
 
         int cyc = t % 160;
@@ -2952,56 +3581,44 @@ static void drawStoryArt(int art) {
         return;
     }
 
-    // Tutorial 5 (art == 14): Lava Valley - Master Combo
-    fillRect(ax, ay, aw, ah, mk(55, 20, 30));
-    fillRect(ax, ay + 410, 430, 90, mk(55, 36, 46));
-    fillRect(ax, ay + 410, 430, 8, mk(235, 90, 35));
+    // Animated Boss Fight Tutorial Cutscene (art 14 & 15)
+    fillRect(ax, ay, aw, ah, (art == 14) ? mk(55, 20, 30) : mk(28, 22, 58));
+    fillRect(ax, ay + 410, aw, 90, mk(55, 36, 46));
+    fillRect(ax, ay + 410, aw, 8, (art == 14) ? mk(235, 90, 35) : mk(145, 105, 180));
 
-    // Middle wall & upper goal platform
-    fillRect(ax + 580, ay + 190, 50, 240, mk(55, 36, 46));
-    fillRect(ax + 700, ay + 250, 260, 250, mk(55, 36, 46));
-    fillRect(ax + 700, ay + 250, 260, 8, mk(235, 90, 35));
+    // Upper platform & green strike switch
+    fillRect(ax + 400, ay + 180, 200, 32, mk(55, 36, 46));
+    fillRect(ax + 460, ay + 164, 80, 16, (t & 8) ? mk(80, 255, 120) : mk(40, 200, 85));
 
-    drawSaw(ax + 310, ay + 380);
+    int cyc = t % 160;
+    int bx = ax + 620 - (cyc < 80 ? cyc * 2 : (160 - cyc) * 2);
+    int by = ay + 306;
+    bool bossHit = (cyc >= 70 && cyc < 110);
 
-    // Bandage Girl waiting at the goal
-    fillRect(ax + 860, ay + 206, PW, PH, mk(255, 140, 170));
-    fillRect(ax + 860, ay + 209, PW, 7, mk(240, 230, 200));
-    drawFace(ax + 860, ay + 206, -1, mk(255, 255, 255));
+    drawBossChar(bx, by, 104, 104, bossHit && (t & 2));
 
-    int cyc = t % 180;
-    int cx = ax + 80;
+    int cx = ax + 180;
     int cy = ay + 366;
-    bool sqOn = (cyc < 140);
-    bool xOn = (cyc >= 25 && cyc < 50) || (cyc >= 95 && cyc < 115);
-    const char *lbl = "COMBO!";
+    bool xOn = (cyc >= 25 && cyc < 55);
+    const char *lbl = "BOSS FIGHT";
 
     if (cyc < 25) {
-        cx = ax + 80 + cyc * 6;
-    } else if (cyc < 75) {
+        cx = ax + 160 + cyc * 5;
+    } else if (cyc < 72) {
         int jt = cyc - 25;
-        cx = ax + 230 + (jt * 306) / 50;
-        cy = ay + 366 - (jt * (50 - jt)) / 4 - jt * 2;
-    } else if (cyc < 95) {
-        cx = ax + 536;
-        cy = ay + 266 + (cyc - 75);
-        lbl = "WALL!";
-    } else if (cyc < 140) {
-        int wt = cyc - 95;
-        cx = ax + 536 + (wt * 240) / 45;
-        cy = ay + 286 - (wt * (45 - wt)) / 5 - (wt * 80) / 45;
-        lbl = "LEAP!";
+        cx = ax + 285 + (jt * 235) / 47;
+        cy = ay + 366 - (jt * (47 - jt)) / 3 - (jt * 104) / 47;
+        lbl = "STOMP HEAD!";
     } else {
-        cx = ax + 780;
-        cy = ay + 206 - ((t / 6) & 1) * 6;
-        lbl = "VICTORY!";
+        int bt = cyc - 72;
+        cx = ax + 520 + (bt * 240) / 88;
+        cy = ay + 262 - (bt * (70 - bt)) / 6;
+        if (cy > ay + 366) cy = ay + 366;
+        lbl = "BOSS HIT!";
     }
 
-    drawPlantTuft(ax + 130, ay + 410, 22, (iabs(cx - (ax + 130)) < 45) ? 13 : 3, 4, 0);
-    drawPlantTuft(ax + 750, ay + 250, 22, (iabs(cx - (ax + 750)) < 45) ? 13 : 3, 4, 1);
-
     drawMiniDemoCube(cx, cy, 44, 44, 1);
-    drawPadPrompt(ax + 290, ay + 20, false, cyc < 140, sqOn, xOn, lbl);
+    drawPadPrompt(ax + 290, ay + 20, false, true, true, xOn, lbl);
 }
 
 // ---------- Cutscenes ----------
@@ -3098,7 +3715,6 @@ static void renderStory(int b) {
         storyShown[b] = 0;
     }
 
-    // Animate the cutscene / gameplay tutorial viewport in real-time
     drawStoryArt(PAGES[storyPage].art);
 
     if (typed > storyShown[b]) {
@@ -3162,11 +3778,26 @@ static void startStory(int id) {
     state = S_STORY;
 }
 
+static void launchSelectedLevel(int lvl) {
+    levelSel = lvl;
+    currentLevel = lvl;
+
+    if (lvl == 0 && !introSeen) {
+        introSeen = true;
+        startStory(0);
+    } else if (lvl >= 0 && lvl <= 4) {
+        startStory(2 + lvl);
+    } else if (lvl == 9 || isBossStage(lvl)) {
+        startStory(7);
+    } else {
+        startLevel();
+    }
+}
+
 static void endStory() {
     if (storyId == 0) {
-        // After the intro story, show Stage 1's animated gameplay tutorial
         startStory(2);
-    } else if (storyId >= 2 && storyId <= 6) {
+    } else if (storyId >= 2 && storyId <= 7) {
         startLevel();
     } else {
         setState(S_LEVELS);
@@ -3291,30 +3922,44 @@ static void drawItem(int i) {
 
             bool sel = (i == levelSel);
             bool unlocked = (i < unlockedLevels);
+            bool boss = isBossStage(i);
 
             if (sel)
                 fillRect(x, y, 90, 90,
                          mk(245,245,255));
+            else if (boss && unlocked)
+                fillRect(x, y, 90, 90,
+                         mk(255,195,55));
 
-            int inset = sel ? 6 : 0;
+            int inset = (sel || (boss && unlocked)) ? 6 : 0;
+
+            Color boxCol = unlocked ?
+                           (boss ? mk(165, 15, 45) : mk(205, 25, 35)) :
+                           mk(50, 40, 62);
 
             fillRect(
                 x + inset,
                 y + inset,
                 90 - 2 * inset,
                 90 - 2 * inset,
-                unlocked ? mk(205,25,35) :
-                           mk(50,40,62)
+                boxCol
             );
 
             if (unlocked) {
-                char buf[4];
+                if (boss) {
+                    // Golden boss crown emblem at top of tile
+                    fillRect(x + 27, y + 10, 36, 6, mk(255, 215, 70));
+                    fillRect(x + 27, y + 6, 8, 6, mk(255, 215, 70));
+                    fillRect(x + 41, y + 4, 8, 8, mk(255, 215, 70));
+                    fillRect(x + 55, y + 6, 8, 6, mk(255, 215, 70));
+                }
 
+                char buf[4];
                 intToStr(i + 1, buf);
 
                 drawTextC(
                     x + 45,
-                    y + 24,
+                    y + (boss ? 28 : 24),
                     buf,
                     6,
                     mk(255,255,255)
@@ -3338,7 +3983,7 @@ static void drawItem(int i) {
                 char buf[64];
                 char n[4];
 
-                strcpy(buf, "LEVEL ");
+                strcpy(buf, isBossStage(levelSel) ? "BOSS LEVEL " : "LEVEL ");
                 intToStr(levelSel + 1, n);
                 strcat(buf, n);
                 strcat(buf, ok ? ": PRESS X TO PLAY" : ": LOCKED");
@@ -3477,16 +4122,7 @@ static void updateUI() {
 
         if (ok && levelSel < unlockedLevels) {
             snd(1);
-            currentLevel = levelSel;
-
-            if (levelSel == 0 && !introSeen) {
-                introSeen = true;
-                startStory(0);
-            } else if (levelSel >= 0 && levelSel <= 4) {
-                startStory(2 + levelSel);
-            } else {
-                startLevel();
-            }
+            launchSelectedLevel(levelSel);
         }
 
         else if (ok) {
@@ -3601,14 +4237,8 @@ int main(void) {
                     if (currentLevel + 2 > unlockedLevels && unlockedLevels < NUM_LEVELS)
                         unlockedLevels = currentLevel + 2;
 
-                    if (currentLevel < 4) {
-                        currentLevel++;
-                        levelSel = currentLevel;
-                        startStory(2 + currentLevel);
-                    } else if (currentLevel == 4) {
-                        currentLevel++;
-                        levelSel = currentLevel;
-                        startLevel();
+                    if (currentLevel < 11) {
+                        launchSelectedLevel(currentLevel + 1);
                     } else {
                         startStory(1);
                     }
@@ -3655,6 +4285,8 @@ int main(void) {
             renderStory(b);
         else
             drawUI(b);
+
+        updateAudioFrame();
 
         scene->SubmitFlip(frameID);
         scene->FrameWait(frameID);
