@@ -3,6 +3,7 @@
 #include <string.h>
 #include <sstream>
 #include <math.h>
+#include <pthread.h>
 
 #include <orbis/Pad.h>
 #include <orbis/UserService.h>
@@ -60,7 +61,7 @@ static OrbisPadData padData;
 
 #ifndef NO_AUDIO
 static int audioHandle = -1;
-static int audioGran = 768;
+static pthread_t audioThread;
 #endif
 
 // ---------- Game state ----------
@@ -447,69 +448,37 @@ static bool navEvent(int i, bool pressed) {
     return false;
 }
 
-// ---------- Halal Audio Engine (Menu SFX + Gameplay Percussion & Vocal Hum) ----------
-static int sfxKind = -1;
-static int sfxPos = 0;
-static int sfxLen = 0;
-static int sfxPhase = 0;
-static int bgmSample = 0;
-static int humPhase1 = 0;
-static int humPhase2 = 0;
-static int duffPhase = 0;
-static unsigned int noiseRng = 987654321u;
+// ---------- Dedicated Thread Halal Audio Engine (256-sample PS4 stream) ----------
+static volatile int sfxReq = -1;
+static volatile int sfxTriggerSeq = 0;
 
-static void initAudio() {
-#ifndef NO_AUDIO
-    sceAudioOutInit();
-    audioGran = 768;
-    audioHandle = sceAudioOutOpen(padUserID, 0, 0, audioGran, 48000, 1);
-    if (audioHandle < 0) {
-        audioHandle = sceAudioOutOpen(0xFF, 0, 0, audioGran, 48000, 1);
-    }
-    if (audioHandle < 0) {
-        audioGran = 256;
-        audioHandle = sceAudioOutOpen(padUserID, 0, 0, audioGran, 48000, 1);
-        if (audioHandle < 0)
-            audioHandle = sceAudioOutOpen(0xFF, 0, 0, audioGran, 48000, 1);
-    }
-#endif
-}
-
-// Triggers non-blocking sound effect for menus & gameplay actions
+// Triggers sound effect for menus & gameplay actions:
 // 0=cursor, 1=select, 2=back, 3=locked, 4=jump, 5=walljump, 6=die, 7=bosshit, 8=win
 static void snd(int k) {
-    sfxKind = k;
-    sfxPos = 0;
-    sfxPhase = 0;
-
-    if (k == 0) sfxLen = 1400;       // Menu move: crisp wooden/duff tap
-    else if (k == 1) sfxLen = 4200;  // Menu confirm: warm double chime
-    else if (k == 2) sfxLen = 2800;  // Menu back
-    else if (k == 3) sfxLen = 3600;  // Locked thud
-    else if (k == 4) sfxLen = 3200;  // Player Jump whoosh
-    else if (k == 5) sfxLen = 3600;  // Wall Jump kick
-    else if (k == 6) sfxLen = 6400;  // Player Death impact
-    else if (k == 7) sfxLen = 7200;  // Boss Hit impact
-    else sfxLen = 12000;             // Victory vocal fanfare
+    sfxReq = k;
+    sfxTriggerSeq++;
 }
 
-static void updateAudioFrame() {
 #ifndef NO_AUDIO
-    if (audioHandle < 0)
-        return;
+static void *audioThreadMain(void *arg) {
+    (void)arg;
 
-    bool playBgm = (state == S_PLAY && winTimer == 0);
-    if (!playBgm && sfxKind < 0)
-        return;
+    short outBuf[256 * 2];
 
-    static short outBuf[768 * 2];
-    int nSamples = audioGran;
+    int curSfx = -1;
+    int sfxPos = 0;
+    int sfxLen = 0;
+    int sfxPhase = 0;
+    int lastSeq = 0;
 
-    // Rhythmic tempo: faster during Boss Fights
-    int stepSamples = bossActive ? 5000 : 6000; // 16th-note duration at 48kHz
+    int bgmSample = 0;
+    int humPhase1 = 0;
+    int humPhase2 = 0;
+    int duffPhase = 0;
+    unsigned int noiseRng = 987654321u;
 
-    // Vocal acapella hum frequencies (warm natural fifth intervals, no instruments)
-    static const int HUM_BASE[4] = { 110, 130, 146, 130 };
+    // Acapella vocal hum frequencies (natural fifths, no musical instruments)
+    static const int HUM_BASE[4]    = { 110, 130, 146, 130 };
     static const int HUM_HARMONY[4] = { 165, 195, 220, 195 };
 
     // 16-step Halal Percussion Pattern (1 = Dum / low duff, 2 = Tak / crisp rim, 3 = light shaker)
@@ -518,141 +487,187 @@ static void updateAudioFrame() {
         1, 1, 3, 2,  0, 2, 3, 2
     };
 
-    for (int i = 0; i < nSamples; i++) {
-        int mix = 0;
+    for (;;) {
+        if (audioHandle < 0)
+            break;
 
-        // 1) Halal Gameplay Rhythm (Duff percussion + Acapella Vocal Hum)
-        if (playBgm) {
-            int step = (bgmSample / stepSamples) & 15;
-            int inStep = bgmSample % stepSamples;
-            int bar = (bgmSample / (stepSamples * 16)) & 3;
-            bgmSample++;
+        // Check if main thread requested a new sound effect
+        int seq = sfxTriggerSeq;
+        if (seq != lastSeq) {
+            lastSeq = seq;
+            curSfx = sfxReq;
+            sfxPos = 0;
+            sfxPhase = 0;
 
-            unsigned char hit = BEAT_PAT[step];
-
-            // Deep Duff "Dum" (warm membrane thud)
-            if (hit == 1 && inStep < 3200) {
-                int env = 3200 - inStep;
-                int freq = 62 + (env >> 6);
-                duffPhase += freq;
-                if (duffPhase >= 48000) duffPhase -= 48000;
-                int wave = duffPhase < 24000 ? (duffPhase - 12000) : (36000 - duffPhase);
-                mix += (wave * env) / 14000;
-            }
-            // Crisp Duff "Tak" (hand percussion tap)
-            else if (hit == 2 && inStep < 1400) {
-                int env = 1400 - inStep;
-                noiseRng = noiseRng * 1664525u + 1013904223u;
-                int nz = ((int)(noiseRng >> 20) & 511) - 256;
-                duffPhase += 280;
-                if (duffPhase >= 48000) duffPhase -= 48000;
-                int body = duffPhase < 24000 ? 180 : -180;
-                mix += ((nz + body) * env) / 800;
-            }
-            // Subtle breath/shaker pulse
-            else if (hit == 3 && inStep < 700) {
-                int env = 700 - inStep;
-                noiseRng = noiseRng * 1664525u + 1013904223u;
-                int nz = ((int)(noiseRng >> 22) & 255) - 128;
-                mix += (nz * env) / 900;
-            }
-
-            // Warm Acapella Vocal Hum (formant-smoothed triangle choir pad)
-            int f1 = HUM_BASE[bar];
-            int f2 = HUM_HARMONY[bar];
-            if (bossActive) {
-                f1 += 22;
-                f2 += 33;
-            }
-
-            humPhase1 += f1;
-            if (humPhase1 >= 48000) humPhase1 -= 48000;
-            humPhase2 += f2;
-            if (humPhase2 >= 48000) humPhase2 -= 48000;
-
-            int v1 = humPhase1 < 24000 ? (humPhase1 - 12000) : (36000 - humPhase1);
-            int v2 = humPhase2 < 24000 ? (humPhase2 - 12000) : (36000 - humPhase2);
-
-            // Breathing envelope across each step
-            int breath = inStep < (stepSamples / 2) ? inStep : (stepSamples - inStep);
-            int humAmp = 450 + (breath / 12);
-            mix += ((v1 + v2) * humAmp) / 24000;
+            if (curSfx == 0)      sfxLen = 1400;   // Menu cursor move
+            else if (curSfx == 1) sfxLen = 4500;   // Menu select confirm
+            else if (curSfx == 2) sfxLen = 2800;   // Menu back
+            else if (curSfx == 3) sfxLen = 4000;   // Locked
+            else if (curSfx == 4) sfxLen = 3400;   // Jump whoosh
+            else if (curSfx == 5) sfxLen = 3800;   // Wall jump kick
+            else if (curSfx == 6) sfxLen = 6800;   // Player death
+            else if (curSfx == 7) sfxLen = 7500;   // Boss hit
+            else                  sfxLen = 14000;  // Victory chord
         }
 
-        // 2) Active Sound Effect (Menu UI & Gameplay SFX)
-        if (sfxKind >= 0) {
-            int rem = sfxLen - sfxPos;
-            if (rem <= 0) {
-                sfxKind = -1;
-            } else {
-                int s = 0;
-                int f = 440;
+        bool playBgm = (state == S_PLAY && winTimer == 0);
+        bool isBoss = bossActive;
+        int stepSamples = isBoss ? 5200 : 6400;
 
-                if (sfxKind == 0) {
-                    // Menu cursor tap
-                    f = 520 + (rem >> 3);
-                } else if (sfxKind == 1) {
-                    // Menu confirm
-                    f = (sfxPos < 1800) ? 540 : 760;
-                } else if (sfxKind == 2) {
-                    // Menu back
-                    f = (sfxPos < 1400) ? 480 : 340;
-                } else if (sfxKind == 3) {
-                    // Locked
-                    f = 170;
-                } else if (sfxKind == 4) {
-                    // Jump rising whoosh
-                    f = 240 + (sfxPos >> 3);
-                } else if (sfxKind == 5) {
-                    // Wall-jump double kick
-                    f = 320 + (sfxPos >> 2);
-                } else if (sfxKind == 6) {
-                    // Death thud + noise
-                    f = 140 - (sfxPos >> 6);
-                    if (f < 55) f = 55;
-                } else if (sfxKind == 7) {
-                    // Boss hit boom
-                    f = 190 - (sfxPos >> 6);
-                    if (f < 65) f = 65;
-                } else {
-                    // Victory vocal chord
-                    f = (sfxPos < 3500) ? 440 : ((sfxPos < 7000) ? 550 : 660);
+        for (int i = 0; i < 256; i++) {
+            int mix = 0;
+
+            // 1) Halal Gameplay Rhythm (Duff percussion + Acapella Vocal Hum)
+            if (playBgm) {
+                int step = (bgmSample / stepSamples) & 15;
+                int inStep = bgmSample % stepSamples;
+                int bar = (bgmSample / (stepSamples * 16)) & 3;
+                bgmSample++;
+
+                unsigned char hit = BEAT_PAT[step];
+
+                // Deep Duff "Dum" (warm membrane thud)
+                if (hit == 1 && inStep < 3200) {
+                    int env = 3200 - inStep;
+                    int freq = 65 + (env >> 6);
+                    duffPhase += freq;
+                    if (duffPhase >= 48000) duffPhase -= 48000;
+                    int wave = duffPhase < 24000 ? (duffPhase - 12000) : (36000 - duffPhase);
+                    mix += (wave * env) / 8500;
                 }
-
-                sfxPhase += f;
-                if (sfxPhase >= 48000) sfxPhase -= 48000;
-
-                int tri = sfxPhase < 24000 ? (sfxPhase - 12000) : (36000 - sfxPhase);
-                s = (tri * 3800) / 12000;
-
-                if (sfxKind == 6 || sfxKind == 7) {
+                // Crisp Duff "Tak" (hand percussion tap)
+                else if (hit == 2 && inStep < 1400) {
+                    int env = 1400 - inStep;
                     noiseRng = noiseRng * 1664525u + 1013904223u;
-                    int nz = ((int)(noiseRng >> 19) & 1023) - 512;
-                    s += nz * 4;
+                    int nz = ((int)(noiseRng >> 20) & 511) - 256;
+                    duffPhase += 280;
+                    if (duffPhase >= 48000) duffPhase -= 48000;
+                    int body = duffPhase < 24000 ? 220 : -220;
+                    mix += ((nz + body) * env) / 520;
+                }
+                // Subtle shaker pulse
+                else if (hit == 3 && inStep < 750) {
+                    int env = 750 - inStep;
+                    noiseRng = noiseRng * 1664525u + 1013904223u;
+                    int nz = ((int)(noiseRng >> 22) & 255) - 128;
+                    mix += (nz * env) / 600;
                 }
 
-                if (rem < 1200)
-                    s = (s * rem) / 1200;
+                // Warm Acapella Vocal Hum
+                int f1 = HUM_BASE[bar];
+                int f2 = HUM_HARMONY[bar];
+                if (isBoss) {
+                    f1 += 22;
+                    f2 += 33;
+                }
 
-                mix += s;
-                sfxPos++;
+                humPhase1 += f1;
+                if (humPhase1 >= 48000) humPhase1 -= 48000;
+                humPhase2 += f2;
+                if (humPhase2 >= 48000) humPhase2 -= 48000;
+
+                int v1 = humPhase1 < 24000 ? (humPhase1 - 12000) : (36000 - humPhase1);
+                int v2 = humPhase2 < 24000 ? (humPhase2 - 12000) : (36000 - humPhase2);
+
+                int breath = inStep < (stepSamples / 2) ? inStep : (stepSamples - inStep);
+                int humAmp = 750 + (breath / 10);
+                mix += ((v1 + v2) * humAmp) / 16000;
             }
+
+            // 2) Menu & Gameplay Sound Effects (SFX)
+            if (curSfx >= 0) {
+                int rem = sfxLen - sfxPos;
+                if (rem <= 0) {
+                    curSfx = -1;
+                } else {
+                    int f = 440;
+                    int vol = 5500;
+
+                    if (curSfx == 0) {
+                        // Menu cursor move (880 Hz crisp tone)
+                        f = 880;
+                        vol = 4800;
+                    } else if (curSfx == 1) {
+                        // Menu select confirm (660 Hz -> 990 Hz)
+                        f = (sfxPos < 1800) ? 660 : 990;
+                        vol = 5800;
+                    } else if (curSfx == 2) {
+                        // Menu back (440 Hz -> 330 Hz)
+                        f = (sfxPos < 1400) ? 440 : 330;
+                        vol = 5000;
+                    } else if (curSfx == 3) {
+                        // Locked
+                        f = 220;
+                        vol = 5000;
+                    } else if (curSfx == 4) {
+                        // Jump rising sweep
+                        f = 260 + (sfxPos >> 3);
+                        vol = 4800;
+                    } else if (curSfx == 5) {
+                        // Wall-jump kick
+                        f = 340 + (sfxPos >> 2);
+                        vol = 5200;
+                    } else if (curSfx == 6) {
+                        // Death impact
+                        f = 160 - (sfxPos >> 6);
+                        if (f < 55) f = 55;
+                        vol = 6000;
+                    } else if (curSfx == 7) {
+                        // Boss hit boom
+                        f = 210 - (sfxPos >> 6);
+                        if (f < 65) f = 65;
+                        vol = 6500;
+                    } else {
+                        // Victory vocal chord
+                        f = (sfxPos < 4500) ? 440 : ((sfxPos < 9000) ? 550 : 660);
+                        vol = 5800;
+                    }
+
+                    sfxPhase += f;
+                    if (sfxPhase >= 48000) sfxPhase -= 48000;
+
+                    int tri = sfxPhase < 24000 ? sfxPhase : 48000 - sfxPhase;
+                    int s = ((tri - 12000) * vol) / 12000;
+
+                    if (curSfx == 6 || curSfx == 7) {
+                        noiseRng = noiseRng * 1664525u + 1013904223u;
+                        int nz = ((int)(noiseRng >> 19) & 1023) - 512;
+                        s += nz * 5;
+                    }
+
+                    if (rem < 1200)
+                        s = (s * rem) / 1200;
+
+                    mix += s;
+                    sfxPos++;
+                }
+            }
+
+            if (mix > 30000) mix = 30000;
+            if (mix < -30000) mix = -30000;
+
+            outBuf[i * 2]     = (short)mix;
+            outBuf[i * 2 + 1] = (short)mix;
         }
 
-        // Smooth edge taper (first & last 24 samples) so buffer transitions never click
-        if (i < 24)
-            mix = (mix * i) / 24;
-        else if (i > nSamples - 25)
-            mix = (mix * (nSamples - 1 - i)) / 24;
-
-        if (mix > 28000) mix = 28000;
-        if (mix < -28000) mix = -28000;
-
-        outBuf[i * 2]     = (short)mix;
-        outBuf[i * 2 + 1] = (short)mix;
+        sceAudioOutOutput(audioHandle, outBuf);
     }
 
-    sceAudioOutOutput(audioHandle, outBuf);
+    return NULL;
+}
+#endif
+
+static void initAudio() {
+#ifndef NO_AUDIO
+    sceAudioOutInit();
+    // Exact 256-sample stereo 48kHz port configuration required by PS4 OpenOrbis
+    audioHandle = sceAudioOutOpen(padUserID, 0, 0, 256, 48000, 1);
+    if (audioHandle < 0) {
+        audioHandle = sceAudioOutOpen(0xFF, 0, 0, 256, 48000, 1);
+    }
+    if (audioHandle >= 0) {
+        pthread_create(&audioThread, NULL, audioThreadMain, NULL);
+    }
 #endif
 }
 
@@ -1163,9 +1178,8 @@ static void buildCountryLevel() {
     baseCol = 0;
 }
 
-// Level 3: Sandy Desert (FIXED: Every room has TWO parallel walls to jump between!)
+// Level 3: Sandy Desert (Every room has TWO parallel walls to jump between!)
 static void buildDesertLevel() {
-    // Room 1: First two-wall chimney (walk under left wall col 11, jump between col 11 & col 14)
     baseCol = 0 * ROOM_COLS;
     wall(11, 7, 14);
     wall(14, 7, 16);
@@ -1173,7 +1187,6 @@ static void buildDesertLevel() {
     spk(16, 15, 23);
     plat(12, 25, 29);
 
-    // Room 2: Taller two-wall chimney
     baseCol = 1 * ROOM_COLS;
     wall(10, 5, 14);
     wall(13, 5, 16);
@@ -1181,7 +1194,6 @@ static void buildDesertLevel() {
     spk(16, 14, 22);
     plat(13, 24, 29);
 
-    // Room 3: Two consecutive two-wall chimneys!
     baseCol = 2 * ROOM_COLS;
     wall(8, 8, 14);
     wall(11, 8, 16);
@@ -1192,7 +1204,6 @@ static void buildDesertLevel() {
     spk(16, 12, 18);
     spk(16, 23, 28);
 
-    // Room 4: High desert canyon two-wall shaft
     baseCol = 3 * ROOM_COLS;
     wall(10, 4, 14);
     wall(13, 4, 16);
@@ -1200,7 +1211,6 @@ static void buildDesertLevel() {
     plat(10, 22, 28);
     spk(16, 14, 27);
 
-    // Room 5: Platform into floating two-wall shaft
     baseCol = 4 * ROOM_COLS;
     spk(16, 5, 27);
     plat(15, 4, 8);
@@ -1209,7 +1219,6 @@ static void buildDesertLevel() {
     plat(6, 13, 19);
     plat(11, 21, 28);
 
-    // Room 6: Final two-wall climb to Bandage Girl
     baseCol = 5 * ROOM_COLS;
     wall(10, 5, 14);
     wall(13, 5, 16);
@@ -1277,19 +1286,15 @@ static void buildSnowLevel() {
 static void buildBossArena(int tier) {
     baseCol = 0;
 
-    // Close the single-screen arena at column 31 so player & boss fight inside Room 0
     for (int r = 0; r < ROWS; r++)
         level[r][ROOM_COLS - 1] = '#';
 
-    // Two side wall-jump pillars so player can wall-jump high above the Boss
     wall(3, 7, 13);
     wall(28, 7, 13);
 
-    // Mid-level side platforms
     plat(12, 6, 10);
     plat(12, 21, 25);
 
-    // Upper platform holding the Boss Strike Switch (cols 14..17)
     plat(7, 13, 18);
 
     bossActive = true;
@@ -1311,7 +1316,7 @@ static void buildBossArena(int tier) {
         bossShots[i].active = false;
 }
 
-// Level 7: Crystal Cavern (Two-wall shafts + spinning saws)
+// Level 7: Crystal Cavern
 static void buildCrystalLevel() {
     baseCol = 0 * ROOM_COLS;
     spk(16, 6, 26);
@@ -1369,7 +1374,7 @@ static void buildCrystalLevel() {
     baseCol = 0;
 }
 
-// Level 8: Autumn Winds (High-speed sprint jumps + saws)
+// Level 8: Autumn Winds
 static void buildAutumnLevel() {
     baseCol = 0 * ROOM_COLS;
     spk(16, 9, 14);
@@ -1416,7 +1421,7 @@ static void buildAutumnLevel() {
     baseCol = 0;
 }
 
-// Level 9: Mystic Swamp (Pillars + Double Wall Chimneys)
+// Level 9: Mystic Swamp
 static void buildSwampLevel() {
     baseCol = 0 * ROOM_COLS;
     spk(16, 5, 27);
@@ -1475,7 +1480,7 @@ static void buildSwampLevel() {
     baseCol = 0;
 }
 
-// Level 11: Sky Citadel (High altitude platforming)
+// Level 11: Sky Citadel
 static void buildSkyLevel() {
     baseCol = 0 * ROOM_COLS;
     spk(16, 4, 28);
@@ -1531,7 +1536,7 @@ static void buildSkyLevel() {
     baseCol = 0;
 }
 
-// Level 12: Dark Obsidian Tower (Grand Finale Gauntlet)
+// Level 12: Dark Obsidian Tower
 static void buildObsidianLevel() {
     baseCol = 0 * ROOM_COLS;
     spk(16, 4, 28);
@@ -1598,7 +1603,6 @@ static void buildLevel() {
     clearLevelGrid();
     bossActive = false;
 
-    // Every 5th level (Level 5, Level 10, Level 15...) is a Boss Fight!
     if (isBossStage(currentLevel)) {
         int tier = (currentLevel + 1) / 5;
         currentBiome = (tier & 1) ? 4 : 5;
@@ -1932,7 +1936,6 @@ static void damageBoss() {
     }
 
     if (bossHP <= 0) {
-        // Boss defeated! Clear shots and spawn Bandage Girl in the arena
         for (int i = 0; i < MAX_BOSS_SHOTS; i++)
             bossShots[i].active = false;
 
@@ -1971,7 +1974,6 @@ static void updateBoss() {
     float speedMul = (tier >= 2) ? 1.3f : 1.0f;
     float floorY = (float)((ROWS - 1) * TILE - bossH);
 
-    // Boss movement & jump patterns
     bossX += bossVX * speedMul;
 
     if (bossX < (float)(5 * TILE)) {
@@ -1982,7 +1984,6 @@ static void updateBoss() {
         bossVX = -4.2f;
     }
 
-    // Periodic leap slam
     if (bossTimer % 110 == 50 && bossY >= floorY - 2.0f) {
         bossVY = -14.5f;
     }
@@ -1994,7 +1995,6 @@ static void updateBoss() {
         bossVY = 0.0f;
     }
 
-    // Periodic projectile attack
     int fireRate = (tier >= 2) ? 65 : 85;
     if (bossTimer % fireRate == 0) {
         float dir = (px < bossX) ? -1.0f : 1.0f;
@@ -2004,7 +2004,6 @@ static void updateBoss() {
         }
     }
 
-    // Update boss projectiles
     for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
         BossShot &s = bossShots[i];
         if (!s.active)
@@ -2029,7 +2028,6 @@ static void updateBoss() {
     if (deadTimer > 0)
         return;
 
-    // Check if player activates the top Arena Strike Switch (cols 15..16, row 6)
     int swX = 15 * TILE;
     int swY = 6 * TILE + 20;
     if (bossSwitchCooldown == 0 &&
@@ -2041,11 +2039,9 @@ static void updateBoss() {
         return;
     }
 
-    // Check player vs Boss collision: Stomp on top of Boss head vs Side hazard
     if (rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8,
                     (int)bossX + 8, (int)bossY + 8, bossW - 16, bossH - 16)) {
         if (vy > 0.0f && (py + PH) < (bossY + 46.0f)) {
-            // Player stomped the Boss's head!
             py = bossY - PH;
             vy = -16.5f;
             squashX = 0.70f;
@@ -2615,7 +2611,6 @@ static void paintBackground() {
     }
 
     if (currentBiome == 1) {
-        // Biome 1: Golden Countryside (Fixed: Round Dome Silo & Trees, NO cross shape!)
         Color sky1 = mk(195, 95, 75);
         Color sky2 = mk(240, 155, 85);
         Color farC = mk(135, 82, 52);
@@ -2635,7 +2630,6 @@ static void paintBackground() {
             fillRect(x + 90, 440, 160, 40, farC);
         }
 
-        // Country Barn + Rounded Grain Silo + Cypress Trees (no cross shapes)
         fillRect(420, 450, 150, 120, nearC);
         fillRect(445, 420, 100, 35, nearC);
         fillRect(1160, 420, 76, 150, nearC);
@@ -2894,24 +2888,19 @@ static void drawBossChar(int bx, int by, int bw, int bh, bool hurt) {
     Color armorMain = hurt ? mk(255, 255, 255) : mk(175, 35, 45);
     Color coreCol   = (tick & 4) ? mk(255, 215, 65) : mk(255, 110, 30);
 
-    // Armored body
     fillRect(bx, by, bw, bh, armorDark);
     fillRect(bx + 8, by + 8, bw - 16, bh - 16, armorMain);
 
-    // Glowing vulnerable top crown (shows player they can stomp the head!)
     fillRect(bx + 20, by - 8, bw - 40, 10, coreCol);
 
-    // Fierce boss eyes
     fillRect(bx + 18, by + 26, 24, 20, mk(255, 240, 90));
     fillRect(bx + bw - 42, by + 26, 24, 20, mk(255, 240, 90));
     fillRect(bx + 24, by + 32, 12, 12, mk(20, 0, 0));
     fillRect(bx + bw - 36, by + 32, 12, 12, mk(20, 0, 0));
 
-    // Angry brow
     fillRect(bx + 14, by + 20, 32, 6, armorDark);
     fillRect(bx + bw - 46, by + 20, 32, 6, armorDark);
 
-    // Grille mouth
     fillRect(bx + 22, by + 68, bw - 44, 20, mk(35, 10, 18));
     for (int k = 0; k < 4; k++)
         fillRect(bx + 28 + k * 14, by + 70, 6, 16, coreCol);
@@ -3141,7 +3130,7 @@ static void renderGame(int b) {
         }
     }
 
-    // ----- Boss Arena Objects (Switch, Laser Beam, Boss, Projectiles) -----
+    // ----- Boss Arena Objects -----
     if (bossActive && bossHP > 0) {
         int swX = 15 * TILE + 20;
         int swY = 7 * TILE - 18;
@@ -3586,7 +3575,6 @@ static void drawStoryArt(int art) {
     fillRect(ax, ay + 410, aw, 90, mk(55, 36, 46));
     fillRect(ax, ay + 410, aw, 8, (art == 14) ? mk(235, 90, 35) : mk(145, 105, 180));
 
-    // Upper platform & green strike switch
     fillRect(ax + 400, ay + 180, 200, 32, mk(55, 36, 46));
     fillRect(ax + 460, ay + 164, 80, 16, (t & 8) ? mk(80, 255, 120) : mk(40, 200, 85));
 
@@ -3947,7 +3935,6 @@ static void drawItem(int i) {
 
             if (unlocked) {
                 if (boss) {
-                    // Golden boss crown emblem at top of tile
                     fillRect(x + 27, y + 10, 36, 6, mk(255, 215, 70));
                     fillRect(x + 27, y + 6, 8, 6, mk(255, 215, 70));
                     fillRect(x + 41, y + 4, 8, 8, mk(255, 215, 70));
@@ -4285,8 +4272,6 @@ int main(void) {
             renderStory(b);
         else
             drawUI(b);
-
-        updateAudioFrame();
 
         scene->SubmitFlip(frameID);
         scene->FrameWait(frameID);
