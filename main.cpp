@@ -2495,6 +2495,16 @@ static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style)
     }
 }
 
+// Helper for star positions & twinkling
+static void starPos(int i, int &sx, int &sy) {
+    sx = (i * 271 + 91) % FRAME_WIDTH;
+    sy = (i * 137 + 31) % 570;
+}
+
+static bool starDim(int i, int phase) {
+    return ((phase + i) % 4) == 0;
+}
+
 // Helper for seamless parallax wrapping
 static int wrapX(int val, int span) {
     int m = val % span;
@@ -2549,7 +2559,6 @@ static void paintBackground() {
             int x = wrapX(i * 420 - pFar, 2520) - 300;
             fillRect(x + 60, 420, 160, 150, farC);
             fillRect(x + 90, 370, 100, 60, farC);
-            // Animated waterfall on distant cliffs
             if (i % 2 == 0) {
                 fillRect(x + 125, 420, 26, 280, mk(150, 225, 255));
                 int wf = (tick * 4) % 40;
@@ -2603,7 +2612,7 @@ static void paintBackground() {
     }
 
     if (currentBiome == 2) {
-        // Biome 2: Golden Desert (Shimmering sun, drifting sand clouds, parallax pyramids & dunes)
+        // Biome 2: Golden Desert
         Color sky1 = mk(230, 142, 62);
         Color sky2 = mk(250, 202, 118);
         Color farC = mk(195, 135, 68);
@@ -2635,7 +2644,7 @@ static void paintBackground() {
     }
 
     if (currentBiome == 3) {
-        // Biome 3: Snowy Peaks (Animated Aurora Borealis ribbons + Snow-capped parallax peaks)
+        // Biome 3: Snowy Peaks (Animated Aurora Borealis ribbons + Snow-capped peaks)
         Color sky1 = mk(32, 56, 96);
         Color sky2 = mk(62, 100, 148);
         Color farC = mk(95, 135, 178);
@@ -2646,7 +2655,6 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        // Animated Aurora Borealis ribbons in the arctic sky
         for (int i = 0; i < 8; i++) {
             int ax = i * 240;
             int ay = 130 + (SN[((tick / 5) + i * 2) & 15] >> 3);
@@ -2673,7 +2681,7 @@ static void paintBackground() {
     }
 
     if (currentBiome == 4) {
-        // Biome 4: Volcanic Lava Valley (Erupting volcanoes, pulsing crimson moon, magma rivers)
+        // Biome 4: Volcanic Lava Valley (Erupting volcanoes, pulsing crimson moon)
         Color sky1 = mk(42, 14, 24);
         Color sky2 = mk(82, 26, 34);
         Color farC = mk(58, 22, 30);
@@ -2692,7 +2700,6 @@ static void paintBackground() {
             int x = wrapX(i * 640 - pFar, 2560) - 260;
             fillRect(x + 120, 400, 220, 170, farC);
             fillRect(x + 180, 392, 100, 20, mk(255, 105, 35));
-            // Animated lava fountain jetting from volcano crater
             int jetH = 25 + ((tick * 3 + i * 20) % 45);
             fillRect(x + 218, 392 - jetH, 24, jetH, mk(255, 195, 60));
             fillRect(x + 222, 412, 16, 158, mk(235, 80, 30));
@@ -2722,8 +2729,10 @@ static void paintBackground() {
     int phase = tick / 20;
 
     for (int i = 0; i < NUM_STARS; i++) {
-        int sx = wrapX((i * 271 + 91) - (pSlow / 2), FRAME_WIDTH);
-        int sy = (i * 137 + 31) % 550;
+        int sx0, sy0;
+        starPos(i, sx0, sy0);
+        int sx = wrapX(sx0 - (pSlow / 2), FRAME_WIDTH);
+        int sy = sy0 % 550;
 
         if (i % 7 == 0)
             fillRect(sx - 2, sy - 2, 7, 7, mk(70, 55, 110));
@@ -2820,7 +2829,6 @@ static void drawEnemyChar(const Enemy &e, int sx, int sy) {
         Color trim = mk(85, 18, 105);
         fillRect(sx, sy, 44, 44, trim);
         fillRect(sx + 4, sy + 4, 36, 36, body);
-        // Spiky helmet
         fillRect(sx + 10, sy - 6, 8, 6, mk(225, 225, 235));
         fillRect(sx + 26, sy - 6, 8, 6, mk(225, 225, 235));
         drawFace(sx, sy, e.dir, mk(255, 235, 90));
@@ -2835,11 +2843,9 @@ static void drawEnemyChar(const Enemy &e, int sx, int sy) {
         Color body = flash ? mk(255, 255, 255) : mk(45, 185, 135);
         fillRect(sx, sy, 44, 44, mk(25, 115, 80));
         fillRect(sx + 4, sy + 4, 36, 36, body);
-        // Spring coil feet
         fillRect(sx + 12, sy + 42, 20, 6, mk(210, 220, 230));
         drawFace(sx, sy, e.dir, mk(255, 255, 255));
     } else {
-        // E_TURRET: Armored Cannon
         Color body = flash ? mk(255, 255, 255) : mk(95, 105, 125);
         fillRect(sx, sy + 6, 44, 38, mk(50, 55, 70));
         fillRect(sx + 4, sy + 10, 36, 30, body);
@@ -3265,7 +3271,6 @@ static void drawStoryArt(int art) {
         bool xOn = false;
         const char *lbl = "O: SHOOT";
 
-        // Demo Enemy patrolling on the ground
         if (cyc < 75) {
             Enemy de = {0,0,0,0,0,0,0, E_WALKER, 2,2, (cyc > 55 ? 2 : 0), t, -1, true};
             drawEnemyChar(de, ax + 480, ay + 356);
