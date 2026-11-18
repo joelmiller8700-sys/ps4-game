@@ -33,41 +33,22 @@ extern "C" {
 #define FRAME_HEIGHT 1080
 #define FRAME_DEPTH 4
 
-#define TILE 60
-#define ROOM_COLS 32
-#define TOTAL_ROOMS 6
-#define COLS (ROOM_COLS * TOTAL_ROOMS)
-#define ROWS 18
-#define WORLD_WIDTH (COLS * TILE)
-#define WORLD_HEIGHT (ROWS * TILE)
-#define LAST_ROOM (TOTAL_ROOMS - 1)
+// 3D Viewport internal grid (320x150 scaled 6x6 => 1920x900 3D View + 180px HUD bar)
+// With delta-color caching and CRT horror scanlines, this runs at a locked 60 FPS!
+#define VW 320
+#define VH 150
+#define VP_Y0 110
+#define CELL_W 6
+#define CELL_H 6
 
-#define PW 44
-#define PH 44
-
-#define NUM_LEVELS 55
-#define LEVEL_COLS 11
-
-#define NUM_STARS 75
-#define MAX_SPLATS 260
-#define MAX_PARTS 100
-#define MAX_PLANTS 640
-#define MAX_AMB 18
-#define MAX_BIRDS 5
-#define MAX_BOSS_SHOTS 14
-#define MAX_ENEMIES 48
-#define MAX_BULLETS 24
-#define MAX_CHECKPOINTS 6
-#define MAX_DIRTY 420
-
-// 1.5 Minutes at 60 FPS = 90 * 60 = 5400 frames
-#define SPLAT_MAX_AGE 5400
+#define MAP_W 16
+#define MAP_H 16
+#define NUM_FLOORS 2
+#define TOTAL_BOOKS 6
 
 std::stringstream debugLogStream;
 
 static Scene2D *scene;
-static char level[ROWS][COLS + 1];
-
 static int padHandle = -1;
 static int padUserID = 0;
 static OrbisPadData padData;
@@ -76,220 +57,149 @@ static OrbisPadData padData;
 static int audioHandle = -1;
 #endif
 
-// ---------- Game & 60-FPS Differential Camera state ----------
-static float px, py, vx, vy;
-static int camCol = 0;
-static float camX = 0.0f;
-static int levelCols = COLS;
-static int levelPixelWidth = WORLD_WIDTH;
+// ---------- 3D Two-Story House Map ----------
+// '#' = Old Wood Wall, 'W' = Brick/Window Wall, 'B' = Bookshelf Wall,
+// 'D' = Main Escape Door (Floor 0, x=7..8, y=14), 'S' = Stairs between Floor 0 & Floor 1
+static const char HOUSE_MAP[NUM_FLOORS][MAP_H][MAP_W + 1] = {
+    // FLOOR 0: Ground Floor (Main Foyer, Escape Door at South, Stairs at North-Center, 4 Rooms)
+    {
+        "################",
+        "#B....#SS#....B#",
+        "#.....#..#.....#",
+        "#..W........W..#",
+        "###.########.###",
+        "#...#......#...#",
+        "#...#......#...#",
+        "#.B..........B.#",
+        "#...#......#...#",
+        "###.#......#.###",
+        "#...#......#...#",
+        "#..............#",
+        "#..W........W..#",
+        "#.....#..#.....#",
+        "######DDDD######",
+        "################"
+    },
+    // FLOOR 1: Second Floor (Upper Landing at Stairs, 4 Creepy Upstairs Rooms & Corridors)
+    {
+        "################",
+        "#W....#SS#....W#",
+        "#.....#..#.....#",
+        "#..B........B..#",
+        "###.########.###",
+        "#...#......#...#",
+        "#..............#",
+        "#.W...####...W.#",
+        "#.....####.....#",
+        "###.########.###",
+        "#...#......#...#",
+        "#...#......#...#",
+        "#..B........B..#",
+        "#.....#..#.....#",
+        "#######WW#######",
+        "################"
+    }
+};
 
-static float checkpointX = 80.0f;
-static float checkpointY = 900.0f;
-static int checkCols[MAX_CHECKPOINTS];
-static int checkRows[MAX_CHECKPOINTS];
-static bool checkActive[MAX_CHECKPOINTS];
-static int checkCount = 0;
+// ---------- Game & 3D Camera State ----------
+enum {
+    S_MENU = 0,
+    S_SETTINGS = 1,
+    S_CREDITS = 2,
+    S_INTRO_3D = 3,
+    S_PLAY_3D = 4,
+    S_OUTRO_3D = 5,
+    S_CAUGHT_3D = 6
+};
 
-static int roomIdx = 0;
-static int currentLevel = 0;
-static int currentBiome = 0;
+static int state = S_MENU;
+static int menuSel = 0;
+static int settingsSel = 0;
+static int controlMode = 1;
+static int lang = 1; // Default to Arabic (1) if available, fallback English
 
-static float squashX = 1.0f;
-static float squashY = 1.0f;
-
-static bool onGround = false;
-static int coyote = 0;
-static int wallLock = 0;
-static int facing = 1;
-
-static int deaths = 0;
-static int winTimer = 0;
-static int deadTimer = 0;
 static int tick = 0;
 static int frameID = 0;
-
 static unsigned int rng = 12345;
 
-// ---------- Weapons System ----------
+// Player 3D Transform
+static float plX = 7.5f;
+static float plY = 12.5f;
+static float plAngle = -1.570796f; // Facing North into the house
+static int plFloor = 0;
+static float plPitch = 0.0f;       // Look up/down offset
+static float headBob = 0.0f;
+static float stepTimer = 0.0f;
+static bool flashlightOn = true;
+static float noiseLevel = 0.0f;    // 0.0 = silent, 1.0 = loud sprint
+static int speedAlertTimer = 0;
+static int doorAlertTimer = 0;
+static int stairCooldown = 0;
+
+// 6 Cursed Books (3 on Ground Floor, 3 on Second Floor)
+struct Book {
+    int floor;
+    float x, y;
+    bool collected;
+};
+
+static Book books[TOTAL_BOOKS];
+static int booksCollected = 0;
+
+static const float BOOK_INIT[TOTAL_BOOKS][3] = {
+    {0.0f, 2.5f,  2.5f},  // Floor 0: North-West Study
+    {0.0f, 13.5f, 2.5f},  // Floor 0: North-East Library
+    {0.0f, 2.5f,  11.5f}, // Floor 0: South-West Living Room
+    {1.0f, 2.5f,  2.5f},  // Floor 1: Upstairs Master Bedroom
+    {1.0f, 13.5f, 2.5f},  // Floor 1: Upstairs East Attic
+    {1.0f, 8.0f,  12.5f}  // Floor 1: Upstairs South Balcony Hall
+};
+
+// Smart Stalker Entity
 enum {
-    W_BLASTER = 0,
-    W_SHOTGUN = 1,
-    W_SAW     = 2,
-    W_PLASMA  = 3,
-    W_TOTAL   = 4
+    AI_PATROL = 0,
+    AI_INVESTIGATE = 1,
+    AI_CHASE = 2
 };
 
-static int unlockedWeapons = 1;
-static int curWeapon = 0;
-static int shootCooldown = 0;
-static bool justUnlockedWeapon = false;
+static float stX = 7.5f;
+static float stY = 3.5f;
+static int stFloor = 1;
+static int stMode = AI_PATROL;
+static float stTargetX = 7.5f;
+static float stTargetY = 3.5f;
+static int stTargetFloor = 1;
+static float stDistToPlayer = 20.0f;
+static int stWaypoint = 0;
+static int stStairCooldown = 0;
+static int stRoarCooldown = 0;
 
-struct Bullet {
-    float x, y, vx, vy;
-    int kind, life, dmg, pierce;
-    bool active;
+static const float PATROL_PTS[6][2] = {
+    {2.5f, 2.5f}, {13.5f, 2.5f}, {7.5f, 6.0f},
+    {2.5f, 12.0f}, {13.5f, 12.0f}, {7.5f, 2.5f}
 };
 
-static Bullet bullets[MAX_BULLETS];
+// Cutscene timer
+static int cutTick = 0;
 
-// ---------- Enemies System ----------
-enum {
-    E_WALKER = 0,
-    E_FLYER  = 1,
-    E_JUMPER = 2,
-    E_TURRET = 3
-};
-
-struct Enemy {
-    float x, y, vx, vy;
-    float minX, maxX, baseY;
-    int kind, hp, maxHp, hurt, timer, dir;
-    bool active;
-};
-
-static Enemy enemies[MAX_ENEMIES];
-static int enemyCount = 0;
-
-// ---------- Boss Fight state (Every 5 levels: Level 5, 10, 15...) ----------
-static bool bossActive = false;
-static float bossX = 0.0f;
-static float bossY = 0.0f;
-static float bossVX = 0.0f;
-static float bossVY = 0.0f;
-static int bossW = 104;
-static int bossH = 104;
-static int bossHP = 5;
-static int bossMaxHP = 5;
-static int bossHurt = 0;
-static int bossState = 0;
-static int bossTimer = 0;
-static int bossSwitchCooldown = 0;
-static int bossBeamTimer = 0;
-
-struct BossShot {
-    float x, y, vx, vy;
-    bool active;
-};
-
-static BossShot bossShots[MAX_BOSS_SHOTS];
-
-// Blood stains that gradually fade and vanish after 1.5 minutes (5400 frames)
-struct Splat {
-    short wx, y, w, h;
-    int bornTick;
-    unsigned char stage;       // 0=100%, 1=75%, 2=50%, 3=25%, 4=vanished
-    unsigned char drawnStage[2];
-    short drawnX[2];
-    bool drawn[2];
-};
-
-static Splat splats[MAX_SPLATS];
-static int splatCount = 0;
-
-struct Part {
-    float x, y, vx, vy;
-    short life, maxLife;
-    unsigned char kind, size;
-};
-
-static Part parts[MAX_PARTS];
-
-// Semi-dense interactive world grass across the entire ground of the world
-struct Plant {
-    short wx, y;
-    float angle;
-    float vel;
-    unsigned char height;
-    unsigned char style;
-    unsigned char seed;
-    signed char drawnBend[2];
-    short drawnX[2];
-    bool drawn[2];
-};
-
-static Plant plants[MAX_PLANTS];
-static int plantCount = 0;
-
-// Ambient living world particles & sky birds (rendered at 60 FPS with dirty rects)
-struct AmbPart {
-    float x, y, vx, vy;
-    unsigned char sz, seed;
-};
-
-static AmbPart ambParts[MAX_AMB];
-
-struct Rect {
-    int x, y, w, h;
-};
-
-static Rect dirty[2][MAX_DIRTY];
-static int dirtyCount[2] = {0, 0};
-
-static bool needFull[2] = {true, true};
-static bool needWin[2] = {false, false};
-static int bufCamCol[2] = {0, 0};
-static char bufGrid[2][ROWS][ROOM_COLS];
-static bool bufHi[2][ROWS][ROOM_COLS];
-static int bufStar[2] = {0, 0};
-static int hudSq[2] = {0, 0};
-static int hudProg[2] = {0, 0};
-static int hudWeap[2] = {-1, -1};
-static bool hudNeed[2] = {false, false};
+// 60-FPS Virtual Framebuffer Delta Cache & Depth Buffer
+static unsigned short vbuf[2][VH][VW];
+static float zBuffer[VW];
+static bool uiFull[2] = {true, true};
+static bool pend[2][16];
+static bool hudFull[2] = {true, true};
 
 static int clipX0 = 0;
 static int clipY0 = 0;
 static int clipX1 = FRAME_WIDTH;
 static int clipY1 = FRAME_HEIGHT;
 
-static const int CS[16] = {
-    256,237,181,98,0,-98,-181,-237,
-    -256,-237,-181,-98,0,98,181,237
-};
-
-static const int SN[16] = {
-    0,98,181,237,256,237,181,98,
-    0,-98,-181,-237,-256,-237,-181,-98
-};
-
-// ---------- UI state ----------
-enum {
-    S_MENU = 0,
-    S_LEVELS = 1,
-    S_SETTINGS = 2,
-    S_CREDITS = 3,
-    S_PLAY = 4,
-    S_STORY = 5
-};
-
-static int state = S_MENU;
-static int menuSel = 0;
-static int levelSel = 0;
-static int settingsSel = 0;
-
-static int controlMode = 1;
-static int lang = 0;            // 0 = English, 1 = Arabic
-static int unlockedLevels = 1;  // Locked progression: starts at Level 1, unlocks next level on completion!
-static bool introSeen = false;
-
-static bool uiFull[2] = {true, true};
-static bool pend[2][64];
-
-// ---------- Story state ----------
-static int storyId = 0;
-static int storyPage = 0;
-static int typed = 0;
-static int storyAnimTick = 0;
-static bool storyBgDone[2] = {false, false};
-static int storyDrawnPage[2] = {-1, -1};
-static int storyShown[2] = {0, 0};
-
 // ---------- Texts (English + Arabic image id) ----------
 #define TEXT_LIST \
-    X(T_TITLE, "MEAT CUBE", AR(TITLE)) \
-    X(T_B_LEVELS, "LEVELS", AR(B_LEVELS)) \
+    X(T_TITLE, "OLD HOUSE NIGHTMARE", AR(TITLE)) \
     X(T_B_SETTINGS, "SETTINGS", AR(B_SETTINGS)) \
     X(T_B_CREDITS, "CREDITS", AR(B_CREDITS)) \
-    X(T_LEVELS, "LEVELS", AR(LEVELS)) \
+    X(T_START, "START GAME", AR(START)) \
     X(T_SETTINGS, "SETTINGS", AR(SETTINGS)) \
     X(T_CREDITS, "CREDITS", AR(CREDITS)) \
     X(T_EXIT, "EXIT", AR(EXIT)) \
@@ -298,25 +208,34 @@ static int storyShown[2] = {0, 0};
     X(T_CTRL_B, "CONTROLS: ARROWS", AR(CTRL_ARROWS)) \
     X(T_LANG, "LANGUAGE: ENGLISH", AR(LANG)) \
     X(T_H_SELECT, "X: SELECT", AR(SELECT)) \
-    X(T_H_LEVELS, "X: PLAY   O: BACK", AR(LEVELS_HINT)) \
     X(T_H_BACK, "O: BACK", AR(BACK_HINT)) \
     X(T_TIP, "LEFT RIGHT OR X: CHANGE", AR(CHANGE_TIP)) \
-    X(T_H_STORY, "X: NEXT   OPTIONS: SKIP", AR(STORY_HINT)) \
-    X(T_PLAYX, "PRESS X TO PLAY", AR(PLAYX)) \
-    X(T_LOCKED, "LOCKED", AR(LOCKED)) \
+    X(T_H_STORY, "X: SKIP CUTSCENE", AR(STORY_HINT)) \
     X(T_DESIGNERS, "GAME DESIGNERS", AR(DESIGNERS)) \
     X(T_KAREEM, "KAREEM", AR(KAREEM)) \
     X(T_CLAUDE, "CLAUDE", AR(CLAUDE)) \
-    X(T_GAME, "MEAT CUBE", AR(GAME_NAME)) \
-    X(T_DEATHS, "DEATHS", AR(DEATHS)) \
-    X(T_BOSS_HP, "BOSS HP", AR(BOSS_HP)) \
-    X(T_W0, "WEAPON: BLASTER  -  O: SHOOT  TRIANGLE: SWITCH", AR(W_BLASTER)) \
-    X(T_W1, "WEAPON: SHOTGUN  -  O: SHOOT  TRIANGLE: SWITCH", AR(W_SHOTGUN)) \
-    X(T_W2, "WEAPON: SAW LAUNCHER  -  O: SHOOT  TRIANGLE: SWITCH", AR(W_SAW)) \
-    X(T_W3, "WEAPON: PLASMA CANNON  -  O: SHOOT  TRIANGLE: SWITCH", AR(W_PLASMA)) \
-    X(T_NEW_WEAPON, "NEW WEAPON UNLOCKED! PRESS TRIANGLE TO SWITCH", AR(NEW_WEAPON)) \
-    X(T_COMPLETE, "LEVEL COMPLETE", AR(COMPLETE)) \
-    X(T_GREAT, "GREAT JOB", AR(GREAT))
+    X(T_GAME, "OLD HOUSE NIGHTMARE 3D", AR(GAME_NAME)) \
+    X(T_BOOKS, "BOOKS:", AR(BOOKS)) \
+    X(T_FLOOR1, "GROUND FLOOR", AR(FLOOR1)) \
+    X(T_FLOOR2, "SECOND FLOOR", AR(FLOOR2)) \
+    X(T_STAIRS, "WOODEN STAIRS", AR(STAIRS)) \
+    X(T_FLASH_ON, "FLASHLIGHT: ON  -  TRIANGLE", AR(FLASH_ON)) \
+    X(T_FLASH_OFF, "FLASHLIGHT: OFF  -  TRIANGLE", AR(FLASH_OFF)) \
+    X(T_NOISE_LOW, "SOUND: QUIET  -  SQUARE: RUN  O: SNEAK", AR(NOISE_LOW)) \
+    X(T_NOISE_HIGH, "SOUND: LOUD! THE STALKER HEARS YOU!", AR(NOISE_HIGH)) \
+    X(T_STALKER_NEAR, "DANGER! THE STALKER IS VERY CLOSE!", AR(STALKER_NEAR)) \
+    X(T_SPEED_UP, "THE MONSTER GREW FASTER!", AR(SPEED_UP)) \
+    X(T_PICK_BOOK, "PRESS X TO COLLECT BOOK", AR(PICK_BOOK)) \
+    X(T_DOOR_LOCKED, "MAIN DOOR LOCKED! COLLECT 6 BOOKS TO ESCAPE", AR(DOOR_LOCKED)) \
+    X(T_DOOR_OPEN, "MAIN DOOR UNLOCKED ON GROUND FLOOR! ESCAPE NOW!", AR(DOOR_OPEN)) \
+    X(T_ESCAPE_NOW, "PRESS X TO ESCAPE THROUGH THE MAIN DOOR!", AR(ESCAPE_NOW)) \
+    X(T_INTRO_1, "YOU ENTERED THE OLD MANSION TO FIND THE 6 BOOKS...", AR(INTRO_1)) \
+    X(T_INTRO_2, "THE MAIN DOOR SLAMMED SHUT! SOMETHING WATCHES YOU...", AR(INTRO_2)) \
+    X(T_INTRO_3, "IT HEARS YOUR FOOTSTEPS! COLLECT 6 BOOKS AND ESCAPE!", AR(INTRO_3)) \
+    X(T_OUTRO_1, "YOU BURST THROUGH THE MAIN DOOR AND ESCAPED!", AR(OUTRO_1)) \
+    X(T_OUTRO_2, "YOU SURVIVED THE NIGHTMARE WITH ALL 6 BOOKS!", AR(OUTRO_2)) \
+    X(T_CAUGHT_1, "THE STALKER CAUGHT YOU IN THE DARK!", AR(CAUGHT_1)) \
+    X(T_CAUGHT_2, "PRESS X TO RETRY OR OPTIONS FOR MENU", AR(CAUGHT_2))
 
 enum {
 #define X(id, en, ar) id,
@@ -337,110 +256,33 @@ static const int TXT_AR[T_COUNT] = {
 #undef X
 };
 
-struct Page {
-    int art;
-    int n;
-    const char *en[3];
-    int ar[3];
-};
-
-static const Page PAGES[11] = {
-    {0, 2, {"MEAT CUBE AND BANDAGE GIRL", "LIVED IN THE OLD FOREST.", ""},
-     {AR(P0L0), AR(P0L1), -1}},
-    {1, 2, {"ONE NIGHT THE GRINDER CAME.", "HIS SAWS TOOK HER AWAY.", ""},
-     {AR(P1L0), AR(P1L1), -1}},
-    {2, 2, {"MEAT CUBE WOKE UP ANGRY.", "I WILL BRING YOU BACK!", ""},
-     {AR(P2L0), AR(P2L1), -1}},
-    {3, 3, {"MEAT CUBE REACHED THE TOWER.", "BUT SHE WAS NOT THERE.",
-            "ONLY A NOTE: FOLLOW THE SAWS."},
-     {AR(P3L0), AR(P3L1), AR(P3L2)}},
-    {1, 1, {"TO BE CONTINUED.", "", ""},
-     {AR(P4L0), -1, -1}},
-
-    // Animated Gameplay & Boss Tutorial Cutscenes (Pages 5..10)
-    {10, 3, {"STAGE 1: LIVING FOREST - JUMP AND SHOOT",
-             "PRESS X TO JUMP, PRESS O OR R1 TO SHOOT ENEMIES.",
-             "BEAT STAGES TO UNLOCK WEAPONS AND SWITCH WITH TRIANGLE!"},
-     {AR(T1L0), AR(T1L1), AR(T1L2)}},
-    {11, 3, {"STAGE 2: COUNTRYSIDE - SPRINT AND SHOTGUN",
-             "HOLD SQUARE TO SPRINT AND FIRE YOUR SPREAD SHOTGUN.",
-             "STOMP ENEMIES OR BLAST THEM ACROSS WIDE GAPS!"},
-     {AR(T2L0), AR(T2L1), AR(T2L2)}},
-    {12, 3, {"STAGE 3: GOLDEN DESERT - TWO-WALL JUMP",
-             "ENTER BETWEEN TWO WALLS AND SLIDE SLOWLY.",
-             "PRESS X TO CLIMB AND DESTROY DESERT TURRETS!"},
-     {AR(T3L0), AR(T3L1), AR(T3L2)}},
-    {13, 3, {"STAGE 4: SNOWY PEAKS - SAW LAUNCHER",
-             "FIRE PIERCING SAW BLADES AT FLYING ENEMIES.",
-             "DODGE SPINNING SAWS ACROSS FROZEN BRIDGES!"},
-     {AR(T4L0), AR(T4L1), AR(T4L2)}},
-    {14, 3, {"STAGE 5: BOSS FIGHT - MAGMA CRUSHER!",
-             "SHOOT WITH O, STOMP ITS HEAD, OR HIT THE TOP SWITCH.",
-             "DEFEAT IT TO UNLOCK THE HEAVY PLASMA CANNON!"},
-     {AR(T5L0), AR(T5L1), AR(T5L2)}},
-    {15, 3, {"STAGE 10: BOSS FIGHT - SAW OVERLORD!",
-             "USE YOUR PLASMA CANNON AND SIDE WALLS TO FIGHT.",
-             "DODGE DOUBLE SAWS AND SAVE THE FOREST!"},
-     {AR(T10L0), AR(T10L1), AR(T10L2)}}
-};
-
-static const int STORY_FIRST[8] = {0, 3, 5, 6, 7, 8, 9, 10};
-static const int STORY_LAST[8]  = {3, 5, 6, 7, 8, 9, 10, 11};
-
 // ---------- Input ----------
 struct Input {
     bool up, down, left, right;
-    bool dleft, dright;
-
-    bool cross, circle, options, square, triangle, r1, l1;
-
-    bool crossNew;
-    bool circleNew;
-    bool optionsNew;
-    bool shootNew;
-    bool switchNew;
-
-    float ana;
+    bool dup, ddown, dleft, dright;
+    bool cross, circle, square, triangle, options, r1, l1;
+    bool crossNew, circleNew, triangleNew, optionsNew;
+    float lx, ly, rx, ry;
 };
 
 static Input in;
-
 static bool prevCross = false;
 static bool prevCircle = false;
+static bool prevTriangle = false;
 static bool prevOptions = false;
-static bool prevShoot = false;
-static bool prevSwitch = false;
-
 static int holdCnt[4] = {0, 0, 0, 0};
 
-static int iabs(int a) {
-    return a < 0 ? -a : a;
-}
-
-static int iclamp(int v, int lo, int hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-
-static int rnd(int n) {
-    rng = rng * 1103515245u + 12345u;
-    return (int)((rng >> 16) % (unsigned int)n);
-}
+static int iabs(int a) { return a < 0 ? -a : a; }
+static float fabs_f(float a) { return a < 0.0f ? -a : a; }
+static int iclamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 static Color mk(int r, int g, int b) {
-    Color c = {
-        (unsigned char)r,
-        (unsigned char)g,
-        (unsigned char)b
-    };
+    Color c = { (unsigned char)r, (unsigned char)g, (unsigned char)b };
     return c;
 }
 
 static bool useAr() {
     return lang == 1 && ARABIC_OK;
-}
-
-static bool isBossStage(int lvl) {
-    return ((lvl + 1) % 5) == 0;
 }
 
 // ---------- Controller ----------
@@ -450,7 +292,6 @@ static bool initPad() {
 
     OrbisUserServiceInitializeParams param;
     param.priority = ORBIS_KERNEL_PRIO_FIFO_LOWEST;
-
     sceUserServiceInitialize(&param);
 
     int userID = 0;
@@ -458,7 +299,6 @@ static bool initPad() {
     padUserID = userID;
 
     padHandle = scePadOpen(userID, 0, 0, NULL);
-
     return padHandle >= 0;
 }
 
@@ -467,58 +307,45 @@ static void readInput() {
 
     unsigned int btn = padData.buttons;
 
-    int lx = (int)padData.leftStick.x - 128;
-    int ly = (int)padData.leftStick.y - 128;
+    int ilx = (int)padData.leftStick.x - 128;
+    int ily = (int)padData.leftStick.y - 128;
+    int irx = (int)padData.rightStick.x - 128;
+    int iry = (int)padData.rightStick.y - 128;
 
-    int rx = (int)padData.rightStick.x - 128;
-    int ry = (int)padData.rightStick.y - 128;
-
-    in.dleft = (btn & ORBIS_PAD_BUTTON_LEFT) != 0;
+    in.dup    = (btn & ORBIS_PAD_BUTTON_UP) != 0;
+    in.ddown  = (btn & ORBIS_PAD_BUTTON_DOWN) != 0;
+    in.dleft  = (btn & ORBIS_PAD_BUTTON_LEFT) != 0;
     in.dright = (btn & ORBIS_PAD_BUTTON_RIGHT) != 0;
 
-    bool dup = (btn & ORBIS_PAD_BUTTON_UP) != 0;
-    bool ddown = (btn & ORBIS_PAD_BUTTON_DOWN) != 0;
+    in.up    = in.dup    || ily < -55;
+    in.down  = in.ddown  || ily > 55;
+    in.left  = in.dleft  || ilx < -55;
+    in.right = in.dright || ilx > 55;
 
-    in.up = dup || ly < -60 || ry < -60;
-    in.down = ddown || ly > 60 || ry > 60;
+    in.lx = (iabs(ilx) > 22) ? (ilx / 128.0f) : 0.0f;
+    in.ly = (iabs(ily) > 22) ? (ily / 128.0f) : 0.0f;
+    in.rx = (iabs(irx) > 22) ? (irx / 128.0f) : 0.0f;
+    in.ry = (iabs(iry) > 22) ? (iry / 128.0f) : 0.0f;
 
-    in.left = in.dleft || lx < -60 || rx < -60;
-    in.right = in.dright || lx > 60 || rx > 60;
-
-    int ax = iabs(rx) > iabs(lx) ? rx : lx;
-
-    float a = ax / 110.0f;
-
-    if (a > 1.0f) a = 1.0f;
-    if (a < -1.0f) a = -1.0f;
-
-    if (a > -0.2f && a < 0.2f)
-        a = 0.0f;
-
-    in.ana = a;
-
-    in.cross = (btn & ORBIS_PAD_BUTTON_CROSS) != 0;
-    in.circle = (btn & ORBIS_PAD_BUTTON_CIRCLE) != 0;
-    in.options = (btn & ORBIS_PAD_BUTTON_OPTIONS) != 0;
-    in.square = (btn & ORBIS_PAD_BUTTON_SQUARE) != 0;
+    in.cross    = (btn & ORBIS_PAD_BUTTON_CROSS) != 0;
+    in.circle   = (btn & ORBIS_PAD_BUTTON_CIRCLE) != 0;
+    in.square   = (btn & ORBIS_PAD_BUTTON_SQUARE) != 0;
     in.triangle = (btn & ORBIS_PAD_BUTTON_TRIANGLE) != 0;
-    in.r1 = (btn & ORBIS_PAD_BUTTON_R1) != 0;
-    in.l1 = (btn & ORBIS_PAD_BUTTON_L1) != 0;
+    in.options  = (btn & ORBIS_PAD_BUTTON_OPTIONS) != 0;
+    in.r1       = (btn & ORBIS_PAD_BUTTON_R1) != 0;
+    in.l1       = (btn & ORBIS_PAD_BUTTON_L1) != 0;
 
-    bool shootBtn = in.circle || in.r1;
-    bool switchBtn = in.triangle || in.l1;
+    bool triOrR1 = in.triangle || in.r1;
 
-    in.crossNew = in.cross && !prevCross;
-    in.circleNew = in.circle && !prevCircle;
-    in.optionsNew = in.options && !prevOptions;
-    in.shootNew = shootBtn && !prevShoot;
-    in.switchNew = switchBtn && !prevSwitch;
+    in.crossNew    = in.cross && !prevCross;
+    in.circleNew   = in.circle && !prevCircle;
+    in.triangleNew = triOrR1 && !prevTriangle;
+    in.optionsNew  = in.options && !prevOptions;
 
-    prevCross = in.cross;
-    prevCircle = in.circle;
-    prevOptions = in.options;
-    prevShoot = shootBtn;
-    prevSwitch = switchBtn;
+    prevCross    = in.cross;
+    prevCircle   = in.circle;
+    prevTriangle = triOrR1;
+    prevOptions  = in.options;
 }
 
 static bool navEvent(int i, bool pressed) {
@@ -526,29 +353,23 @@ static bool navEvent(int i, bool pressed) {
         holdCnt[i] = 0;
         return false;
     }
-
     holdCnt[i]++;
-
     if (holdCnt[i] == 1)
         return true;
-
-    if (holdCnt[i] > 20 &&
-        ((holdCnt[i] - 20) % 6) == 0)
+    if (holdCnt[i] > 20 && ((holdCnt[i] - 20) % 6) == 0)
         return true;
-
     return false;
 }
 
-// ---------- PS4 Halal Audio Engine (Menu SFX + Gameplay Percussion & Vocal Hum) ----------
+// ---------- PS4 Halal Horror Audio Engine (Heartbeat, Footsteps, Wind, Jumpscare) ----------
 static int curSfx = -1;
 static int sfxPos = 0;
 static int sfxLen = 0;
 static int sfxPhase = 0;
 
-static int bgmSample = 0;
-static int humPhase1 = 0;
-static int humPhase2 = 0;
-static int duffPhase = 0;
+static int windSample = 0;
+static int heartSample = 0;
+static int heartPhase = 0;
 static unsigned int noiseRng = 987654321u;
 
 static void playToneImmediate(int freq, int ms, int vol) {
@@ -557,7 +378,6 @@ static void playToneImmediate(int freq, int ms, int vol) {
         return;
 
     static short buf[256 * 2];
-
     int total = 48 * ms;
     int phase = 0;
     int done = 0;
@@ -566,43 +386,31 @@ static void playToneImmediate(int freq, int ms, int vol) {
         for (int i = 0; i < 256; i++) {
             int idx = done + i;
             int s = 0;
-
             if (idx < total) {
                 phase += freq;
-                if (phase >= 48000)
-                    phase -= 48000;
-
+                if (phase >= 48000) phase -= 48000;
                 int tri = phase < 24000 ? phase : 48000 - phase;
                 s = ((tri - 12000) * vol) / 12000;
-
                 int remain = total - idx;
-                if (remain < 1200)
-                    s = (s * remain) / 1200;
+                if (remain < 1200) s = (s * remain) / 1200;
             }
-
             buf[i * 2]     = (short)s;
             buf[i * 2 + 1] = (short)s;
         }
-
         sceAudioOutOutput(audioHandle, buf);
         done += 256;
     }
 #else
-    (void)freq;
-    (void)ms;
-    (void)vol;
+    (void)freq; (void)ms; (void)vol;
 #endif
 }
 
 static void initAudio() {
 #ifndef NO_AUDIO
     sceAudioOutInit();
-
     audioHandle = sceAudioOutOpen(0xFF, 0, 0, 256, 48000, 1);
-
     if (audioHandle < 0)
         audioHandle = sceAudioOutOpen(padUserID, 0, 0, 256, 48000, 1);
-
     if (audioHandle < 0)
         audioHandle = sceAudioOutOpen(padUserID, 1, 0, 256, 48000, 1);
 
@@ -613,154 +421,138 @@ static void initAudio() {
 #endif
 }
 
-// 0=cursor, 1=select, 2=back, 3=locked, 4=jump, 5=walljump, 6=die, 7=bosshit, 8=win, 9=shoot, 10=enemykill
+// 0=cursor, 1=select, 2=back, 3=footstep, 4=book_pickup, 5=speed_up_warn,
+// 6=door_slam, 7=stalker_roar, 8=jumpscare_scream, 9=escape_win, 10=flashlight_click
 static void snd(int k) {
-    if (state != S_PLAY) {
-        if (k == 0) {
-            playToneImmediate(880, 25, 16000);
-        } else if (k == 1) {
-            playToneImmediate(660, 35, 18000);
-            playToneImmediate(990, 55, 18000);
-        } else if (k == 2) {
-            playToneImmediate(440, 45, 16000);
+    if (state == S_MENU || state == S_SETTINGS || state == S_CREDITS) {
+        if (k == 0) playToneImmediate(760, 25, 15000);
+        else if (k == 1) {
+            playToneImmediate(520, 35, 17000);
+            playToneImmediate(780, 55, 17000);
         } else {
-            playToneImmediate(220, 80, 16000);
+            playToneImmediate(380, 45, 15000);
         }
         return;
     }
+
+    // Do not let quiet footsteps interrupt major horror alerts
+    if (k == 3 && curSfx >= 4)
+        return;
 
     curSfx = k;
     sfxPos = 0;
     sfxPhase = 0;
 
-    if (k == 0)      sfxLen = 1400;
-    else if (k == 1) sfxLen = 4000;
-    else if (k == 2) sfxLen = 2600;
-    else if (k == 3) sfxLen = 3500;
-    else if (k == 4) sfxLen = 2800;   // Jump whoosh
-    else if (k == 5) sfxLen = 3400;   // Wall jump kick
-    else if (k == 6) sfxLen = 6500;   // Player death
-    else if (k == 7) sfxLen = 7200;   // Boss hit
-    else if (k == 8) sfxLen = 13000;  // Level complete fanfare
-    else if (k == 9) sfxLen = 2200;   // Weapon fire pulse
-    else             sfxLen = 3800;   // Enemy defeated pop
+    if (k == 3)      sfxLen = 2200;   // Wooden floorboard footstep
+    else if (k == 4) sfxLen = 8500;   // Mystical book pickup
+    else if (k == 5) sfxLen = 12000;  // Monster speed up dread pulse
+    else if (k == 6) sfxLen = 9500;   // Heavy door slam / unlock
+    else if (k == 7) sfxLen = 11000;  // Stalker spotted you roar
+    else if (k == 8) sfxLen = 22000;  // Jumpscare scream
+    else if (k == 9) sfxLen = 16000;  // Escape victory
+    else             sfxLen = 1000;   // Flashlight click
 }
 
-static void updateGameplayAudio() {
+static void updateHorrorAudio() {
 #ifndef NO_AUDIO
     if (audioHandle < 0)
         return;
-
-    if (state != S_PLAY)
+    if (state == S_MENU || state == S_SETTINGS || state == S_CREDITS)
         return;
 
     static short outBuf[256 * 2];
 
-    static const int HUM_BASE[4]    = { 110, 130, 146, 130 };
-    static const int HUM_HARMONY[4] = { 165, 195, 220, 195 };
+    // Calculate heartbeat speed & loudness from Stalker 3D distance
+    float effDist = stDistToPlayer + (stFloor != plFloor ? 6.0f : 0.0f);
+    int heartPeriod = 36000; // Calm heartbeat
+    int heartVol = 4500;
 
-    static const unsigned char BEAT_PAT[16] = {
-        1, 0, 3, 2,  1, 0, 2, 0,
-        1, 1, 3, 2,  0, 2, 3, 2
-    };
-
-    bool playBgm = (winTimer == 0);
-    int stepSamples = bossActive ? 5200 : 6400;
+    if (effDist < 12.0f) {
+        heartPeriod = 14000 + (int)(effDist * 1400.0f);
+        heartVol = 16000 - (int)(effDist * 800.0f);
+        if (stMode == AI_CHASE) {
+            heartPeriod = 12500;
+            heartVol = 19000;
+        }
+    }
 
     for (int blk = 0; blk < 3; blk++) {
         for (int i = 0; i < 256; i++) {
             int mix = 0;
+            windSample++;
 
-            if (playBgm) {
-                int step = (bgmSample / stepSamples) & 15;
-                int inStep = bgmSample % stepSamples;
-                int bar = (bgmSample / (stepSamples * 16)) & 3;
-                bgmSample++;
+            // 1. Eerie Old House Wind & Creak Ambience
+            noiseRng = noiseRng * 1664525u + 1013904223u;
+            int rawNz = ((int)(noiseRng >> 21) & 511) - 256;
+            static int lpWind = 0;
+            lpWind = (lpWind * 31 + rawNz) >> 5;
+            mix += lpWind * 6;
 
-                unsigned char hit = BEAT_PAT[step];
+            // 2. Dynamic 3D Positional Heartbeat ("Lub-Dub") when Stalker is near
+            if (state == S_PLAY_3D) {
+                heartSample++;
+                if (heartSample >= heartPeriod)
+                    heartSample = 0;
 
-                if (hit == 1 && inStep < 3200) {
-                    int env = 3200 - inStep;
-                    int freq = 68 + (env >> 6);
-                    duffPhase += freq;
-                    if (duffPhase >= 48000) duffPhase -= 48000;
-                    int wave = duffPhase < 24000 ? (duffPhase - 12000) : (36000 - duffPhase);
-                    mix += (wave * env) / 4200;
-                }
-                else if (hit == 2 && inStep < 1400) {
-                    int env = 1400 - inStep;
-                    noiseRng = noiseRng * 1664525u + 1013904223u;
-                    int nz = ((int)(noiseRng >> 20) & 511) - 256;
-                    duffPhase += 280;
-                    if (duffPhase >= 48000) duffPhase -= 48000;
-                    int body = duffPhase < 24000 ? 280 : -280;
-                    mix += ((nz + body) * env) / 280;
-                }
-                else if (hit == 3 && inStep < 750) {
-                    int env = 750 - inStep;
-                    noiseRng = noiseRng * 1664525u + 1013904223u;
-                    int nz = ((int)(noiseRng >> 22) & 255) - 128;
-                    mix += (nz * env) / 320;
+                int hEnv = 0;
+                if (heartSample < 2400) {
+                    hEnv = 2400 - heartSample; // First beat (Lub)
+                } else if (heartSample >= 4200 && heartSample < 6200) {
+                    hEnv = 6200 - heartSample; // Second beat (Dub)
                 }
 
-                int f1 = HUM_BASE[bar];
-                int f2 = HUM_HARMONY[bar];
-                if (bossActive) {
-                    f1 += 22;
-                    f2 += 33;
+                if (hEnv > 0) {
+                    int hFreq = 52 + (hEnv >> 7);
+                    heartPhase += hFreq;
+                    if (heartPhase >= 48000) heartPhase -= 48000;
+                    int hWave = heartPhase < 24000 ? (heartPhase - 12000) : (36000 - heartPhase);
+                    mix += ((hWave * (hEnv >> 4)) / 12000) * (heartVol >> 10);
                 }
-
-                humPhase1 += f1;
-                if (humPhase1 >= 48000) humPhase1 -= 48000;
-                humPhase2 += f2;
-                if (humPhase2 >= 48000) humPhase2 -= 48000;
-
-                int v1 = humPhase1 < 24000 ? (humPhase1 - 12000) : (36000 - humPhase1);
-                int v2 = humPhase2 < 24000 ? (humPhase2 - 12000) : (36000 - humPhase2);
-
-                int breath = inStep < (stepSamples / 2) ? inStep : (stepSamples - inStep);
-                int humAmp = 1400 + (breath / 6);
-                mix += ((v1 + v2) * humAmp) / 10000;
             }
 
+            // 3. Active Horror Sound Effects
             if (curSfx >= 0) {
                 int rem = sfxLen - sfxPos;
                 if (rem <= 0) {
                     curSfx = -1;
                 } else {
-                    int f = 440;
+                    int f = 300;
                     int vol = 14000;
 
-                    if (curSfx == 0) {
-                        f = 720;
-                        vol = 12000;
-                    } else if (curSfx == 1) {
-                        f = (sfxPos < 1800) ? 580 : 880;
-                        vol = 14000;
+                    if (curSfx == 3) {
+                        // Wooden floorboard step thud + creak
+                        f = 95 - (sfxPos >> 6);
+                        if (f < 48) f = 48;
+                        vol = (noiseLevel > 0.6f) ? 14000 : 7500;
                     } else if (curSfx == 4) {
-                        f = 260 + (sfxPos >> 3);
-                        vol = 13000;
+                        // Book pickup chime
+                        f = (sfxPos < 4000) ? 528 : 792;
+                        vol = 15000;
                     } else if (curSfx == 5) {
-                        f = 350 + (sfxPos >> 2);
-                        vol = 14500;
-                    } else if (curSfx == 6) {
-                        f = 165 - (sfxPos >> 6);
-                        if (f < 55) f = 55;
-                        vol = 16000;
-                    } else if (curSfx == 7) {
-                        f = 220 - (sfxPos >> 6);
-                        if (f < 65) f = 65;
+                        // Monster speed increased warning pulse
+                        f = (sfxPos < 6000) ? 145 : 110;
                         vol = 17500;
+                    } else if (curSfx == 6) {
+                        // Heavy main door slam / unlock
+                        f = 82 - (sfxPos >> 8);
+                        if (f < 40) f = 40;
+                        vol = 19000;
+                    } else if (curSfx == 7) {
+                        // Stalker roar
+                        f = 135 + ((sfxPos >> 5) & 31);
+                        vol = 18500;
                     } else if (curSfx == 8) {
-                        f = (sfxPos < 4200) ? 440 : ((sfxPos < 8400) ? 550 : 660);
-                        vol = 16000;
+                        // Jumpscare scream
+                        f = 380 + ((sfxPos >> 3) & 127);
+                        vol = 22000;
                     } else if (curSfx == 9) {
-                        f = 620 - (sfxPos >> 2);
-                        if (f < 180) f = 180;
-                        vol = 14500;
-                    } else if (curSfx == 10) {
-                        f = 300 + (sfxPos >> 3);
-                        vol = 15500;
+                        // Escape chord
+                        f = (sfxPos < 5000) ? 440 : ((sfxPos < 10000) ? 554 : 660);
+                        vol = 16500;
+                    } else {
+                        // Flashlight click
+                        f = 1200;
+                        vol = 11000;
                     }
 
                     sfxPhase += f;
@@ -769,14 +561,13 @@ static void updateGameplayAudio() {
                     int tri = sfxPhase < 24000 ? sfxPhase : 48000 - sfxPhase;
                     int s = ((tri - 12000) * vol) / 12000;
 
-                    if (curSfx == 6 || curSfx == 7 || curSfx == 9) {
-                        noiseRng = noiseRng * 1664525u + 1013904223u;
-                        int nz = ((int)(noiseRng >> 19) & 1023) - 512;
-                        s += nz * 6;
+                    if (curSfx == 3 || curSfx == 6 || curSfx == 7 || curSfx == 8) {
+                        int nz = ((int)(noiseRng >> 18) & 1023) - 512;
+                        s += nz * (curSfx == 8 ? 14 : 7);
                     }
 
-                    if (rem < 1200)
-                        s = (s * rem) / 1200;
+                    if (rem < 1500)
+                        s = (s * rem) / 1500;
 
                     mix += s;
                     sfxPos++;
@@ -795,25 +586,7 @@ static void updateGameplayAudio() {
 #endif
 }
 
-// ---------- Drawing primitives ----------
-static void setClip(int x, int y, int w, int h) {
-    clipX0 = x < 0 ? 0 : x;
-    clipY0 = y < 0 ? 0 : y;
-
-    clipX1 = (x + w) > FRAME_WIDTH ?
-             FRAME_WIDTH : (x + w);
-
-    clipY1 = (y + h) > FRAME_HEIGHT ?
-             FRAME_HEIGHT : (y + h);
-}
-
-static void resetClip() {
-    clipX0 = 0;
-    clipY0 = 0;
-    clipX1 = FRAME_WIDTH;
-    clipY1 = FRAME_HEIGHT;
-}
-
+// ---------- 2D & Text Drawing Helpers ----------
 static void fillRect(int x, int y, int w, int h, Color c) {
     if (w <= 0 || h <= 0)
         return;
@@ -823,7 +596,6 @@ static void fillRect(int x, int y, int w, int h, Color c) {
 
     if (x < clipX0) x = clipX0;
     if (y < clipY0) y = clipY0;
-
     if (x1 > clipX1) x1 = clipX1;
     if (y1 > clipY1) y1 = clipY1;
 
@@ -837,7 +609,6 @@ static void fillRect(int x, int y, int w, int h, Color c) {
     }
 }
 
-// ---------- Latin font ----------
 static const unsigned char FONT[45][7] = {
     {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11},
     {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E},
@@ -865,7 +636,6 @@ static const unsigned char FONT[45][7] = {
     {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11},
     {0x11,0x11,0x11,0x0A,0x04,0x04,0x04},
     {0x1F,0x01,0x02,0x04,0x08,0x10,0x1F},
-
     {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E},
     {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
     {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F},
@@ -876,13 +646,11 @@ static const unsigned char FONT[45][7] = {
     {0x1F,0x01,0x02,0x04,0x08,0x08,0x08},
     {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E},
     {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C},
-
     {0x00,0x04,0x04,0x00,0x04,0x04,0x00},
     {0x00,0x00,0x00,0x1F,0x00,0x00,0x00},
     {0x02,0x04,0x08,0x10,0x08,0x04,0x02},
     {0x08,0x04,0x02,0x01,0x02,0x04,0x08},
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00},
-
     {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C},
     {0x04,0x04,0x04,0x04,0x04,0x00,0x04},
     {0x00,0x00,0x00,0x00,0x0C,0x04,0x08},
@@ -890,12 +658,8 @@ static const unsigned char FONT[45][7] = {
 };
 
 static int glyphIndex(char ch) {
-    if (ch >= 'A' && ch <= 'Z')
-        return ch - 'A';
-
-    if (ch >= '0' && ch <= '9')
-        return 26 + ch - '0';
-
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+    if (ch >= '0' && ch <= '9') return 26 + ch - '0';
     if (ch == ':') return 36;
     if (ch == '-') return 37;
     if (ch == '<') return 38;
@@ -904,33 +668,22 @@ static int glyphIndex(char ch) {
     if (ch == '!') return 42;
     if (ch == ',') return 43;
     if (ch == '?') return 44;
-
     return 40;
 }
 
-static void drawText(int x, int y, const char *s,
-                     int scale, Color c) {
+static void drawText(int x, int y, const char *s, int scale, Color c) {
     for (; *s; s++) {
         int g = glyphIndex(*s);
-
         if (g != 40) {
             for (int row = 0; row < 7; row++) {
                 unsigned char bits = FONT[g][row];
-
                 for (int col = 0; col < 5; col++) {
                     if (bits & (0x10 >> col)) {
-                        fillRect(
-                            x + col * scale,
-                            y + row * scale,
-                            scale,
-                            scale,
-                            c
-                        );
+                        fillRect(x + col * scale, y + row * scale, scale, scale, c);
                     }
                 }
             }
         }
-
         x += 6 * scale;
     }
 }
@@ -940,30 +693,15 @@ static int textWidth(const char *s, int scale) {
     return n > 0 ? n * 6 * scale - scale : 0;
 }
 
-static void drawTextC(int cx, int y, const char *s,
-                      int scale, Color c) {
-    drawText(cx - textWidth(s, scale) / 2,
-             y, s, scale, c);
+static void drawTextC(int cx, int y, const char *s, int scale, Color c) {
+    drawText(cx - textWidth(s, scale) / 2, y, s, scale, c);
 }
 
-static void intToStr(int v, char *out) {
-    if (v >= 10) {
-        out[0] = (char)('0' + v / 10);
-        out[1] = (char)('0' + v % 10);
-        out[2] = 0;
-    } else {
-        out[0] = (char)('0' + v);
-        out[1] = 0;
-    }
-}
-
-// ---------- Arabic text images ----------
 static int arW(int id) {
 #if ARABIC_OK
     return id >= 0 ? AR_IMGS[id].w : 0;
 #else
-    (void)id;
-    return 0;
+    (void)id; return 0;
 #endif
 }
 
@@ -971,19 +709,15 @@ static int arH(int id) {
 #if ARABIC_OK
     return id >= 0 ? AR_IMGS[id].h : 0;
 #else
-    (void)id;
-    return 0;
+    (void)id; return 0;
 #endif
 }
 
 static void drawArCols(int id, int x, int y, int c0, int c1, Color col) {
 #if ARABIC_OK
-    if (id < 0)
-        return;
-
+    if (id < 0) return;
     const ArImg &im = AR_IMGS[id];
     int rb = (im.w + 7) / 8;
-
     if (c0 < 0) c0 = 0;
     if (c1 > im.w) c1 = im.w;
 
@@ -998,3254 +732,962 @@ static void drawArCols(int id, int x, int y, int c0, int c1, Color col) {
 #endif
 }
 
-static void drawLabel(int tid, int cx, int boxY, int boxH,
-                      int sc, Color c) {
+static void drawLabel(int tid, int cx, int boxY, int boxH, int sc, Color c) {
     if (useAr() && TXT_AR[tid] >= 0) {
         int id = TXT_AR[tid];
         int w = arW(id);
         int h = arH(id);
-
         drawArCols(id, cx - w / 2, boxY + (boxH - h) / 2, 0, w, c);
     } else {
-        drawTextC(cx, boxY + (boxH - 7 * sc) / 2,
-                  TXT_EN[tid], sc, c);
+        drawTextC(cx, boxY + (boxH - 7 * sc) / 2, TXT_EN[tid], sc, c);
     }
 }
 
 static int labelWidth(int tid, int sc) {
     if (useAr() && TXT_AR[tid] >= 0)
         return arW(TXT_AR[tid]);
-
     return textWidth(TXT_EN[tid], sc);
 }
 
-// ---------- Level, Enemy & Checkpoint Construction ----------
-static int baseCol = 0;
-
-static void put(int row, int c, char ch) {
-    int g = baseCol + c;
-
-    if (row >= 0 && row < ROWS && g >= 0 && g < COLS)
-        level[row][g] = ch;
-}
-
-static void plat(int row, int a, int b) {
-    for (int c = a; c <= b; c++)
-        put(row, c, '#');
-}
-
-static void wall(int col, int r0, int r1) {
-    for (int r = r0; r <= r1; r++)
-        put(r, col, '#');
-}
-
-static void spk(int row, int a, int b) {
-    for (int c = a; c <= b; c++)
-        put(row, c, '^');
-}
-
-static void sawAt(int row, int col) {
-    put(row, col, 'O');
-}
-
-static void addEnemy(int kind, int col, int row, int minC, int maxC) {
-    if (enemyCount >= MAX_ENEMIES)
-        return;
-
-    Enemy &e = enemies[enemyCount++];
-    e.kind = kind;
-    e.x = (float)((baseCol + col) * TILE + 8);
-    e.y = (float)(row * TILE - 44);
-    e.baseY = e.y;
-    e.minX = (float)((baseCol + minC) * TILE + 4);
-    e.maxX = (float)((baseCol + maxC) * TILE + 12);
-    e.dir = 1;
-    e.vx = (kind == E_WALKER) ? 2.6f : ((kind == E_FLYER) ? 3.2f : 2.0f);
-    e.vy = 0.0f;
-    e.maxHp = (kind == E_TURRET) ? 3 : 2;
-    e.hp = e.maxHp;
-    e.hurt = 0;
-    e.timer = (col * 17) & 63;
-    e.active = true;
-}
-
-static void addCheckpoint(int col, int row) {
-    if (checkCount >= MAX_CHECKPOINTS)
-        return;
-
-    checkCols[checkCount] = baseCol + col;
-    checkRows[checkCount] = row;
-    checkActive[checkCount] = false;
-    checkCount++;
-}
-
-static void initAmbientParticles() {
-    for (int i = 0; i < MAX_AMB; i++) {
-        AmbPart &a = ambParts[i];
-        a.x = (float)((i * 173 + 47) % FRAME_WIDTH);
-        a.y = (float)(110 + ((i * 113 + 31) % (FRAME_HEIGHT - 260)));
-        a.seed = (unsigned char)i;
-
-        if (currentBiome == 0) {
-            a.vx = 0.6f + (i % 3) * 0.25f;
-            a.vy = 0.8f + (i % 2) * 0.35f;
-            a.sz = 6;
-        } else if (currentBiome == 1) {
-            a.vx = 0.9f + (i % 3) * 0.3f;
-            a.vy = 0.3f + (i % 2) * 0.2f;
-            a.sz = 5;
-        } else if (currentBiome == 2) {
-            a.vx = 3.2f + (i % 4) * 0.6f;
-            a.vy = 0.4f;
-            a.sz = 4;
-        } else if (currentBiome == 3) {
-            a.vx = -0.5f + (i % 3) * 0.4f;
-            a.vy = 1.4f + (i % 3) * 0.4f;
-            a.sz = 5;
-        } else if (currentBiome == 4) {
-            a.vx = -0.3f + (i % 3) * 0.3f;
-            a.vy = -1.3f - (i % 3) * 0.4f;
-            a.sz = 5;
-        } else {
-            a.vx = 0.3f;
-            a.vy = -0.4f;
-            a.sz = 4;
-        }
-    }
-}
-
-// Populates semi-dense small interactive grass across the entire ground and platforms of the world
-static void populateLevelPlants() {
-    plantCount = 0;
-
-    int maxC = levelCols - 1;
-    for (int r = 2; r < ROWS; r++) {
-        for (int c = 1; c < maxC; c++) {
-            if (level[r][c] != '#')
-                continue;
-            if (level[r - 1][c] != '.')
-                continue;
-
-            bool nearSaw = false;
-            for (int dr = -2; dr <= 0; dr++) {
-                for (int dc = -1; dc <= 1; dc++) {
-                    int nr = r + dr;
-                    int nc = c + dc;
-                    if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
-                        if (level[nr][nc] == 'O' || level[nr][nc] == 'G')
-                            nearSaw = true;
-                    }
-                }
-            }
-            if (nearSaw)
-                continue;
-
-            // Place 2 small tufts on every surface tile for a semi-dense living carpet across the world!
-            for (int sub = 0; sub < 2; sub++) {
-                if (plantCount >= MAX_PLANTS)
-                    break;
-
-                Plant &p = plants[plantCount++];
-                p.wx = (short)(c * TILE + 15 + sub * 28 + ((c * 5 + r * 3 + sub * 7) % 7));
-                p.y  = (short)(r * TILE);
-                p.angle = 0.0f;
-                p.vel   = 0.0f;
-                p.height = (unsigned char)(11 + ((c * 3 + r * 7 + sub * 5) % 6));
-                p.style  = (unsigned char)((c + r + sub) % 3);
-                p.seed   = (unsigned char)((c * 5 + r * 9 + sub * 11) & 15);
-                p.drawn[0] = false;
-                p.drawn[1] = false;
-                p.drawnBend[0] = 99;
-                p.drawnBend[1] = 99;
-                p.drawnX[0] = -1000;
-                p.drawnX[1] = -1000;
-            }
-        }
-    }
-}
-
-static void clearLevelGrid() {
-    for (int r = 0; r < ROWS; r++) {
-        for (int c = 0; c < COLS; c++)
-            level[r][c] = '.';
-
-        level[r][COLS] = 0;
-    }
-
-    for (int c = 0; c < COLS; c++) {
-        level[0][c] = '#';
-        level[ROWS - 1][c] = '#';
-    }
-
-    for (int r = 0; r < ROWS; r++) {
-        level[r][0] = '#';
-        level[r][COLS - 1] = '#';
-    }
-
-    enemyCount = 0;
-    checkCount = 0;
-    for (int i = 0; i < MAX_BULLETS; i++)
-        bullets[i].active = false;
-}
-
-static void buildScrollingActionStage(int stageIdx) {
-    baseCol = 0;
-    levelCols = COLS;
-    levelPixelWidth = WORLD_WIDTH;
-
-    // Zone 1 (Cols 1..31): Opening platforms + First Enemy Patrols
-    plat(14, 7, 13);
-    addEnemy(E_WALKER, 10, 14, 7, 13);
-
-    spk(16, 15, 18);
-    plat(12, 16, 22);
-    addEnemy(E_WALKER, 19, 12, 16, 22);
-
-    plat(14, 24, 30);
-    if (stageIdx >= 1)
-        addEnemy(E_JUMPER, 27, 14, 24, 30);
-
-    addCheckpoint(31, 17);
-
-    // Zone 2 (Cols 32..63): Elevated Bridges, Flying Enemies & Sprinting Chasms
-    spk(16, 35, 58);
-    plat(14, 34, 41);
-    addEnemy(E_WALKER, 37, 14, 34, 41);
-
-    plat(12, 44, 51);
-    addEnemy(E_FLYER, 47, 9, 42, 53);
-
-    plat(10, 54, 60);
-    if (stageIdx >= 2)
-        addEnemy(E_TURRET, 58, 10, 54, 60);
-
-    addCheckpoint(63, 17);
-
-    // Zone 3 (Cols 64..95): Twin-Wall Jump Chimneys & Elevated Fortresses
-    wall(70, 6, 14);
-    wall(73, 6, 16);
-    plat(6, 73, 82);
-    spk(16, 74, 83);
-    addEnemy(E_WALKER, 78, 6, 74, 82);
-
-    plat(11, 84, 92);
-    addEnemy(E_JUMPER, 88, 11, 84, 92);
-    if (stageIdx >= 3)
-        sawAt(10, 86);
-
-    addCheckpoint(95, 17);
-
-    // Zone 4 (Cols 96..127): Saw Gauntlet + Turret Guards + Mid-air Flyers
-    spk(16, 99, 123);
-    plat(15, 98, 104);
-    sawAt(14, 106);
-    plat(13, 108, 115);
-    addEnemy(E_WALKER, 112, 13, 108, 115);
-    addEnemy(E_FLYER, 115, 8, 108, 122);
-
-    plat(11, 118, 125);
-    addEnemy(E_TURRET, 123, 11, 118, 125);
-
-    addCheckpoint(127, 17);
-
-    // Zone 5 (Cols 128..159): Double Wall Tower & High Altitude Combat
-    plat(14, 131, 136);
-    addEnemy(E_JUMPER, 134, 14, 131, 136);
-
-    wall(139, 5, 14);
-    wall(142, 5, 16);
-    plat(5, 142, 151);
-    spk(16, 143, 156);
-    addEnemy(E_WALKER, 147, 5, 143, 151);
-
-    plat(10, 153, 158);
-    if (stageIdx >= 1)
-        sawAt(9, 155);
-
-    addCheckpoint(160, 17);
-
-    // Zone 6 (Cols 160..190): Final Citadel Climb to Bandage Girl
-    spk(16, 163, 185);
-    plat(14, 162, 168);
-    addEnemy(E_WALKER, 165, 14, 162, 168);
-
-    plat(12, 171, 177);
-    addEnemy(E_FLYER, 174, 8, 169, 180);
-    if (stageIdx >= 2)
-        addEnemy(E_TURRET, 176, 12, 171, 177);
-
-    plat(10, 180, 189);
-    put(9, 187, 'G');
-}
-
-// Wide Scrolling Boss Arena Builder
-static void buildBossArena(int tier) {
-    baseCol = 0;
-    int arenaCols = 44;
-    levelCols = arenaCols;
-    levelPixelWidth = arenaCols * TILE;
-
-    for (int r = 0; r < ROWS; r++)
-        level[r][arenaCols - 1] = '#';
-
-    wall(3, 6, 13);
-    wall(arenaCols - 4, 6, 13);
-
-    plat(12, 7, 12);
-    plat(12, 19, 24);
-    plat(12, 31, 36);
-
-    plat(7, 18, 25);
-
-    bossActive = true;
-    bossW = 104;
-    bossH = 104;
-    bossX = (float)(28 * TILE);
-    bossY = (float)((ROWS - 1) * TILE - bossH);
-    bossVX = (tier >= 2) ? -5.5f : -4.4f;
-    bossVY = 0.0f;
-    bossMaxHP = (tier >= 2) ? 14 : 10;
-    bossHP = bossMaxHP;
-    bossHurt = 0;
-    bossState = 0;
-    bossTimer = 0;
-    bossSwitchCooldown = 0;
-    bossBeamTimer = 0;
-
-    for (int i = 0; i < MAX_BOSS_SHOTS; i++)
-        bossShots[i].active = false;
-}
-
-static void buildLevel() {
-    clearLevelGrid();
-    bossActive = false;
-
-    checkpointX = (float)(TILE + 16);
-    checkpointY = (float)((ROWS - 1) * TILE - PH);
-
-    if (isBossStage(currentLevel)) {
-        int tier = (currentLevel + 1) / 5;
-        currentBiome = (tier & 1) ? 4 : 5;
-        buildBossArena(tier);
-        populateLevelPlants();
-        initAmbientParticles();
-        return;
-    }
-
-    int idx = currentLevel % 12;
-    if (idx == 0)      currentBiome = 0;
-    else if (idx == 1) currentBiome = 1;
-    else if (idx == 2) currentBiome = 2;
-    else if (idx == 3) currentBiome = 3;
-    else if (idx == 5) currentBiome = 5;
-    else if (idx == 6) currentBiome = 3;
-    else if (idx == 7) currentBiome = 1;
-    else if (idx == 8) currentBiome = 0;
-    else if (idx == 10)currentBiome = 2;
-    else               currentBiome = 4;
-
-    buildScrollingActionStage(currentLevel);
-    populateLevelPlants();
-    initAmbientParticles();
-}
-
-// ---------- Collision ----------
-static char tileAt(int r, int c) {
-    if (r < 0 || r >= ROWS || c < 0 || c >= COLS)
+// ---------- Map & Collision Helpers ----------
+static char mapCell(int fl, int mx, int my) {
+    if (fl < 0 || fl >= NUM_FLOORS || mx < 0 || mx >= MAP_W || my < 0 || my >= MAP_H)
         return '#';
-
-    return level[r][c];
+    return HOUSE_MAP[fl][my][mx];
 }
 
-static char staticChar(int r, int c) {
-    char ch = tileAt(r, c);
-
-    if (ch == 'O')
-        return '.';
-
-    return ch;
+static bool isWallCell(int fl, int mx, int my) {
+    char c = mapCell(fl, mx, my);
+    return c == '#' || c == 'W' || c == 'B' || c == 'D';
 }
 
-static bool hiAt(int r, int c) {
-    return r > 0 &&
-           staticChar(r, c) == '#' &&
-           staticChar(r - 1, c) != '#';
+static bool canWalk(int fl, float nx, float ny, float rad) {
+    return !isWallCell(fl, (int)(nx - rad), (int)(ny - rad)) &&
+           !isWallCell(fl, (int)(nx + rad), (int)(ny - rad)) &&
+           !isWallCell(fl, (int)(nx - rad), (int)(ny + rad)) &&
+           !isWallCell(fl, (int)(nx + rad), (int)(ny + rad));
 }
 
-static bool solidAt(int x, int y) {
-    if (x < 0 || y < 0)
-        return true;
-
-    int c = x / TILE;
-    int r = y / TILE;
-
-    if (c >= COLS || r >= ROWS)
-        return true;
-
-    return level[r][c] == '#';
+static bool hasLineOfSight(int fl, float x0, float y0, float x1, float y1) {
+    float dx = x1 - x0;
+    float dy = y1 - y0;
+    float dist = sqrtf(dx * dx + dy * dy);
+    if (dist < 0.1f) return true;
+    int steps = (int)(dist * 4.0f) + 1;
+    for (int i = 1; i < steps; i++) {
+        float t = (float)i / (float)steps;
+        if (isWallCell(fl, (int)(x0 + dx * t), (int)(y0 + dy * t)))
+            return false;
+    }
+    return true;
 }
 
-static bool rectSolid(int x, int y, int w, int h) {
-    return solidAt(x, y) ||
-           solidAt(x + w - 1, y) ||
-           solidAt(x, y + h - 1) ||
-           solidAt(x + w - 1, y + h - 1);
+static void invalidate3DBuffers() {
+    for (int b = 0; b < 2; b++) {
+        hudFull[b] = true;
+        for (int y = 0; y < VH; y++)
+            for (int x = 0; x < VW; x++)
+                vbuf[b][y][x] = 0xFFFF;
+    }
 }
 
-static bool rectOverlap(
-    int ax, int ay, int aw, int ah,
-    int bx, int by, int bw, int bh
-) {
-    return ax < bx + bw &&
-           ax + aw > bx &&
-           ay < by + bh &&
-           ay + ah > by;
+static void resetGame() {
+    plX = 7.5f;
+    plY = 12.5f;
+    plAngle = -1.570796f;
+    plFloor = 0;
+    plPitch = 0.0f;
+    headBob = 0.0f;
+    stepTimer = 0.0f;
+    flashlightOn = true;
+    noiseLevel = 0.0f;
+    speedAlertTimer = 0;
+    doorAlertTimer = 0;
+    stairCooldown = 0;
+
+    booksCollected = 0;
+    for (int i = 0; i < TOTAL_BOOKS; i++) {
+        books[i].floor = (int)BOOK_INIT[i][0];
+        books[i].x = BOOK_INIT[i][1];
+        books[i].y = BOOK_INIT[i][2];
+        books[i].collected = false;
+    }
+
+    stX = 7.5f;
+    stY = 2.5f;
+    stFloor = 1; // Starts on the Second Floor!
+    stMode = AI_PATROL;
+    stWaypoint = 0;
+    stTargetX = PATROL_PTS[0][0];
+    stTargetY = PATROL_PTS[0][1];
+    stTargetFloor = 1;
+    stDistToPlayer = 20.0f;
+    stStairCooldown = 0;
+    stRoarCooldown = 0;
+
+    invalidate3DBuffers();
 }
 
-static bool circleHit(
-    int cx, int cy, int rad,
-    int rx, int ry, int rw, int rh
-) {
-    int nx = cx < rx ? rx :
-             (cx > rx + rw ? rx + rw : cx);
-
-    int ny = cy < ry ? ry :
-             (cy > ry + rh ? ry + rh : cy);
-
-    int dx = cx - nx;
-    int dy = cy - ny;
-
-    return dx * dx + dy * dy < rad * rad;
+// ---------- Smart Stalker AI & Player Update ----------
+static float getStalkerSpeed() {
+    // Monster speed increases every 2 books collected!
+    int tier = booksCollected / 2; // 0 (0-1 books), 1 (2-3 books), 2 (4-5 books), 3 (6 books!)
+    return 0.025f + (float)tier * 0.0085f;
 }
 
-// ---------- Blood Stains (Gradually Fade & Disappear after 1.5 Minutes) ----------
-static void addSplat(int wx, int wy, int w, int h) {
-    if (wx < 0 || wy < 0 || wx >= levelPixelWidth)
+static void updateStalkerAI() {
+    if (stStairCooldown > 0) stStairCooldown--;
+    if (stRoarCooldown > 0) stRoarCooldown--;
+
+    float dxP = plX - stX;
+    float dyP = plY - stY;
+    stDistToPlayer = sqrtf(dxP * dxP + dyP * dyP);
+
+    // 1. Direct Line of Sight Detection
+    bool canSee = false;
+    if (stFloor == plFloor) {
+        float seeRange = flashlightOn ? 10.5f : 6.2f;
+        if (stDistToPlayer < seeRange && hasLineOfSight(stFloor, stX, stY, plX, plY)) {
+            canSee = true;
+        }
+    }
+
+    if (canSee) {
+        if (stMode != AI_CHASE && stRoarCooldown == 0) {
+            snd(7); // Terrifying Stalker roar!
+            stRoarCooldown = 180;
+        }
+        stMode = AI_CHASE;
+        stTargetX = plX;
+        stTargetY = plY;
+        stTargetFloor = plFloor;
+    }
+    // 2. Smart Hearing Detection (Hears running or nearby walking!)
+    else {
+        float hearRange = noiseLevel * 13.5f;
+        float floorPenalty = (stFloor == plFloor) ? 0.0f : 3.5f;
+        if (stDistToPlayer + floorPenalty < hearRange) {
+            if (stMode == AI_PATROL && stRoarCooldown == 0) {
+                snd(7);
+                stRoarCooldown = 210;
+            }
+            stMode = AI_INVESTIGATE;
+            stTargetX = plX;
+            stTargetY = plY;
+            stTargetFloor = plFloor;
+        }
+    }
+
+    // 3. Determine movement goal (use stairs at (7.5, 2.0) if target is on the other floor!)
+    float goalX = stTargetX;
+    float goalY = stTargetY;
+
+    if (stFloor != stTargetFloor) {
+        goalX = 7.5f;
+        goalY = 2.0f;
+        float dStair = sqrtf((stX - goalX) * (stX - goalX) + (stY - goalY) * (stY - goalY));
+        if (dStair < 0.7f && stStairCooldown == 0) {
+            stFloor = stTargetFloor;
+            stStairCooldown = 90;
+            hudFull[0] = true;
+            hudFull[1] = true;
+        }
+    }
+
+    float gdx = goalX - stX;
+    float gdy = goalY - stY;
+    float gdist = sqrtf(gdx * gdx + gdy * gdy);
+
+    float spd = getStalkerSpeed();
+    if (stMode == AI_CHASE)
+        spd *= 1.18f;
+
+    if (gdist > 0.25f) {
+        float vx = (gdx / gdist) * spd;
+        float vy = (gdy / gdist) * spd;
+
+        // Smooth wall sliding for AI navigation
+        if (canWalk(stFloor, stX + vx, stY, 0.28f))
+            stX += vx;
+        else if (canWalk(stFloor, stX, stY + (vy > 0 ? spd : -spd), 0.28f))
+            stY += (vy > 0 ? spd : -spd);
+
+        if (canWalk(stFloor, stX, stY + vy, 0.28f))
+            stY += vy;
+        else if (canWalk(stFloor, stX + (vx > 0 ? spd : -spd), stY, 0.28f))
+            stX += (vx > 0 ? spd : -spd);
+    } else {
+        // Reached target / waypoint -> pick next patrol waypoint (occasionally switch floors to hunt player)
+        stMode = AI_PATROL;
+        stWaypoint = (stWaypoint + 1) % 6;
+        stTargetX = PATROL_PTS[stWaypoint][0];
+        stTargetY = PATROL_PTS[stWaypoint][1];
+        if (stWaypoint == 0 && stFloor != plFloor)
+            stTargetFloor = plFloor;
+    }
+
+    // 4. Check if Stalker caught the player!
+    if (stFloor == plFloor && stDistToPlayer < 0.62f) {
+        state = S_CAUGHT_3D;
+        cutTick = 0;
+        snd(8); // Jumpscare scream!
+        invalidate3DBuffers();
+    }
+}
+
+static void updatePlay3D() {
+    if (stairCooldown > 0) stairCooldown--;
+    if (speedAlertTimer > 0) {
+        speedAlertTimer--;
+        if (speedAlertTimer == 0) { hudFull[0] = true; hudFull[1] = true; }
+    }
+    if (doorAlertTimer > 0) {
+        doorAlertTimer--;
+        if (doorAlertTimer == 0) { hudFull[0] = true; hudFull[1] = true; }
+    }
+
+    // Toggle Flashlight (Triangle or R1)
+    if (in.triangleNew) {
+        flashlightOn = !flashlightOn;
+        snd(10);
+        hudFull[0] = true;
+        hudFull[1] = true;
+    }
+
+    // Camera Rotation (Right Stick or D-Pad Left/Right in Arrows mode)
+    float rotSpd = 0.048f;
+    if (in.rx != 0.0f)
+        plAngle += in.rx * rotSpd;
+    if (controlMode == 0) {
+        if (in.dleft)  plAngle -= rotSpd * 0.85f;
+        if (in.dright) plAngle += rotSpd * 0.85f;
+    }
+    if (in.ry != 0.0f) {
+        plPitch = iclamp((int)(plPitch - in.ry * 3.5f), -24, 24);
+    } else {
+        plPitch *= 0.9f;
+    }
+
+    // Player Movement (Forward/Back + Strafe)
+    float fwd = 0.0f;
+    float str = 0.0f;
+
+    if (controlMode == 1) {
+        fwd = -in.ly;
+        str = in.lx;
+        if (in.dup)    fwd = 1.0f;
+        if (in.ddown)  fwd = -1.0f;
+        if (in.dleft)  str = -1.0f;
+        if (in.dright) str = 1.0f;
+    } else {
+        if (in.dup)   fwd = 1.0f;
+        if (in.ddown) fwd = -1.0f;
+    }
+
+    bool sprinting = in.square && (fabs_f(fwd) > 0.1f || fabs_f(str) > 0.1f);
+    bool sneaking  = in.circle;
+
+    float moveSpd = 0.046f;
+    if (sprinting)     moveSpd = 0.074f;
+    else if (sneaking) moveSpd = 0.026f;
+
+    float cosA = cosf(plAngle);
+    float sinA = sinf(plAngle);
+
+    float mvX = (cosA * fwd - sinA * str) * moveSpd;
+    float mvY = (sinA * fwd + cosA * str) * moveSpd;
+
+    bool moved = (fabs_f(mvX) > 0.002f || fabs_f(mvY) > 0.002f);
+
+    if (moved) {
+        if (canWalk(plFloor, plX + mvX, plY, 0.25f))
+            plX += mvX;
+        if (canWalk(plFloor, plX, plY + mvY, 0.25f))
+            plY += mvY;
+
+        headBob += sprinting ? 0.24f : (sneaking ? 0.10f : 0.16f);
+        stepTimer += sprinting ? 1.8f : (sneaking ? 0.6f : 1.0f);
+
+        if (stepTimer >= 26.0f) {
+            stepTimer = 0.0f;
+            if (!sneaking)
+                snd(3); // Wooden floorboard footstep sound
+        }
+
+        float targetNoise = sprinting ? 1.0f : (sneaking ? 0.08f : 0.38f);
+        if ((noiseLevel < 0.6f && targetNoise >= 0.6f) || (noiseLevel >= 0.6f && targetNoise < 0.6f)) {
+            hudFull[0] = true;
+            hudFull[1] = true;
+        }
+        noiseLevel = targetNoise;
+    } else {
+        if (noiseLevel >= 0.6f) {
+            hudFull[0] = true;
+            hudFull[1] = true;
+        }
+        noiseLevel *= 0.85f;
+        headBob = 0.0f;
+    }
+
+    // Check Staircase Transition between Ground Floor (0) and Second Floor (1)
+    if (stairCooldown == 0 && mapCell(plFloor, (int)plX, (int)plY) == 'S') {
+        plFloor = 1 - plFloor;
+        plY = 2.4f;
+        stairCooldown = 75;
+        snd(3);
+        hudFull[0] = true;
+        hudFull[1] = true;
+    }
+
+    // Check Book Collection (Auto-collect on close touch OR press X nearby)
+    for (int i = 0; i < TOTAL_BOOKS; i++) {
+        if (books[i].collected || books[i].floor != plFloor)
+            continue;
+
+        float bdx = books[i].x - plX;
+        float bdy = books[i].y - plY;
+        float bdist = sqrtf(bdx * bdx + bdy * bdy);
+
+        if (bdist < 0.75f || (bdist < 1.35f && in.crossNew)) {
+            books[i].collected = true;
+            booksCollected++;
+            hudFull[0] = true;
+            hudFull[1] = true;
+
+            if (booksCollected == TOTAL_BOOKS) {
+                // All 6 books collected -> Main Front Door unlocks immediately!
+                doorAlertTimer = 300;
+                speedAlertTimer = 180;
+                snd(6);
+            } else if ((booksCollected % 2) == 0) {
+                // Every 2 books -> Monster speed increases!
+                speedAlertTimer = 200;
+                snd(5);
+            } else {
+                snd(4);
+            }
+        }
+    }
+
+    // Check Main Front Door Escape (Ground Floor, x=7..8, y>=13.0)
+    if (plFloor == 0 && plX >= 6.5f && plX <= 9.5f && plY >= 12.8f) {
+        if (booksCollected >= TOTAL_BOOKS && (plY >= 13.4f || in.crossNew)) {
+            // Immediate Escape! Trigger 3D Ending Cutscene!
+            state = S_OUTRO_3D;
+            cutTick = 0;
+            snd(9);
+            invalidate3DBuffers();
+            return;
+        }
+    }
+
+    updateStalkerAI();
+}
+
+// ---------- High-Speed 60-FPS 3D Raycasting & Sprite Renderer ----------
+static void putVirtualPixel(int b, int vx, int vy, int r, int g, int bl) {
+    if (vx < 0 || vx >= VW || vy < 0 || vy >= VH)
         return;
 
-    int idx = -1;
-    if (splatCount < MAX_SPLATS) {
-        idx = splatCount++;
-    } else {
-        for (int i = 0; i < MAX_SPLATS; i++) {
-            if (splats[i].stage >= 4 && !splats[i].drawn[0] && !splats[i].drawn[1]) {
-                idx = i;
+    // Quantize to 12-bit RGB444 for delta-frame caching (cuts 75%+ of DrawPixel calls!)
+    int qr = iclamp(r, 0, 255) & 0xF8;
+    int qg = iclamp(g, 0, 255) & 0xF8;
+    int qb = iclamp(bl, 0, 255) & 0xF8;
+
+    unsigned short key = (unsigned short)(((qr >> 3) << 10) | ((qg >> 3) << 5) | (qb >> 3));
+    if (vbuf[b][vy][vx] == key)
+        return;
+
+    vbuf[b][vy][vx] = key;
+    Color c = mk(qr, qg, qb);
+
+    int sx0 = vx * CELL_W;
+    int sy0 = VP_Y0 + vy * CELL_H;
+
+    // 4 active rows per 6px cell (leaves 2px atmospheric horror scanline gap for 60 FPS speed!)
+    for (int py = sy0; py < sy0 + 4; py++) {
+        for (int px0 = sx0; px0 < sx0 + CELL_W; px0++) {
+            scene->DrawPixel(px0, py, c);
+        }
+    }
+}
+
+static void render3DScene(
+    int b,
+    float camX0, float camY0, float camAng,
+    int camFl, float pitchOff, bool flashActive,
+    bool drawStalker, float stalkerX, float stalkerY, int stalkerFl
+) {
+    float dirX = cosf(camAng);
+    float dirY = sinf(camAng);
+    float planeX = -dirY * 0.66f;
+    float planeY =  dirX * 0.66f;
+
+    int horizon = (VH / 2) + (int)pitchOff + (int)(sinf(headBob) * 2.5f);
+
+    // 1. Raycast 3D Walls, Doors, Stairs, Ceiling & Floor
+    for (int x = 0; x < VW; x++) {
+        float camScreenX = 2.0f * (float)x / (float)VW - 1.0f;
+        float rayDirX = dirX + planeX * camScreenX;
+        float rayDirY = dirY + planeY * camScreenX;
+
+        int mapX = (int)camX0;
+        int mapY = (int)camY0;
+
+        float deltaDistX = (fabs_f(rayDirX) < 0.0001f) ? 1e30f : fabs_f(1.0f / rayDirX);
+        float deltaDistY = (fabs_f(rayDirY) < 0.0001f) ? 1e30f : fabs_f(1.0f / rayDirY);
+
+        float sideDistX, sideDistY;
+        int stepX, stepY;
+
+        if (rayDirX < 0.0f) {
+            stepX = -1;
+            sideDistX = (camX0 - (float)mapX) * deltaDistX;
+        } else {
+            stepX = 1;
+            sideDistX = ((float)mapX + 1.0f - camX0) * deltaDistX;
+        }
+
+        if (rayDirY < 0.0f) {
+            stepY = -1;
+            sideDistY = (camY0 - (float)mapY) * deltaDistY;
+        } else {
+            stepY = 1;
+            sideDistY = ((float)mapY + 1.0f - camY0) * deltaDistY;
+        }
+
+        int hit = 0;
+        int side = 0;
+        char hitTile = '#';
+
+        for (int iter = 0; iter < 32; iter++) {
+            if (sideDistX < sideDistY) {
+                sideDistX += deltaDistX;
+                mapX += stepX;
+                side = 0;
+            } else {
+                sideDistY += deltaDistY;
+                mapY += stepY;
+                side = 1;
+            }
+
+            char c = mapCell(camFl, mapX, mapY);
+            if (c == '#' || c == 'W' || c == 'B' || c == 'D') {
+                hit = 1;
+                hitTile = c;
                 break;
             }
         }
-        if (idx < 0)
-            return;
-    }
 
-    Splat &s = splats[idx];
-    s.wx = (short)(wx - w / 2);
-    s.y  = (short)(wy - h / 2);
-    s.w  = (short)w;
-    s.h  = (short)h;
-    s.bornTick = tick;
-    s.stage = 0;
-    s.drawn[0] = false;
-    s.drawn[1] = false;
-    s.drawnStage[0] = 99;
-    s.drawnStage[1] = 99;
-    s.drawnX[0] = -1000;
-    s.drawnX[1] = -1000;
-}
+        float perpWallDist = (side == 0) ? (sideDistX - deltaDistX) : (sideDistY - deltaDistY);
+        if (perpWallDist < 0.12f) perpWallDist = 0.12f;
+        zBuffer[x] = perpWallDist;
 
-static void updateSplatsAging() {
-    for (int i = 0; i < splatCount; i++) {
-        Splat &s = splats[i];
-        if (s.stage >= 4)
-            continue;
+        int lineH = (int)((float)VH / perpWallDist);
+        int drawStart = -lineH / 2 + horizon;
+        int drawEnd   =  lineH / 2 + horizon;
 
-        int age = tick - s.bornTick;
-        unsigned char ns = 0;
-        if (age >= SPLAT_MAX_AGE)          ns = 4; // 90s (1.5 min): Completely vanished
-        else if (age >= SPLAT_MAX_AGE - 300) ns = 3; // 85s..90s: 25% size
-        else if (age >= SPLAT_MAX_AGE - 600) ns = 2; // 80s..85s: 50% size
-        else if (age >= SPLAT_MAX_AGE - 900) ns = 1; // 75s..80s: 75% size
+        float wallX = (side == 0) ? (camY0 + perpWallDist * rayDirY) : (camX0 + perpWallDist * rayDirX);
+        wallX -= floorf(wallX);
+        int texX = (int)(wallX * 16.0f) & 15;
 
-        s.stage = ns;
-    }
-}
-
-static void spawnPart(
-    float x, float y,
-    float pvx, float pvy,
-    int life, int size, int kind
-) {
-    for (int i = 0; i < MAX_PARTS; i++) {
-        if (parts[i].life <= 0) {
-            Part &p = parts[i];
-
-            p.x = x;
-            p.y = y;
-            p.vx = pvx;
-            p.vy = pvy;
-            p.life = (short)life;
-            p.maxLife = (short)life;
-            p.kind = (unsigned char)kind;
-            p.size = (unsigned char)size;
-
-            return;
+        // Medium Flashlight Cone Calculation (Wide, clear medium-bright beam!)
+        float centerXDist = camScreenX * camScreenX;
+        float wallLight = 0.24f / (1.0f + perpWallDist * 0.18f);
+        if (flashActive) {
+            float coneX = 1.0f - centerXDist * 1.15f;
+            if (coneX > 0.0f) {
+                float reach = 1.35f / (1.0f + perpWallDist * 0.11f);
+                wallLight += coneX * reach;
+            }
         }
-    }
-}
+        if (side == 1) wallLight *= 0.80f;
+        if (wallLight > 1.35f) wallLight = 1.35f;
 
-static void spawnDust(float x, float y, int count, float spread) {
-    for (int i = 0; i < count; i++) {
-        float dvx = ((float)(rnd(100) - 50) / 50.0f) * spread;
-        float dvy = -((float)rnd(100) / 100.0f) * 1.6f;
+        // Base wall colors by material & floor
+        int baseR = (camFl == 0) ? 128 : 105;
+        int baseG = (camFl == 0) ? 88  : 75;
+        int baseB = (camFl == 0) ? 58  : 110;
 
-        spawnPart(
-            x + (float)(rnd(20) - 10),
-            y - (float)rnd(4),
-            dvx, dvy,
-            16 + rnd(12),
-            7 + rnd(5),
-            0
-        );
-    }
-}
+        if (hitTile == 'W') {
+            baseR = 95; baseG = 110; baseB = 138;
+        } else if (hitTile == 'B') {
+            baseR = 140; baseG = 72; baseB = 45;
+        } else if (hitTile == 'D') {
+            // Main Front Escape Door (Glows emerald green when all 6 books are collected!)
+            if (booksCollected >= TOTAL_BOOKS) {
+                baseR = 45; baseG = 220; baseB = 110;
+            } else {
+                baseR = 175; baseG = 45; baseB = 38;
+            }
+        }
 
-static void updateParts() {
-    for (int i = 0; i < MAX_PARTS; i++) {
-        Part &p = parts[i];
+        // Vertical plank / frame detail
+        if (texX == 0 || texX == 15) {
+            baseR = (baseR * 3) / 4;
+            baseG = (baseG * 3) / 4;
+            baseB = (baseB * 3) / 4;
+        }
 
-        if (p.life <= 0)
-            continue;
+        for (int y = 0; y < VH; y++) {
+            if (y < drawStart) {
+                // 3D Ceiling with wooden beams
+                int dy = horizon - y;
+                if (dy < 1) dy = 1;
+                float cDist = (float)VH / (2.0f * (float)dy);
+                float cLight = 0.18f / (1.0f + cDist * 0.22f);
+                if (flashActive) {
+                    float dyNorm = (float)(y - horizon) / (float)(VH / 2);
+                    float spot = 1.0f - (centerXDist * 1.3f + dyNorm * dyNorm * 0.9f);
+                    if (spot > 0.0f)
+                        cLight += spot * (1.1f / (1.0f + cDist * 0.15f));
+                }
+                int cr = (int)(58.0f * cLight);
+                int cg = (int)(44.0f * cLight);
+                int cb = (int)(64.0f * cLight);
+                putVirtualPixel(b, x, y, cr, cg, cb);
+            }
+            else if (y <= drawEnd) {
+                // 3D Wall with procedural brick/bookshelf/door texture
+                int texY = (((y - drawStart) * 16) / (lineH > 0 ? lineH : 1)) & 15;
+                int wr = baseR, wg = baseG, wb = baseB;
 
-        p.life--;
-
-        if (p.kind == 0) {
-            p.x += p.vx;
-            p.y += p.vy;
-            p.vx *= 0.9f;
-            p.vy *= 0.92f;
-        } else {
-            float ox = p.x;
-            float oy = p.y;
-
-            p.vy += 0.55f;
-
-            if (p.vy > 16.0f)
-                p.vy = 16.0f;
-
-            p.x += p.vx;
-            p.y += p.vy;
-
-            if (solidAt((int)p.x, (int)p.y)) {
-                if (rnd(100) < 48) {
-                    int s = p.size;
-
-                    if (solidAt((int)ox, (int)p.y)) {
-                        addSplat((int)ox, (int)oy,
-                                 s + 4 + rnd(8), s / 2 + 2);
-                    } else {
-                        addSplat((int)ox, (int)oy,
-                                 s / 2 + 2, s + 4 + rnd(8));
-                    }
+                if (hitTile == 'B' && (texY & 3) == 2 && texX > 1 && texX < 14) {
+                    // Colorful old book spines on bookshelf walls
+                    wr = ((texX * 37) & 64) ? 180 : 70;
+                    wg = ((texY * 23) & 64) ? 150 : 60;
+                    wb = 130;
+                } else if (hitTile == 'D' && texX >= 5 && texX <= 10 && texY >= 4 && texY <= 11) {
+                    // Glowing seal emblem on the Main Front Door
+                    wr = (booksCollected >= TOTAL_BOOKS) ? 180 : 255;
+                    wg = (booksCollected >= TOTAL_BOOKS) ? 255 : 185;
+                    wb = 90;
+                } else if (texY == 0 || texY == 8) {
+                    wr = (wr * 4) / 5;
+                    wg = (wg * 4) / 5;
+                    wb = (wb * 4) / 5;
                 }
 
-                p.life = 0;
-            } else if (p.y > (float)WORLD_HEIGHT) {
-                p.life = 0;
+                putVirtualPixel(b, x, y,
+                                (int)(wr * wallLight),
+                                (int)(wg * wallLight),
+                                (int)(wb * wallLight));
             }
-        }
-    }
-}
+            else {
+                // 3D Floor & Wooden Staircase
+                int dy = y - horizon;
+                if (dy < 1) dy = 1;
+                float fDist = (float)VH / (2.0f * (float)dy);
+                float fx = camX0 + rayDirX * fDist;
+                float fy = camY0 + rayDirY * fDist;
 
-static void updatePlantsAndAmbient(bool landedOrJumped) {
-    float pcx = px + PW * 0.5f;
-    float pby = py + PH;
-    int viewX0 = camCol * TILE - 40;
-    int viewX1 = camCol * TILE + FRAME_WIDTH + 40;
+                float fLight = 0.22f / (1.0f + fDist * 0.20f);
+                if (flashActive) {
+                    float dyNorm = (float)(y - horizon) / (float)(VH / 2);
+                    float spot = 1.0f - (centerXDist * 1.25f + dyNorm * dyNorm * 0.85f);
+                    if (spot > 0.0f)
+                        fLight += spot * (1.25f / (1.0f + fDist * 0.12f));
+                }
 
-    for (int i = 0; i < plantCount; i++) {
-        Plant &p = plants[i];
-        if (p.wx < viewX0 || p.wx > viewX1)
-            continue;
+                char fTile = mapCell(camFl, (int)fx, (int)fy);
+                int checker = (((int)(fx * 2.0f) + (int)(fy * 2.0f)) & 1);
+                int fr, fg, fb;
 
-        // Gentle breeze + player physical interaction
-        int wIdx = ((tick / 12) + (p.wx / 60) + p.seed) & 15;
-        float wind = (float)SN[wIdx] / 256.0f * 1.8f;
-
-        if (deadTimer == 0) {
-            float dx = pcx - (float)p.wx;
-            float dy = pby - (float)p.y;
-            float adx = dx < 0 ? -dx : dx;
-
-            if (adx < 46.0f && dy > -22.0f && dy < 32.0f) {
-                float prox = 1.0f - (adx / 46.0f);
-                p.vel += vx * 0.40f * prox;
-
-                float push = (dx < 0.0f ? 7.0f : -7.0f) * prox;
-                wind += push;
-
-                if (landedOrJumped)
-                    p.vel += (dx < 0.0f ? 5.0f : -5.0f) * prox;
-            }
-        }
-
-        float force = (wind - p.angle) * 0.18f;
-        p.vel = (p.vel + force) * 0.78f;
-        p.angle += p.vel;
-
-        if (p.angle > 12.0f) p.angle = 12.0f;
-        if (p.angle < -12.0f) p.angle = -12.0f;
-    }
-
-    for (int i = 0; i < MAX_AMB; i++) {
-        AmbPart &a = ambParts[i];
-        int swayIdx = ((tick / 8) + a.seed * 3) & 15;
-        float sway = (float)CS[swayIdx] / 256.0f * 0.4f;
-
-        a.x += a.vx + sway;
-        a.y += a.vy;
-
-        if (a.x > (float)(FRAME_WIDTH - 24)) a.x = 24.0f;
-        if (a.x < 24.0f) a.x = (float)(FRAME_WIDTH - 28);
-
-        if (a.y > (float)(FRAME_HEIGHT - 130)) a.y = 110.0f;
-        if (a.y < 105.0f) a.y = (float)(FRAME_HEIGHT - 140);
-    }
-}
-
-// ---------- Player, Weapons & Enemies Logic ----------
-// 60-FPS Differential Camera with deadzone so tiles shift smoothly column-by-column
-static void updateCamera(bool snap) {
-    int pCol = ((int)px + PW / 2) / TILE;
-    int maxCol = levelCols - ROOM_COLS;
-    if (maxCol < 0) maxCol = 0;
-
-    if (snap) {
-        camCol = iclamp(pCol - 12, 0, maxCol);
-    } else {
-        // Deadzone of columns [10..18] on screen so camera follows player without jitter
-        int screenCol = pCol - camCol;
-        if (screenCol > 17 && camCol < maxCol)
-            camCol++;
-        else if (screenCol < 10 && camCol > 0)
-            camCol--;
-    }
-
-    camX = (float)(camCol * TILE);
-}
-
-static void respawn() {
-    px = checkpointX;
-    py = checkpointY;
-
-    vx = 0;
-    vy = 0;
-
-    squashX = 1.0f;
-    squashY = 1.0f;
-
-    onGround = false;
-    wallLock = 0;
-    coyote = 0;
-
-    updateCamera(true);
-
-    if (bossActive && bossHP > 0) {
-        bossX = (float)(28 * TILE);
-        bossY = (float)((ROWS - 1) * TILE - bossH);
-        for (int i = 0; i < MAX_BOSS_SHOTS; i++)
-            bossShots[i].active = false;
-    }
-}
-
-static void die() {
-    deaths++;
-    hudNeed[0] = true;
-    hudNeed[1] = true;
-    snd(6);
-
-    float cx = px + PW / 2.0f;
-    float cy = py + PH / 2.0f;
-
-    for (int i = 0; i < 26; i++) {
-        float bvx = (float)(rnd(180) - 90) / 10.0f;
-        float bvy = (float)(rnd(140) - 120) / 10.0f;
-
-        spawnPart(
-            cx + (float)(rnd(20) - 10),
-            cy + (float)(rnd(20) - 10),
-            bvx, bvy,
-            90,
-            5 + rnd(5),
-            1
-        );
-    }
-
-    for (int i = 0; i < 4; i++) {
-        addSplat(
-            (int)cx + rnd(40) - 20,
-            (int)cy + rnd(40) - 20,
-            8 + rnd(10),
-            8 + rnd(10)
-        );
-    }
-
-    vx = 0;
-    vy = 0;
-    deadTimer = 28;
-}
-
-static void spawnPlayerBullet(float bx, float by, float bvx, float bvy, int kind, int dmg, int pierce) {
-    for (int i = 0; i < MAX_BULLETS; i++) {
-        if (!bullets[i].active) {
-            Bullet &b = bullets[i];
-            b.x = bx;
-            b.y = by;
-            b.vx = bvx;
-            b.vy = bvy;
-            b.kind = kind;
-            b.dmg = dmg;
-            b.pierce = pierce;
-            b.life = (kind == W_SHOTGUN) ? 34 : 65;
-            b.active = true;
-            return;
-        }
-    }
-}
-
-static void fireWeapon() {
-    float bx = facing > 0 ? (px + PW + 4.0f) : (px - 16.0f);
-    float by = py + PH * 0.45f;
-    float dir = (float)facing;
-
-    snd(9);
-
-    if (curWeapon == W_BLASTER) {
-        spawnPlayerBullet(bx, by, dir * 15.0f, 0.0f, W_BLASTER, 1, 0);
-        shootCooldown = 12;
-    } else if (curWeapon == W_SHOTGUN) {
-        spawnPlayerBullet(bx, by, dir * 14.0f, -2.4f, W_SHOTGUN, 1, 0);
-        spawnPlayerBullet(bx, by, dir * 15.0f,  0.0f, W_SHOTGUN, 1, 0);
-        spawnPlayerBullet(bx, by, dir * 14.0f,  2.4f, W_SHOTGUN, 1, 0);
-        shootCooldown = 22;
-    } else if (curWeapon == W_SAW) {
-        spawnPlayerBullet(bx, by, dir * 12.5f, 0.0f, W_SAW, 1, 2);
-        shootCooldown = 18;
-    } else {
-        spawnPlayerBullet(bx, by, dir * 11.5f, 0.0f, W_PLASMA, 2, 1);
-        shootCooldown = 24;
-    }
-}
-
-static void damageBoss(int dmg);
-static void spawnBossShot(float sx, float sy, float svx, float svy);
-
-static void killEnemy(Enemy &e) {
-    e.active = false;
-    snd(10);
-
-    float ecx = e.x + 22.0f;
-    float ecy = e.y + 22.0f;
-    for (int i = 0; i < 16; i++) {
-        float pvx = (float)(rnd(160) - 80) / 10.0f;
-        float pvy = (float)(rnd(140) - 110) / 10.0f;
-        spawnPart(ecx, ecy, pvx, pvy, 55, 6 + rnd(4), 1);
-    }
-    for (int i = 0; i < 3; i++) {
-        addSplat((int)ecx + rnd(24) - 12, (int)e.y + 42, 10 + rnd(8), 6 + rnd(4));
-    }
-}
-
-static void updateBulletsAndEnemies() {
-    for (int i = 0; i < MAX_BULLETS; i++) {
-        Bullet &b = bullets[i];
-        if (!b.active)
-            continue;
-
-        b.x += b.vx;
-        b.y += b.vy;
-        b.life--;
-
-        if (b.life <= 0 || solidAt((int)b.x, (int)b.y)) {
-            spawnDust(b.x, b.y, 3, 1.8f);
-            b.active = false;
-            continue;
-        }
-
-        for (int j = 0; j < enemyCount; j++) {
-            Enemy &e = enemies[j];
-            if (!e.active)
-                continue;
-
-            if (rectOverlap((int)b.x - 10, (int)b.y - 10, 20, 20,
-                            (int)e.x, (int)e.y, 44, 44)) {
-                e.hp -= b.dmg;
-                e.hurt = 10;
-                spawnDust(b.x, b.y, 4, 2.2f);
-
-                if (e.hp <= 0)
-                    killEnemy(e);
-                else
-                    snd(0);
-
-                if (b.pierce > 0) {
-                    b.pierce--;
+                if (fTile == 'S') {
+                    // Golden highlighted wooden staircase steps!
+                    int stepStripe = ((int)(fy * 8.0f)) & 1;
+                    fr = stepStripe ? 210 : 145;
+                    fg = stepStripe ? 165 : 105;
+                    fb = stepStripe ? 85  : 50;
+                } else if (camFl == 0) {
+                    fr = checker ? 96 : 78;
+                    fg = checker ? 66 : 52;
+                    fb = checker ? 46 : 36;
                 } else {
-                    b.active = false;
-                    break;
+                    fr = checker ? 76 : 62;
+                    fg = checker ? 58 : 46;
+                    fb = checker ? 88 : 72;
                 }
-            }
-        }
 
-        if (b.active && bossActive && bossHP > 0) {
-            if (rectOverlap((int)b.x - 10, (int)b.y - 10, 20, 20,
-                            (int)bossX + 6, (int)bossY + 6, bossW - 12, bossH - 12)) {
-                damageBoss(b.dmg);
-                b.active = false;
+                putVirtualPixel(b, x, y,
+                                (int)(fr * fLight),
+                                (int)(fg * fLight),
+                                (int)(fb * fLight));
             }
         }
     }
 
-    int activeX0 = (int)camX - 300;
-    int activeX1 = (int)camX + FRAME_WIDTH + 300;
+    // 2. Render 3D Glowing Cursed Books on current floor
+    float invDet = 1.0f / (planeX * dirY - dirX * planeY);
 
-    for (int i = 0; i < enemyCount; i++) {
-        Enemy &e = enemies[i];
-        if (!e.active)
-            continue;
-        if ((int)e.x < activeX0 || (int)e.x > activeX1)
+    for (int i = 0; i < TOTAL_BOOKS; i++) {
+        if (books[i].collected || books[i].floor != camFl)
             continue;
 
-        if (e.hurt > 0)
-            e.hurt--;
-        e.timer++;
+        float sx = books[i].x - camX0;
+        float sy = books[i].y - camY0;
 
-        if (e.kind == E_WALKER) {
-            e.x += e.vx * e.dir;
-            if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; }
-            if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
-        } else if (e.kind == E_FLYER) {
-            e.x += e.vx * e.dir;
-            if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; }
-            if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
-            int wave = SN[(e.timer / 4) & 15];
-            e.y = e.baseY + (wave * 28) / 256;
-        } else if (e.kind == E_JUMPER) {
-            e.x += e.vx * e.dir;
-            if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; }
-            if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
-            if (e.timer % 55 == 0 && e.y >= e.baseY - 2.0f)
-                e.vy = -12.5f;
-            e.vy += 0.65f;
-            e.y += e.vy;
-            if (e.y >= e.baseY) {
-                e.y = e.baseY;
-                e.vy = 0.0f;
-            }
-        } else if (e.kind == E_TURRET) {
-            e.dir = (px < e.x) ? -1 : 1;
-            if (e.timer % 95 == 0) {
-                spawnBossShot(e.x + 22.0f, e.y + 18.0f, (float)e.dir * 6.5f, 0.0f);
-            }
-        }
+        float transX = invDet * (dirY * sx - dirX * sy);
+        float transY = invDet * (-planeY * sx + planeX * sy);
 
-        if (deadTimer == 0 &&
-            rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8,
-                        (int)e.x + 4, (int)e.y + 4, 36, 36)) {
-            if (vy > 0.0f && (py + PH) < (e.y + 26.0f)) {
-                py = e.y - PH;
-                vy = -15.5f;
-                squashX = 0.72f;
-                squashY = 1.28f;
-                killEnemy(e);
-            } else {
-                die();
-                return;
-            }
-        }
-    }
-}
-
-static void damageBoss(int dmg) {
-    if (bossHurt > 0 || bossHP <= 0)
-        return;
-
-    bossHP -= dmg;
-    if (bossHP < 0) bossHP = 0;
-    bossHurt = 24;
-    hudNeed[0] = true;
-    hudNeed[1] = true;
-    snd(7);
-
-    float bcx = bossX + bossW * 0.5f;
-    float bcy = bossY + bossH * 0.5f;
-
-    for (int i = 0; i < 18; i++) {
-        float pvx = (float)(rnd(200) - 100) / 10.0f;
-        float pvy = (float)(rnd(160) - 130) / 10.0f;
-        spawnPart(bcx, bcy, pvx, pvy, 50, 6 + rnd(5), 1);
-    }
-
-    if (bossHP <= 0) {
-        for (int i = 0; i < MAX_BOSS_SHOTS; i++)
-            bossShots[i].active = false;
-
-        level[16][21] = 'G';
-        needFull[0] = true;
-        needFull[1] = true;
-    }
-}
-
-static void spawnBossShot(float sx, float sy, float svx, float svy) {
-    for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
-        if (!bossShots[i].active) {
-            bossShots[i].x = sx;
-            bossShots[i].y = sy;
-            bossShots[i].vx = svx;
-            bossShots[i].vy = svy;
-            bossShots[i].active = true;
-            return;
-        }
-    }
-}
-
-static void updateProjectiles() {
-    for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
-        BossShot &s = bossShots[i];
-        if (!s.active)
+        if (transY <= 0.2f)
             continue;
 
-        s.x += s.vx;
-        s.y += s.vy;
-
-        if (s.x < (float)TILE || s.x > (float)(levelPixelWidth - TILE) ||
-            s.y < (float)TILE || s.y > (float)(FRAME_HEIGHT - TILE) ||
-            solidAt((int)s.x, (int)s.y)) {
-            s.active = false;
-            continue;
-        }
-
-        if (deadTimer == 0 && rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8,
-                                          (int)s.x - 14, (int)s.y - 14, 28, 28)) {
-            s.active = false;
-            die();
-            return;
-        }
-    }
-}
-
-static void updateBoss() {
-    if (!bossActive || bossHP <= 0)
-        return;
-
-    if (bossHurt > 0)
-        bossHurt--;
-    if (bossSwitchCooldown > 0)
-        bossSwitchCooldown--;
-    if (bossBeamTimer > 0)
-        bossBeamTimer--;
-
-    bossTimer++;
-    int tier = (currentLevel + 1) / 5;
-    float speedMul = (tier >= 2) ? 1.3f : 1.0f;
-    float floorY = (float)((ROWS - 1) * TILE - bossH);
-
-    bossX += bossVX * speedMul;
-
-    if (bossX < (float)(5 * TILE)) {
-        bossX = (float)(5 * TILE);
-        bossVX = 4.5f;
-    } else if (bossX > (float)(36 * TILE)) {
-        bossX = (float)(36 * TILE);
-        bossVX = -4.5f;
-    }
-
-    if (bossTimer % 105 == 50 && bossY >= floorY - 2.0f) {
-        bossVY = -14.5f;
-    }
-
-    bossVY += 0.65f;
-    bossY += bossVY;
-    if (bossY >= floorY) {
-        bossY = floorY;
-        bossVY = 0.0f;
-    }
-
-    int fireRate = (tier >= 2) ? 60 : 80;
-    if (bossTimer % fireRate == 0) {
-        float dir = (px < bossX) ? -1.0f : 1.0f;
-        spawnBossShot(bossX + bossW * 0.5f, bossY + bossH - 28.0f, dir * 7.0f, 0.0f);
-        if (tier >= 2) {
-            spawnBossShot(bossX + bossW * 0.5f, bossY + 24.0f, dir * 6.0f, -2.5f);
-        }
-    }
-
-    if (deadTimer > 0)
-        return;
-
-    int swX = 20 * TILE;
-    int swY = 6 * TILE + 20;
-    if (bossSwitchCooldown == 0 &&
-        rectOverlap((int)px, (int)py, PW, PH, swX, swY, 120, 40)) {
-        bossSwitchCooldown = 130;
-        bossBeamTimer = 25;
-        vy = -12.0f;
-        damageBoss(2);
-        return;
-    }
-
-    if (rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8,
-                    (int)bossX + 8, (int)bossY + 8, bossW - 16, bossH - 16)) {
-        if (vy > 0.0f && (py + PH) < (bossY + 46.0f)) {
-            py = bossY - PH;
-            vy = -16.5f;
-            squashX = 0.70f;
-            squashY = 1.32f;
-            damageBoss(2);
-        } else if (bossHurt == 0) {
-            die();
-        }
-    }
-}
-
-static bool touchingHazard() {
-    int hx = (int)px + 4;
-    int hy = (int)py + 4;
-    int hw = PW - 8;
-    int hh = PH - 8;
-
-    int c0 = ((int)px / TILE) - 2;
-    int c1 = ((int)px + PW) / TILE + 2;
-
-    if (c0 < 0) c0 = 0;
-    if (c1 >= COLS) c1 = COLS - 1;
-
-    for (int r = 0; r < ROWS; r++) {
-        for (int c = c0; c <= c1; c++) {
-            char ch = level[r][c];
-
-            if (ch == '^') {
-                if (rectOverlap(
-                    hx, hy, hw, hh,
-                    c * TILE + 14,
-                    r * TILE + 26,
-                    32, 34
-                )) return true;
-            }
-
-            if (ch == 'O') {
-                if (circleHit(
-                    c * TILE + 30,
-                    r * TILE + 30,
-                    24,
-                    hx, hy, hw, hh
-                )) return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-static bool touchingGoal() {
-    int c0 = ((int)px / TILE) - 2;
-    int c1 = ((int)px + PW) / TILE + 2;
-    if (c0 < 0) c0 = 0;
-    if (c1 >= COLS) c1 = COLS - 1;
-
-    for (int r = 0; r < ROWS; r++) {
-        for (int c = c0; c <= c1; c++) {
-            if (level[r][c] == 'G') {
-                if (rectOverlap(
-                    (int)px, (int)py, PW, PH,
-                    c * TILE + 8,
-                    r * TILE + 16,
-                    PW, PH
-                )) return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-// ---------- Physics ----------
-static void update() {
-    updateParts();
-    updateSplatsAging();
-
-    if (deadTimer > 0) {
-        updatePlantsAndAmbient(false);
-        deadTimer--;
-
-        if (deadTimer == 0)
-            respawn();
-
-        return;
-    }
-
-    if (shootCooldown > 0)
-        shootCooldown--;
-
-    // Weapon switching (Triangle or L1)
-    if (in.switchNew && unlockedWeapons > 1) {
-        curWeapon = (curWeapon + 1) % unlockedWeapons;
-        hudNeed[0] = true;
-        hudNeed[1] = true;
-        snd(0);
-    }
-
-    // Weapon firing (Circle or R1)
-    if ((in.shootNew || ((in.circle || in.r1) && shootCooldown == 0)) && shootCooldown == 0) {
-        fireWeapon();
-    }
-
-    bool wasGround = onGround;
-    bool didJumpOrLand = false;
-
-    {
-        float k = 0.0f;
-
-        if (!onGround) {
-            k = iabs((int)vy) / 18.0f;
-            if (k > 1.0f) k = 1.0f;
-        }
-
-        float tx = 1.0f - 0.22f * k;
-        float ty = 1.0f + 0.30f * k;
-
-        squashX += (tx - squashX) * 0.3f;
-        squashY += (ty - squashY) * 0.3f;
-    }
-
-    int dir = 0;
-    float scale = 1.0f;
-
-    if (controlMode == 1) {
-        if (in.ana != 0.0f) {
-            dir = in.ana > 0 ? 1 : -1;
-            scale = in.ana > 0 ? in.ana : -in.ana;
-
-            if (scale < 0.5f)
-                scale = 0.5f;
-        }
-    } else {
-        dir = (in.dright ? 1 : 0) -
-              (in.dleft ? 1 : 0);
-    }
-
-    bool left = dir < 0;
-    bool right = dir > 0;
-
-    bool run = in.square;
-    bool jumpHeld = in.cross;
-    bool jumpNew = in.crossNew;
-
-    bool wallL = rectSolid((int)px - 1, (int)py, 1, PH);
-    bool wallR = rectSolid((int)px + PW, (int)py, 1, PH);
-
-    float maxSpeed = (run ? 8.2f : 5.6f) * scale;
-
-    if (dir != 0)
-        facing = dir;
-
-    if (wallLock > 0) {
-        wallLock--;
-    } else if (dir != 0) {
-        float acc = onGround ? 1.2f : 0.7f;
-
-        vx += dir * acc;
-
-        if (vx > maxSpeed) vx = maxSpeed;
-        if (vx < -maxSpeed) vx = -maxSpeed;
-    } else {
-        float fr = onGround ? 1.0f : 0.3f;
-
-        if (vx > fr) vx -= fr;
-        else if (vx < -fr) vx += fr;
-        else vx = 0;
-    }
-
-    vy += 0.9f;
-
-    if (vy > 18.0f)
-        vy = 18.0f;
-
-    bool sliding =
-        !onGround &&
-        vy > 0 &&
-        ((wallL && left) || (wallR && right));
-
-    if (sliding && vy > 3.0f)
-        vy = 3.0f;
-
-    if (sliding && (tick & 3) == 0)
-        spawnDust(wallL ? px : px + PW, py + PH - 6.0f, 1, 1.0f);
-
-    if (onGround)
-        coyote = 6;
-    else if (coyote > 0)
-        coyote--;
-
-    if (jumpNew) {
-        if (coyote > 0) {
-            vy = -17.0f;
-            coyote = 0;
-
-            squashX = 0.72f;
-            squashY = 1.30f;
-
-            spawnDust(px + PW / 2.0f, py + PH, 6, 3.0f);
-            didJumpOrLand = true;
-            snd(4);
-        } else if (wallL || wallR) {
-            vy = -16.0f;
-            vx = wallL ? 8.0f : -8.0f;
-
-            wallLock = 9;
-            facing = wallL ? 1 : -1;
-
-            squashX = 0.72f;
-            squashY = 1.30f;
-
-            spawnDust(wallL ? px : px + PW, py + PH / 2.0f, 4, 2.0f);
-            didJumpOrLand = true;
-            snd(5);
-        }
-    }
-
-    if (!jumpHeld && vy < -6.0f)
-        vy = -6.0f;
-
-    // Horizontal collision
-    px += vx;
-
-    if (rectSolid((int)px, (int)py, PW, PH)) {
-        if (vx > 0) {
-            px = (float)(
-                (((int)px + PW - 1) / TILE) * TILE - PW
-            );
-        } else if (vx < 0) {
-            px = (float)(
-                (((int)px) / TILE + 1) * TILE
-            );
-        }
-
-        vx = 0;
-    }
-
-    // Vertical collision
-    py += vy;
-    onGround = false;
-
-    if (rectSolid((int)px, (int)py, PW, PH)) {
-        if (vy > 0) {
-            py = (float)(
-                (((int)py + PH - 1) / TILE) * TILE - PH
-            );
-
-            onGround = true;
-
-            if (!wasGround && vy > 5.0f) {
-                float k = vy / 18.0f;
-
-                if (k > 1.0f)
-                    k = 1.0f;
-
-                squashY = 1.0f - 0.35f * k;
-                squashX = 1.0f + 0.40f * k;
-
-                spawnDust(
-                    px + PW / 2.0f,
-                    py + PH,
-                    4 + (int)(k * 6.0f),
-                    4.0f
-                );
-                didJumpOrLand = true;
-            }
-        } else if (vy < 0) {
-            py = (float)(
-                (((int)py) / TILE + 1) * TILE
-            );
-        }
-
-        vy = 0;
-    }
-
-    updateCamera(false);
-
-    for (int i = 0; i < checkCount; i++) {
-        if (!checkActive[i]) {
-            int cpx = checkCols[i] * TILE;
-            if ((int)px + PW >= cpx) {
-                checkActive[i] = true;
-                checkpointX = (float)cpx;
-                checkpointY = (float)(checkRows[i] * TILE - PH);
-                snd(1);
-                spawnDust((float)(cpx + 20), (float)(checkRows[i] * TILE - 40), 10, 3.5f);
-            }
-        }
-    }
-
-    updatePlantsAndAmbient(didJumpOrLand);
-    updateBulletsAndEnemies();
-    updateProjectiles();
-
-    if (bossActive)
-        updateBoss();
-
-    if (deadTimer > 0)
-        return;
-
-    if (touchingHazard()) {
-        die();
-        return;
-    }
-
-    if (touchingGoal()) {
-        winTimer = 160;
-        needWin[0] = true;
-        needWin[1] = true;
-
-        justUnlockedWeapon = false;
-        int newWeapCount = unlockedWeapons;
-        if (currentLevel >= 0 && unlockedWeapons < 2) newWeapCount = 2;
-        if (currentLevel >= 2 && unlockedWeapons < 3) newWeapCount = 3;
-        if (currentLevel >= 4 && unlockedWeapons < 4) newWeapCount = 4;
-
-        if (newWeapCount > unlockedWeapons) {
-            unlockedWeapons = newWeapCount;
-            curWeapon = unlockedWeapons - 1;
-            justUnlockedWeapon = true;
-        }
-
-        snd(8);
-    }
-
-    int nr = ((int)px + PW / 2) / FRAME_WIDTH;
-    if (nr < 0) nr = 0;
-    if (nr > LAST_ROOM) nr = LAST_ROOM;
-    roomIdx = nr;
-}
-
-// ---------- 60-FPS Dirty-Rectangle & Biome Drawing Engine ----------
-static void drawSpikeAt(int screenX, int r) {
-    int center = screenX + TILE / 2;
-    int top = r * TILE + 20;
-
-    Color spCol = mk(205, 205, 215);
-    if (currentBiome == 2)
-        spCol = mk(230, 195, 145);
-    else if (currentBiome == 3)
-        spCol = mk(195, 235, 255);
-    else if (currentBiome == 4)
-        spCol = mk(255, 130, 70);
-
-    for (int j = 0; j < 40; j++) {
-        int half = (j * 26) / 39;
-
-        fillRect(
-            center - half,
-            top + j,
-            2 * half + 1,
-            1,
-            spCol
-        );
-    }
-}
-
-static void drawSaw(int cx, int cy) {
-    if (cx < -30 || cx > FRAME_WIDTH + 30)
-        return;
-
-    int a = (tick / 2) & 15;
-
-    int cc = CS[a];
-    int ss = SN[a];
-
-    for (int dy = -26; dy <= 26; dy++) {
-        for (int dx = -26; dx <= 26; dx++) {
-            int d2 = dx * dx + dy * dy;
-
-            if (d2 > 26 * 26)
+        int screenX = (int)((VW / 2) * (1.0f + transX / transY));
+        int spH = iabs((int)(VH / transY));
+        int spW = spH;
+
+        int bookH = spH / 3;
+        int bookW = spW / 3;
+        if (bookH < 4) bookH = 4;
+        if (bookW < 4) bookW = 4;
+
+        int floatOffset = (int)(sinf((float)tick * 0.1f + (float)i) * (spH * 0.08f));
+        int yCenter = horizon + spH / 5 + floatOffset;
+
+        int y0 = iclamp(yCenter - bookH / 2, 0, VH - 1);
+        int y1 = iclamp(yCenter + bookH / 2, 0, VH - 1);
+        int x0 = iclamp(screenX - bookW / 2, 0, VW - 1);
+        int x1 = iclamp(screenX + bookW / 2, 0, VW - 1);
+
+        for (int xx = x0; xx <= x1; xx++) {
+            if (transY >= zBuffer[xx])
                 continue;
 
-            int px0 = cx + dx;
-            int py0 = cy + dy;
-            if (px0 < 0 || px0 >= FRAME_WIDTH || py0 < 0 || py0 >= FRAME_HEIGHT)
-                continue;
-
-            int u = (dx * cc + dy * ss) >> 8;
-            int v = (-dx * ss + dy * cc) >> 8;
-
-            if (d2 < 36) {
-                scene->DrawPixel(px0, py0, mk(50, 50, 55));
-            } else if (d2 <= 20 * 20) {
-                scene->DrawPixel(px0, py0, mk(165, 165, 178));
-            } else if (
-                iabs(u) < 6 ||
-                iabs(v) < 6 ||
-                iabs(u - v) < 8 ||
-                iabs(u + v) < 8
-            ) {
-                scene->DrawPixel(px0, py0, mk(215, 215, 225));
+            bool border = (xx == x0 || xx == x1);
+            for (int yy = y0; yy <= y1; yy++) {
+                bool goldTrim = border || (yy == y0 || yy == y1);
+                if (goldTrim)
+                    putVirtualPixel(b, xx, yy, 255, 225, 85);
+                else
+                    putVirtualPixel(b, xx, yy, 220, 35, 55);
             }
         }
     }
-}
 
-static void drawFace(
-    int x, int y, int dirFace, Color eyeWhite
-) {
-    fillRect(x + 9, y + 12, 10, 14, eyeWhite);
-    fillRect(x + 25, y + 12, 10, 14, eyeWhite);
-
-    int off = dirFace > 0 ? 5 : 0;
-
-    fillRect(x + 9 + off, y + 16, 5, 8,
-             mk(0, 0, 0));
-
-    fillRect(x + 25 + off, y + 16, 5, 8,
-             mk(0, 0, 0));
-}
-
-static void drawPlayerFace(
-    int dx, int dy, int dw, int dh, int dirFace
-) {
-    int ew = dw * 10 / 44;
-    if (ew < 4) ew = 4;
-
-    int eh = dh * 14 / 44;
-    if (eh < 6) eh = 6;
-
-    int e1 = dx + dw * 9 / 44;
-    int e2 = dx + dw * 25 / 44;
-
-    int ey = dy + dh * 12 / 44;
-
-    int pw = dw * 5 / 44;
-    if (pw < 2) pw = 2;
-
-    int ph = dh * 8 / 44;
-    if (ph < 3) ph = 3;
-
-    int poff = dirFace > 0 ? dw * 5 / 44 : 0;
-    int pyy = dy + dh * 16 / 44;
-
-    fillRect(e1, ey, ew, eh, mk(255,255,255));
-    fillRect(e2, ey, ew, eh, mk(255,255,255));
-
-    fillRect(e1 + poff, pyy, pw, ph, mk(0,0,0));
-    fillRect(e2 + poff, pyy, pw, ph, mk(0,0,0));
-
-    int mw = dw * 14 / 44;
-    int mh = dh * 4 / 44;
-
-    if (mh < 2) mh = 2;
-
-    fillRect(
-        dx + dw * 15 / 44,
-        dy + dh * 32 / 44,
-        mw, mh,
-        mk(120, 0, 12)
-    );
-}
-
-static void drawTileCell(int r, int cx, char ch, bool hi) {
-    int x = cx * TILE;
-    int y = r * TILE;
-
-    if (ch == '#') {
-        Color mainC = mk(58, 48, 82);
-        Color topC  = mk(145, 105, 180);
-        Color botC  = mk(38, 30, 58);
-
-        if (currentBiome == 0) {
-            mainC = mk(82, 54, 38);
-            topC  = mk(65, 190, 75);
-            botC  = mk(55, 36, 24);
-        } else if (currentBiome == 1) {
-            mainC = mk(102, 62, 40);
-            topC  = mk(225, 175, 55);
-            botC  = mk(70, 42, 26);
-        } else if (currentBiome == 2) {
-            mainC = mk(165, 118, 68);
-            topC  = mk(240, 200, 115);
-            botC  = mk(120, 82, 46);
-        } else if (currentBiome == 3) {
-            mainC = mk(65, 88, 118);
-            topC  = mk(230, 245, 255);
-            botC  = mk(42, 58, 82);
-        } else if (currentBiome == 4) {
-            mainC = mk(55, 36, 46);
-            topC  = mk(235, 90, 35);
-            botC  = mk(34, 20, 28);
-        }
-
-        fillRect(x, y, TILE, TILE, mainC);
-
-        if (hi)
-            fillRect(x, y, TILE, 7, topC);
-
-        fillRect(x, y + TILE - 5, TILE, 5, botC);
-    }
-
-    else if (ch == '^') {
-        drawSpikeAt(x, r);
-    }
-
-    else if (ch == 'G') {
-        int gx = x + 8;
-        int gy = y + 16;
-
-        fillRect(gx, gy, PW, PH, mk(255, 140, 170));
-        fillRect(gx, gy + 3, PW, 7, mk(240, 230, 200));
-
-        drawFace(gx, gy, -1, mk(255, 255, 255));
-    }
-}
-
-// Biome-Specific Small Semi-Dense Grass Shapes & Colors!
-static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style) {
-    if (biome == 0) {
-        // Biome 0 (Green Forest): Lush 3-blade emerald grass + wildflower buds
-        Color dark = mk(36, 140, 52);
-        Color mid  = mk(72, 208, 84);
-        Color bud  = (style == 0) ? mk(255, 95, 130) : mk(255, 230, 75);
-        for (int b = -1; b <= 1; b++) {
-            int ox = bx + b * 5;
-            int bh = h - (b == 0 ? 0 : 2);
-            int sh = bh / 2;
-            fillRect(ox - 1, by - sh, 3, sh, dark);
-            fillRect(ox - 1 + (bend / 2) + b, by - bh, 3, bh - sh, mid);
-            if (b == 0 && style != 2)
-                fillRect(ox - 2 + (bend / 2), by - bh - 3, 5, 4, bud);
-        }
-    } else if (biome == 1) {
-        // Biome 1 (Countryside): Golden-wheat stalks with segmented grain heads
-        Color stalk = mk(185, 132, 38);
-        Color grain = mk(248, 205, 72);
-        for (int b = -1; b <= 1; b++) {
-            int ox = bx + b * 5;
-            int bh = h + 2 - (b == 0 ? 0 : 2);
-            int sh = bh / 2;
-            fillRect(ox - 1, by - sh, 2, sh, stalk);
-            fillRect(ox - 1 + (bend / 2) + b, by - bh, 2, bh - sh, grain);
-            fillRect(ox - 2 + (bend / 2) + b, by - bh - 4, 4, 5, mk(255, 232, 115));
-        }
-    } else if (biome == 2) {
-        // Biome 2 (Sandy Desert): Splayed desert thorny scrub & mini-cactus shape
-        Color scrub = mk(112, 152, 62);
-        Color thorn = mk(235, 155, 65);
-        int s1 = bend / 2;
-        fillRect(bx - 2, by - h, 4, h, scrub);
-        fillRect(bx - 8 + s1, by - (h * 2) / 3, 6, 4, scrub);
-        fillRect(bx - 8 + s1, by - h + 2, 3, 6, scrub);
-        fillRect(bx + 2 + s1, by - (h * 3) / 4, 6, 4, scrub);
-        fillRect(bx + 5 + s1, by - h + 1, 3, 6, scrub);
-        if (style == 0)
-            fillRect(bx - 2 + s1, by - h - 3, 4, 3, thorn);
-    } else if (biome == 3) {
-        // Biome 3 (Snowy Peaks): Crystalline frost-blue reeds with snow diamond tips
-        Color iceDark = mk(105, 175, 220);
-        Color iceMid  = mk(185, 230, 255);
-        Color snowTip = mk(255, 255, 255);
-        for (int b = -1; b <= 1; b++) {
-            int ox = bx + b * 5;
-            int bh = h - (b == 0 ? 0 : 3);
-            fillRect(ox - 1, by - bh / 2, 3, bh / 2, iceDark);
-            fillRect(ox - 1 + (bend / 2) + b, by - bh, 3, bh - bh / 2, iceMid);
-            fillRect(ox - 2 + (bend / 2) + b, by - bh - 3, 4, 3, snowTip);
-        }
-    } else if (biome == 4) {
-        // Biome 4 (Lava Valley): Fiery curved ember ferns with glowing yellow sparks
-        Color ash   = mk(95, 32, 32);
-        Color flame = mk(242, 102, 32);
-        Color spark = mk(255, 225, 75);
-        for (int b = -1; b <= 1; b++) {
-            int ox = bx + b * 5;
-            int bh = h - (b == 0 ? 0 : 2);
-            fillRect(ox - 1, by - bh / 2, 3, bh / 2, ash);
-            fillRect(ox - 1 + (bend / 2) + b * 2, by - bh, 3, bh - bh / 2, flame);
-            fillRect(ox - 1 + (bend / 2) + b * 2, by - bh - 2, 3, 3, spark);
-        }
-    } else {
-        // Biome 5 (Night Castle): Gothic violet shadow-grass with glowing spirit tips
-        Color shDark = mk(78, 52, 128);
-        Color shMid  = mk(138, 98, 205);
-        Color shTip  = mk(185, 235, 255);
-        for (int b = -1; b <= 1; b++) {
-            int ox = bx + b * 5;
-            int bh = h - (b == 0 ? 0 : 2);
-            fillRect(ox - 1, by - bh / 2, 3, bh / 2, shDark);
-            fillRect(ox - 1 + (bend / 2) + b, by - bh, 3, bh - bh / 2, shMid);
-            if (b == 0)
-                fillRect(ox - 1 + (bend / 2), by - bh - 3, 3, 3, shTip);
-        }
-    }
-}
-
-static void drawSplatAt(const Splat &s, int sx) {
-    if (s.stage >= 4)
-        return;
-
-    // Gradually shrink and darken across stages 0..3
-    int div = s.stage + 1;
-    int dw = (s.w * (4 - s.stage)) / 4;
-    int dh = (s.h * (4 - s.stage)) / 4;
-    if (dw < 2) dw = 2;
-    if (dh < 2) dh = 2;
-
-    int ox = sx + (s.w - dw) / 2;
-    int oy = s.y + (s.h - dh) / 2;
-
-    Color c1 = mk(140 / div + 20, 10, 20);
-    Color c2 = mk(185 / div + 20, 22 / div, 34 / div);
-
-    fillRect(ox, oy, dw, dh, c1);
-    if (s.stage <= 1)
-        fillRect(ox + 1, oy + 1, dw / 3 + 1, dh / 3 + 1, c2);
-}
-
-static void starPos(int i, int &sx, int &sy) {
-    sx = (i * 271 + 91) % FRAME_WIDTH;
-    sy = (i * 137 + 31) % 570;
-}
-
-static bool starDim(int i, int phase) {
-    return ((phase + i) % 4) == 0;
-}
-
-// Fast Deterministic Biome Background (Allows 60-FPS Partial Clipping in restoreRect!)
-static void paintBackground() {
-    if (currentBiome == 0) {
-        Color sky1 = mk(65, 165, 235);
-        Color sky2 = mk(115, 205, 248);
-        Color farC = mk(42, 115, 75);
-        Color nearC = mk(26, 82, 52);
-
-        fillRect(0, 0, FRAME_WIDTH, 280, sky1);
-        fillRect(0, 280, FRAME_WIDTH, 290, sky2);
-        fillRect(0, 570, FRAME_WIDTH, 130, farC);
-        fillRect(0, 700, FRAME_WIDTH, 380, nearC);
-
-        fillRect(1480, 95, 110, 110, mk(255, 235, 120));
-        fillRect(1495, 80, 80, 140, mk(255, 245, 160));
-
-        for (int i = 0; i < 4; i++) {
-            int cx = 180 + i * 440;
-            int cy = 130 + (i & 1) * 55;
-            fillRect(cx, cy, 170, 38, mk(235, 248, 255));
-            fillRect(cx + 30, cy - 20, 110, 24, mk(245, 252, 255));
-        }
-
-        for (int i = 0; i < 5; i++) {
-            int x = i * 400 + 60;
-            fillRect(x + 60, 430, 140, 140, farC);
-            fillRect(x + 90, 380, 80, 60, farC);
-            if (i % 2 == 1)
-                fillRect(x + 118, 430, 24, 270, mk(150, 225, 255));
-            fillRect(x + 220, 460, 130, 110, farC);
-        }
-
-        for (int i = 0; i < 6; i++) {
-            int x = i * 330 + 40;
-            fillRect(x + 70, 620, 36, 90, mk(68, 44, 28));
-            fillRect(x + 20, 510, 136, 120, nearC);
-            fillRect(x + 44, 465, 88, 55, nearC);
-        }
-        return;
-    }
-
-    if (currentBiome == 1) {
-        Color sky1 = mk(195, 95, 75);
-        Color sky2 = mk(240, 155, 85);
-        Color farC = mk(135, 82, 52);
-        Color nearC = mk(92, 55, 36);
-
-        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
-        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
-        fillRect(0, 570, FRAME_WIDTH, 130, farC);
-        fillRect(0, 700, FRAME_WIDTH, 380, nearC);
-
-        fillRect(1420, 210, 130, 130, mk(255, 215, 95));
-        fillRect(1440, 195, 90, 160, mk(255, 230, 130));
-
-        for (int i = 0; i < 4; i++) {
-            int x = i * 500;
-            fillRect(x + 40, 470, 260, 100, farC);
-            fillRect(x + 90, 440, 160, 40, farC);
-        }
-
-        fillRect(420, 450, 150, 120, nearC);
-        fillRect(445, 420, 100, 35, nearC);
-        fillRect(1160, 420, 76, 150, nearC);
-        fillRect(1172, 398, 52, 26, nearC);
-        fillRect(1265, 455, 110, 115, nearC);
-        return;
-    }
-
-    if (currentBiome == 2) {
-        Color sky1 = mk(230, 145, 65);
-        Color sky2 = mk(248, 198, 115);
-        Color farC = mk(195, 135, 68);
-        Color nearC = mk(158, 102, 48);
-
-        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
-        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
-        fillRect(0, 570, FRAME_WIDTH, 130, farC);
-        fillRect(0, 700, FRAME_WIDTH, 380, nearC);
-
-        fillRect(1490, 105, 120, 120, mk(255, 245, 175));
-        fillRect(1510, 90, 80, 150, mk(255, 250, 205));
-
-        for (int i = 0; i < 3; i++) {
-            int px0 = 260 + i * 560;
-            for (int step = 0; step < 8; step++) {
-                int w = (step + 1) * 32;
-                fillRect(px0 - w / 2, 410 + step * 20, w, 20, farC);
-            }
-        }
-
-        for (int i = 0; i < 4; i++) {
-            int x = i * 500;
-            fillRect(x + 60, 610, 280, 90, nearC);
-            fillRect(x + 120, 580, 160, 40, nearC);
-        }
-        return;
-    }
-
-    if (currentBiome == 3) {
-        Color sky1 = mk(32, 56, 96);
-        Color sky2 = mk(62, 100, 148);
-        Color farC = mk(95, 135, 178);
-        Color nearC = mk(62, 95, 135);
-
-        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
-        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
-        fillRect(0, 570, FRAME_WIDTH, 130, farC);
-        fillRect(0, 700, FRAME_WIDTH, 380, nearC);
-
-        for (int i = 0; i < 6; i++) {
-            fillRect(120 + i * 280, 140 + (i & 1) * 18, 220, 18, mk(65, 215, 175));
-        }
-
-        fillRect(1500, 110, 96, 96, mk(220, 240, 255));
-
-        for (int i = 0; i < 3; i++) {
-            int x = i * 660;
-            fillRect(x + 80, 410, 200, 160, farC);
-            fillRect(x + 110, 370, 140, 50, mk(230, 245, 255));
-            fillRect(x + 340, 440, 180, 130, farC);
-            fillRect(x + 365, 410, 130, 40, mk(230, 245, 255));
-        }
-
-        for (int i = 0; i < 4; i++) {
-            int x = i * 520;
-            fillRect(x + 70, 550, 200, 150, nearC);
-            fillRect(x + 105, 520, 130, 40, mk(210, 232, 250));
-        }
-        return;
-    }
-
-    if (currentBiome == 4) {
-        Color sky1 = mk(42, 14, 24);
-        Color sky2 = mk(78, 24, 32);
-        Color farC = mk(58, 22, 30);
-        Color nearC = mk(38, 15, 22);
-
-        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
-        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
-        fillRect(0, 570, FRAME_WIDTH, 130, farC);
-        fillRect(0, 700, FRAME_WIDTH, 380, nearC);
-
-        fillRect(1500, 115, 100, 100, mk(235, 95, 50));
-        fillRect(1520, 130, 65, 70, mk(255, 155, 70));
-
-        for (int i = 0; i < 3; i++) {
-            int x = i * 680;
-            fillRect(x + 120, 400, 220, 170, farC);
-            fillRect(x + 180, 392, 100, 20, mk(245, 95, 35));
-            fillRect(x + 220, 412, 18, 158, mk(235, 75, 28));
-        }
-
-        for (int i = 0; i < 4; i++) {
-            int x = i * 540;
-            fillRect(x + 80, 540, 200, 160, nearC);
-        }
-        return;
-    }
-
-    // Biome 5: Classic Night Sky
-    Color farC = mk(35, 20, 75);
-    Color nearC = mk(25, 14, 55);
-
-    fillRect(0, 0, FRAME_WIDTH, 300, mk(24, 12, 55));
-    fillRect(0, 300, FRAME_WIDTH, 270, mk(31, 15, 66));
-    fillRect(0, 570, FRAME_WIDTH, 130, farC);
-    fillRect(0, 700, FRAME_WIDTH, 380, nearC);
-
-    fillRect(1500, 115, 100, 100, mk(145, 125, 205));
-    fillRect(1515, 100, 70, 130, mk(145, 125, 205));
-    fillRect(1520, 125, 65, 75, mk(185, 170, 220));
-
-    int phase = tick / 20;
-
-    for (int i = 0; i < NUM_STARS; i++) {
-        int sx, sy;
-        starPos(i, sx, sy);
-
-        if (i % 7 == 0)
-            fillRect(sx - 2, sy - 2, 7, 7, mk(70, 55, 110));
-
-        fillRect(
-            sx, sy, 3, 3,
-            starDim(i, phase) ? mk(130, 115, 185)
-                              : mk(220, 210, 255)
-        );
-    }
-
-    for (int i = 0; i < 3; i++) {
-        int x = i * 700;
-
-        fillRect(x + 80, 450, 180, 130, farC);
-        fillRect(x + 220, 390, 180, 190, farC);
-        fillRect(x + 390, 470, 180, 110, farC);
-    }
-
-    for (int i = 0; i < 4; i++) {
-        int x = i * 560;
-
-        fillRect(x + 70, 590, 160, 120, nearC);
-        fillRect(x + 220, 530, 180, 180, nearC);
-        fillRect(x + 380, 630, 130, 80, nearC);
-    }
-}
-
-static void drawSplatsClipped(int b) {
-    int camBaseX = bufCamCol[b] * TILE;
-    for (int i = 0; i < splatCount; i++) {
-        if (splats[i].drawn[b] && splats[i].stage < 4)
-            drawSplatAt(splats[i], splats[i].wx - camBaseX);
-    }
-}
-
-static void drawPlantsClipped(int b) {
-    int camBaseX = bufCamCol[b] * TILE;
-    for (int i = 0; i < plantCount; i++) {
-        Plant &p = plants[i];
-        int sx = p.wx - camBaseX;
-        if (sx + 16 < clipX0 || sx - 16 > clipX1)
-            continue;
-        if (p.y < clipY0 || p.y - p.height - 6 > clipY1)
-            continue;
-        drawPlantTuft(sx, p.y, p.height, (int)p.angle, currentBiome, p.style);
-        p.drawn[b] = true;
-        p.drawnX[b] = (short)sx;
-        p.drawnBend[b] = (signed char)((int)p.angle);
-    }
-}
-
-// 60-FPS Partial Screen Restorer (repaints only the small dirty rectangle!)
-static void restoreRect(
-    int b, int x, int y, int w, int h, bool withDetails
-) {
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-
-    if (x + w > FRAME_WIDTH) w = FRAME_WIDTH - x;
-    if (y + h > FRAME_HEIGHT) h = FRAME_HEIGHT - y;
-
-    if (w <= 0 || h <= 0)
-        return;
-
-    setClip(x, y, w, h);
-
-    paintBackground();
-
-    int c0 = x / TILE;
-    int c1 = (x + w - 1) / TILE;
-    int r0 = y / TILE;
-    int r1 = (y + h - 1) / TILE;
-
-    for (int r = r0; r <= r1; r++) {
-        for (int c = c0; c <= c1; c++) {
-            char ch = bufGrid[b][r][c];
-
-            if (ch != '.')
-                drawTileCell(r, c, ch, bufHi[b][r][c]);
-        }
-    }
-
-    if (withDetails) {
-        drawSplatsClipped(b);
-        drawPlantsClipped(b);
-    }
-
-    resetClip();
-}
-
-static void addDirty(int b, int x, int y, int w, int h) {
-    if (dirtyCount[b] < MAX_DIRTY) {
-        Rect &d = dirty[b][dirtyCount[b]++];
-
-        d.x = x;
-        d.y = y;
-        d.w = w;
-        d.h = h;
-    }
-}
-
-static int progressNow() {
-    if (bossActive) {
-        if (bossMaxHP <= 0) return 0;
-        return (bossHP * 520) / bossMaxHP;
-    }
-
-    int p = (int)((px / (float)levelPixelWidth) * 520.0f);
-
-    if (p < 0) p = 0;
-    if (p > 520) p = 520;
-
-    return p;
-}
-
-static void drawHUDFull(int b) {
-    int hudN = deaths < 30 ? deaths : 30;
-
-    if (useAr() && TXT_AR[T_DEATHS] >= 0) {
-        int id = TXT_AR[T_DEATHS];
-        drawArCols(id, 70, 22, 0, arW(id), mk(235, 225, 255));
-    } else {
-        drawText(70, 28, "DEATHS", 3, mk(235, 225, 255));
-    }
-
-    for (int i = 0; i < hudN; i++) {
-        fillRect(
-            70 + i * 20,
-            60,
-            13, 13,
-            mk(205, 25, 35)
-        );
-    }
-
-    int prog = progressNow();
-
-    if (bossActive) {
-        drawLabel(T_BOSS_HP, 960, 10, 30, 3, mk(255, 215, 90));
-        fillRect(696, 40, 528, 20, mk(30, 18, 45));
-        fillRect(700, 43, 520, 14, mk(65, 25, 35));
-        fillRect(700, 43, prog, 14, mk(245, 55, 40));
-    } else {
-        fillRect(696, 40, 528, 20, mk(30, 20, 50));
-        fillRect(700, 43, 520, 14, mk(45, 35, 70));
-        fillRect(700, 43, prog, 14, mk(205, 40, 100));
-    }
-
-    int wTid = T_W0 + curWeapon;
-    Color wCol = mk(95, 215, 255);
-    if (curWeapon == W_SHOTGUN) wCol = mk(255, 195, 70);
-    else if (curWeapon == W_SAW) wCol = mk(140, 250, 160);
-    else if (curWeapon == W_PLASMA) wCol = mk(255, 120, 235);
-
-    fillRect(1300, 22, 560, 46, mk(28, 20, 48));
-    fillRect(1303, 25, 554, 40, mk(44, 32, 72));
-    drawLabel(wTid, 1580, 25, 40, 2, wCol);
-
-    hudSq[b] = hudN;
-    hudProg[b] = prog;
-    hudWeap[b] = curWeapon;
-    hudNeed[b] = false;
-}
-
-static void drawEnemyChar(const Enemy &e, int sx, int sy) {
-    bool flash = (e.hurt & 2) != 0;
-
-    if (e.kind == E_WALKER) {
-        Color body = flash ? mk(255, 255, 255) : mk(145, 35, 165);
-        Color trim = mk(85, 18, 105);
-        fillRect(sx, sy, 44, 44, trim);
-        fillRect(sx + 4, sy + 4, 36, 36, body);
-        fillRect(sx + 10, sy - 6, 8, 6, mk(225, 225, 235));
-        fillRect(sx + 26, sy - 6, 8, 6, mk(225, 225, 235));
-        drawFace(sx, sy, e.dir, mk(255, 235, 90));
-    } else if (e.kind == E_FLYER) {
-        Color body = flash ? mk(255, 255, 255) : mk(225, 85, 35);
-        int wingY = ((tick / 4) & 1) ? -10 : 8;
-        fillRect(sx - 12, sy + 14 + wingY, 14, 10, mk(175, 45, 25));
-        fillRect(sx + 42, sy + 14 + wingY, 14, 10, mk(175, 45, 25));
-        fillRect(sx + 4, sy + 4, 36, 36, body);
-        drawFace(sx, sy, e.dir, mk(255, 245, 120));
-    } else if (e.kind == E_JUMPER) {
-        Color body = flash ? mk(255, 255, 255) : mk(45, 185, 135);
-        fillRect(sx, sy, 44, 44, mk(25, 115, 80));
-        fillRect(sx + 4, sy + 4, 36, 36, body);
-        fillRect(sx + 12, sy + 42, 20, 6, mk(210, 220, 230));
-        drawFace(sx, sy, e.dir, mk(255, 255, 255));
-    } else {
-        Color body = flash ? mk(255, 255, 255) : mk(95, 105, 125);
-        fillRect(sx, sy + 6, 44, 38, mk(50, 55, 70));
-        fillRect(sx + 4, sy + 10, 36, 30, body);
-        int barrelX = (e.dir < 0) ? (sx - 14) : (sx + 38);
-        fillRect(barrelX, sy + 18, 18, 12, mk(235, 75, 45));
-        fillRect(sx + 14, sy + 16, 16, 12, mk(255, 215, 70));
-    }
-}
-
-static void drawBossChar(int bx, int by, int bw, int bh, bool hurt) {
-    Color armorDark = hurt ? mk(255, 240, 180) : mk(85, 22, 32);
-    Color armorMain = hurt ? mk(255, 255, 255) : mk(175, 35, 45);
-    Color coreCol   = (tick & 4) ? mk(255, 215, 65) : mk(255, 110, 30);
-
-    fillRect(bx, by, bw, bh, armorDark);
-    fillRect(bx + 8, by + 8, bw - 16, bh - 16, armorMain);
-
-    fillRect(bx + 20, by - 8, bw - 40, 10, coreCol);
-
-    fillRect(bx + 18, by + 26, 24, 20, mk(255, 240, 90));
-    fillRect(bx + bw - 42, by + 26, 24, 20, mk(255, 240, 90));
-    fillRect(bx + 24, by + 32, 12, 12, mk(20, 0, 0));
-    fillRect(bx + bw - 36, by + 32, 12, 12, mk(20, 0, 0));
-
-    fillRect(bx + 14, by + 20, 32, 6, armorDark);
-    fillRect(bx + bw - 46, by + 20, 32, 6, armorDark);
-
-    fillRect(bx + 22, by + 68, bw - 44, 20, mk(35, 10, 18));
-    for (int k = 0; k < 4; k++)
-        fillRect(bx + 28 + k * 14, by + 70, 6, 16, coreCol);
-}
-
-static void renderGame(int b) {
-    resetClip();
-
-    if (winTimer > 0) {
-        if (needWin[b]) {
-            fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT,
-                     mk(20, 90, 60));
-
-            drawLabel(T_COMPLETE, 960, 330, 110, 10,
-                      mk(255, 255, 255));
-
-            drawLabel(T_GREAT, 960, 470, 80, 6,
-                      mk(255, 220, 180));
-
-            if (justUnlockedWeapon) {
-                fillRect(410, 600, 1100, 84, mk(35, 25, 60));
-                fillRect(414, 604, 1092, 76, mk(215, 145, 30));
-                drawLabel(T_NEW_WEAPON, 960, 604, 76, 4, mk(255, 255, 255));
-            }
-
-            needWin[b] = false;
-        }
-
-        return;
-    }
-
-    int camBaseX = camCol * TILE;
-
-    if (needFull[b]) {
-        paintBackground();
-
-        for (int r = 0; r < ROWS; r++) {
-            for (int c = 0; c < ROOM_COLS; c++) {
-                int wc = camCol + c;
-
-                char ch = staticChar(r, wc);
-                bool hi = hiAt(r, wc);
-
-                bufGrid[b][r][c] = ch;
-                bufHi[b][r][c] = hi;
-
-                if (ch != '.')
-                    drawTileCell(r, c, ch, hi);
-            }
-        }
-
-        bufCamCol[b] = camCol;
-
-        for (int i = 0; i < splatCount; i++) {
-            Splat &s = splats[i];
-            int sx = s.wx - camBaseX;
-            if (s.stage < 4 && sx + s.w >= 0 && sx < FRAME_WIDTH) {
-                drawSplatAt(s, sx);
-                s.drawn[b] = true;
-                s.drawnX[b] = (short)sx;
-                s.drawnStage[b] = s.stage;
-            } else {
-                s.drawn[b] = false;
-            }
-        }
-
-        for (int i = 0; i < plantCount; i++) {
-            Plant &p = plants[i];
-            int sx = p.wx - camBaseX;
-            if (sx >= -16 && sx <= FRAME_WIDTH + 16) {
-                int bend = (int)p.angle;
-                drawPlantTuft(sx, p.y, p.height, bend, currentBiome, p.style);
-                p.drawn[b] = true;
-                p.drawnX[b] = (short)sx;
-                p.drawnBend[b] = (signed char)bend;
-            } else {
-                p.drawn[b] = false;
-            }
-        }
-
-        bufStar[b] = tick / 20;
-        dirtyCount[b] = 0;
-
-        drawHUDFull(b);
-
-        needFull[b] = false;
-    }
-
-    else {
-        bool trans = (bufCamCol[b] != camCol);
-
-        // 1. Restore all moving-object dirty rectangles from previous frame in buffer b
-        for (int i = 0; i < dirtyCount[b]; i++) {
-            Rect d = dirty[b][i];
-
-            if (d.y < 85)
-                hudNeed[b] = true;
-
-            restoreRect(b, d.x, d.y, d.w, d.h, !trans);
-        }
-
-        dirtyCount[b] = 0;
-
-        // 2. If camera column shifted, differentially update only changed tiles, splats, and grass!
-        if (trans) {
-            for (int i = 0; i < splatCount; i++) {
-                if (splats[i].drawn[b]) {
-                    Splat &s = splats[i];
-                    restoreRect(b, s.drawnX[b] - 1, s.y - 1, s.w + 2, s.h + 2, false);
-                    s.drawn[b] = false;
-                }
-            }
-
-            for (int i = 0; i < plantCount; i++) {
-                if (plants[i].drawn[b]) {
-                    Plant &p = plants[i];
-                    restoreRect(b, p.drawnX[b] - 12, p.y - p.height - 5, 24, p.height + 5, false);
-                    p.drawn[b] = false;
-                }
-            }
-
-            for (int r = 0; r < ROWS; r++) {
-                for (int c = 0; c < ROOM_COLS; c++) {
-                    int wc = camCol + c;
-
-                    char nc = staticChar(r, wc);
-                    bool nh = hiAt(r, wc);
-
-                    char oc = bufGrid[b][r][c];
-                    bool oh = bufHi[b][r][c];
-
-                    if (nc == oc && nh == oh)
-                        continue;
-
-                    bool needBg = (oc != '.') && (nc != '#');
-
-                    if (needBg) {
-                        setClip(c * TILE, r * TILE, TILE, TILE);
-                        paintBackground();
-                        resetClip();
+    // 3. Render 3D Smart Stalker Entity
+    if (drawStalker && stalkerFl == camFl) {
+        float sx = stalkerX - camX0;
+        float sy = stalkerY - camY0;
+
+        float transX = invDet * (dirY * sx - dirX * sy);
+        float transY = invDet * (-planeY * sx + planeX * sy);
+
+        if (transY > 0.18f) {
+            int screenX = (int)((VW / 2) * (1.0f + transX / transY));
+            int spH = iabs((int)((VH * 1.15f) / transY));
+            int spW = (spH * 3) / 5;
+
+            int y0 = iclamp(horizon - spH / 2, 0, VH - 1);
+            int y1 = iclamp(horizon + spH / 2, 0, VH - 1);
+            int x0 = iclamp(screenX - spW / 2, 0, VW - 1);
+            int x1 = iclamp(screenX + spW / 2, 0, VW - 1);
+
+            float shade = 1.3f / (1.0f + transY * 0.14f);
+            if (shade > 1.2f) shade = 1.2f;
+
+            for (int xx = x0; xx <= x1; xx++) {
+                if (transY >= zBuffer[xx])
+                    continue;
+
+                int relX = ((xx - (screenX - spW / 2)) * 16) / (spW > 0 ? spW : 1);
+
+                for (int yy = y0; yy <= y1; yy++) {
+                    int relY = ((yy - (horizon - spH / 2)) * 24) / (spH > 0 ? spH : 1);
+
+                    // Sculpted 3D humanoid horror silhouette (Head, Glowing Eyes, Ribs, Arms)
+                    if (relY < 6) {
+                        if (relX < 4 || relX > 11) continue;
+                        // Glowing red/yellow Stalker eyes!
+                        if (relY == 3 && (relX == 5 || relX == 6 || relX == 9 || relX == 10)) {
+                            putVirtualPixel(b, xx, yy, 255, 45, 35);
+                        } else {
+                            putVirtualPixel(b, xx, yy, (int)(35 * shade), (int)(15 * shade), (int)(25 * shade));
+                        }
+                    } else if (relY < 17) {
+                        if (relX < 2 || relX > 13) continue;
+                        bool rib = ((relY & 1) == 0 && relX >= 5 && relX <= 10);
+                        int cr = rib ? (int)(120 * shade) : (int)(30 * shade);
+                        int cg = rib ? (int)(25 * shade)  : (int)(12 * shade);
+                        int cb = rib ? (int)(35 * shade)  : (int)(22 * shade);
+                        putVirtualPixel(b, xx, yy, cr, cg, cb);
+                    } else {
+                        if (relX < 4 || relX > 11 || (relX == 7 || relX == 8)) continue;
+                        putVirtualPixel(b, xx, yy, (int)(28 * shade), (int)(12 * shade), (int)(20 * shade));
                     }
-
-                    bufGrid[b][r][c] = nc;
-                    bufHi[b][r][c] = nh;
-
-                    if (nc != '.')
-                        drawTileCell(r, c, nc, nh);
-
-                    if (r <= 1)
-                        hudNeed[b] = true;
                 }
             }
+        }
+    }
+}
 
-            bufCamCol[b] = camCol;
+// ---------- HUD & 3D Cutscene Overlays ----------
+static void draw3DHUD(int b) {
+    // Draw static top & bottom HUD bars when state or status changes
+    if (hudFull[b]) {
+        // Top HUD Bar (y: 0..108)
+        fillRect(0, 0, FRAME_WIDTH, VP_Y0 - 2, mk(16, 12, 24));
+        fillRect(0, VP_Y0 - 4, FRAME_WIDTH, 4, mk(65, 35, 55));
+
+        // 1. Books Counter (Left)
+        drawLabel(T_BOOKS, 140, 18, 42, 4, mk(240, 215, 120));
+        for (int i = 0; i < TOTAL_BOOKS; i++) {
+            int bx = 250 + i * 44;
+            bool got = (i < booksCollected);
+            fillRect(bx, 20, 32, 38, got ? mk(255, 215, 70) : mk(45, 35, 60));
+            fillRect(bx + 4, 24, 24, 30, got ? mk(210, 35, 50) : mk(28, 22, 38));
         }
 
-        // 3. Incrementally update blood splats (new splats or splats that aged to a new fade stage!)
-        for (int i = 0; i < splatCount; i++) {
-            Splat &s = splats[i];
-            int sx = s.wx - camBaseX;
-            bool vis = (s.stage < 4 && sx + s.w >= 0 && sx < FRAME_WIDTH);
+        // 2. Current Floor Indicator (Center-Left)
+        int flTid = (plFloor == 0) ? T_FLOOR1 : T_FLOOR2;
+        if (mapCell(plFloor, (int)plX, (int)plY) == 'S')
+            flTid = T_STAIRS;
+        fillRect(560, 18, 280, 44, mk(32, 24, 48));
+        drawLabel(flTid, 700, 18, 44, 3, mk(185, 220, 255));
 
-            if (s.drawn[b] && (!vis || s.drawnStage[b] != s.stage || s.drawnX[b] != sx)) {
-                restoreRect(b, s.drawnX[b] - 1, s.y - 1, s.w + 2, s.h + 2, false);
-                s.drawn[b] = false;
-            }
+        // 3. Flashlight Status (Center-Right)
+        fillRect(880, 18, 380, 44, mk(32, 24, 48));
+        drawLabel(flashlightOn ? T_FLASH_ON : T_FLASH_OFF,
+                  1070, 18, 44, 2,
+                  flashlightOn ? mk(255, 235, 130) : mk(140, 130, 160));
 
-            if (vis && !s.drawn[b]) {
-                drawSplatAt(s, sx);
-                s.drawn[b] = true;
-                s.drawnX[b] = (short)sx;
-                s.drawnStage[b] = s.stage;
-            }
-        }
+        // 4. Sound / Stealth Status (Right)
+        bool loud = (noiseLevel >= 0.6f);
+        fillRect(1290, 18, 580, 44, loud ? mk(145, 25, 35) : mk(32, 24, 48));
+        drawLabel(loud ? T_NOISE_HIGH : T_NOISE_LOW,
+                  1580, 18, 44, 2,
+                  loud ? mk(255, 230, 210) : mk(165, 230, 185));
 
-        // 4. Incrementally update semi-dense interactive grass (only redraw tufts whose bend changed!)
-        for (int i = 0; i < plantCount; i++) {
-            Plant &p = plants[i];
-            int sx = p.wx - camBaseX;
-            bool vis = (sx >= -16 && sx <= FRAME_WIDTH + 16);
-            int bend = (int)p.angle;
+        // Bottom HUD Bar (y: 1010..1080)
+        int botY = VP_Y0 + VH * CELL_H;
+        fillRect(0, botY, FRAME_WIDTH, FRAME_HEIGHT - botY, mk(16, 12, 24));
+        fillRect(0, botY, FRAME_WIDTH, 4, mk(65, 35, 55));
 
-            if (p.drawn[b] && (!vis || p.drawnBend[b] != bend || p.drawnX[b] != sx)) {
-                restoreRect(b, p.drawnX[b] - 12, p.y - p.height - 5, 24, p.height + 5, false);
-                p.drawn[b] = false;
-            }
+        int promptTid = -1;
+        Color promptCol = mk(230, 220, 245);
 
-            if (vis && !p.drawn[b]) {
-                drawPlantTuft(sx, p.y, p.height, bend, currentBiome, p.style);
-                p.drawn[b] = true;
-                p.drawnX[b] = (short)sx;
-                p.drawnBend[b] = (signed char)bend;
-            }
-        }
-
-        int ph = tick / 20;
-
-        if (currentBiome == 5 && bufStar[b] != ph) {
-            for (int i = 0; i < NUM_STARS; i++) {
-                if (starDim(i, bufStar[b]) != starDim(i, ph)) {
-                    int sx, sy;
-                    starPos(i, sx, sy);
-
-                    restoreRect(b, sx - 3, sy - 3, 9, 9, true);
+        if (doorAlertTimer > 0 || booksCollected >= TOTAL_BOOKS) {
+            promptTid = (plFloor == 0 && plX >= 6.0f && plX <= 10.0f && plY >= 12.0f) ?
+                        T_ESCAPE_NOW : T_DOOR_OPEN;
+            promptCol = mk(95, 255, 135);
+        } else if (speedAlertTimer > 0) {
+            promptTid = T_SPEED_UP;
+            promptCol = mk(255, 140, 60);
+        } else if (stFloor == plFloor && stDistToPlayer < 5.5f) {
+            promptTid = T_STALKER_NEAR;
+            promptCol = mk(255, 75, 75);
+        } else if (plFloor == 0 && plX >= 6.0f && plX <= 10.0f && plY >= 12.2f) {
+            promptTid = T_DOOR_LOCKED;
+            promptCol = mk(255, 195, 95);
+        } else {
+            for (int i = 0; i < TOTAL_BOOKS; i++) {
+                if (!books[i].collected && books[i].floor == plFloor) {
+                    float dx = books[i].x - plX;
+                    float dy = books[i].y - plY;
+                    if (dx * dx + dy * dy < 3.2f) {
+                        promptTid = T_PICK_BOOK;
+                        promptCol = mk(255, 235, 110);
+                        break;
+                    }
                 }
             }
-
-            bufStar[b] = ph;
         }
 
-        int hudN = deaths < 30 ? deaths : 30;
-        int prog = progressNow();
-
-        if (hudNeed[b] || hudWeap[b] != curWeapon) {
-            drawHUDFull(b);
-        } else {
-            for (int i = hudSq[b]; i < hudN; i++) {
-                fillRect(
-                    70 + i * 20, 60,
-                    13, 13,
-                    mk(205, 25, 35)
-                );
-            }
-
-            hudSq[b] = hudN;
-
-            if (prog > hudProg[b]) {
-                fillRect(
-                    700 + hudProg[b], 43,
-                    prog - hudProg[b], 14,
-                    bossActive ? mk(245, 55, 40) : mk(205, 40, 100)
-                );
-            } else if (prog < hudProg[b]) {
-                fillRect(
-                    700 + prog, 43,
-                    hudProg[b] - prog, 14,
-                    bossActive ? mk(65, 25, 35) : mk(45, 35, 70)
-                );
-            }
-
-            hudProg[b] = prog;
-        }
-    }
-
-    // ----- Moving Objects (Tracked via addDirty for locked 60 FPS!) -----
-    resetClip();
-
-    // 1. Animated Sky Birds in Biomes 0, 1, 2
-    if (currentBiome <= 2) {
-        Color birdCol = (currentBiome == 0) ? mk(26, 75, 52) : mk(95, 42, 30);
-        int wing = ((tick / 8) & 1) ? -6 : 5;
-        for (int i = 0; i < MAX_BIRDS; i++) {
-            int bx = (i * 390 + tick * 2) % (FRAME_WIDTH - 80) + 40;
-            int by = 125 + (i % 3) * 48 + (SN[((tick / 6) + i * 3) & 15] >> 5);
-            fillRect(bx, by, 10, 4, birdCol);
-            fillRect(bx - 7, by + wing, 8, 4, birdCol);
-            fillRect(bx + 9, by + wing, 8, 4, birdCol);
-            addDirty(b, bx - 9, by - 8, 28, 18);
-        }
-    }
-
-    // 2. Ambient Living World Particles
-    Color ambCol = mk(235, 245, 255);
-    if (currentBiome == 0) ambCol = mk(140, 235, 110);
-    else if (currentBiome == 1) ambCol = mk(255, 230, 130);
-    else if (currentBiome == 2) ambCol = mk(245, 215, 145);
-    else if (currentBiome == 3) ambCol = mk(240, 250, 255);
-    else if (currentBiome == 4) ambCol = mk(255, 145, 45);
-    else ambCol = mk(175, 155, 235);
-
-    for (int i = 0; i < MAX_AMB; i++) {
-        AmbPart &a = ambParts[i];
-        int ax = (int)a.x;
-        int ay = (int)a.y;
-        int sz = a.sz;
-        fillRect(ax, ay, sz, sz, ambCol);
-        addDirty(b, ax - 1, ay - 1, sz + 2, sz + 2);
-    }
-
-    // 3. Checkpoint Flags
-    for (int i = 0; i < checkCount; i++) {
-        int fx = checkCols[i] * TILE + 24 - camBaseX;
-        int fy = checkRows[i] * TILE - 64;
-        if (fx < -40 || fx > FRAME_WIDTH + 40)
-            continue;
-        fillRect(fx, fy, 6, 64, mk(220, 220, 235));
-        Color flagCol = checkActive[i] ? mk(65, 235, 110) : mk(235, 190, 55);
-        fillRect(fx + 6, fy + 4, 28, 20, flagCol);
-        addDirty(b, fx - 2, fy - 2, 38, 66);
-    }
-
-    // 4. Spinning Saws
-    for (int r = 0; r < ROWS; r++) {
-        for (int c = camCol; c < camCol + ROOM_COLS && c < COLS; c++) {
-            if (level[r][c] == 'O') {
-                int cx = c * TILE + 30 - camBaseX;
-                int cy = r * TILE + 30;
-                drawSaw(cx, cy);
-                addDirty(b, cx - 27, cy - 27, 55, 55);
-            }
-        }
-    }
-
-    // 5. Active Enemies
-    for (int i = 0; i < enemyCount; i++) {
-        const Enemy &e = enemies[i];
-        if (!e.active)
-            continue;
-        int sx = (int)e.x - camBaseX;
-        int sy = (int)e.y;
-        if (sx < -60 || sx > FRAME_WIDTH + 60)
-            continue;
-        drawEnemyChar(e, sx, sy);
-        addDirty(b, sx - 16, sy - 8, 76, 60);
-    }
-
-    // 6. Boss Arena Objects & Projectiles
-    if (bossActive && bossHP > 0) {
-        int swX = 20 * TILE + 20 - camBaseX;
-        int swY = 7 * TILE - 18;
-        Color swCol = (bossSwitchCooldown == 0) ?
-                      ((tick & 8) ? mk(80, 255, 120) : mk(40, 200, 85)) :
-                      mk(90, 80, 100);
-        fillRect(swX, swY, 80, 18, swCol);
-        addDirty(b, swX - 2, swY - 2, 84, 22);
-
-        int bx = (int)bossX - camBaseX;
-        int by = (int)bossY;
-
-        if (bossBeamTimer > 0) {
-            int beamX = bx + bossW / 2 - 16;
-            fillRect(beamX, 7 * TILE, 32, by - 7 * TILE + 20, mk(120, 255, 220));
-            addDirty(b, beamX - 4, 7 * TILE, 40, by - 7 * TILE + 24);
+        if (promptTid >= 0) {
+            drawLabel(promptTid, 960, botY + 8, 56, 3, promptCol);
         }
 
-        drawBossChar(bx, by, bossW, bossH, (bossHurt & 2) != 0);
-        addDirty(b, bx - 6, by - 12, bossW + 12, bossH + 16);
-    }
-
-    for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
-        BossShot &s = bossShots[i];
-        if (!s.active)
-            continue;
-        int sx = (int)s.x - camBaseX;
-        int sy = (int)s.y;
-        if (sx < -30 || sx > FRAME_WIDTH + 30)
-            continue;
-        fillRect(sx - 14, sy - 14, 28, 28, mk(255, 95, 35));
-        fillRect(sx - 8, sy - 8, 16, 16, mk(255, 235, 90));
-        addDirty(b, sx - 16, sy - 16, 32, 32);
-    }
-
-    // 7. Player Weapon Bullets
-    for (int i = 0; i < MAX_BULLETS; i++) {
-        const Bullet &bl = bullets[i];
-        if (!bl.active)
-            continue;
-        int sx = (int)bl.x - camBaseX;
-        int sy = (int)bl.y;
-        if (sx < -30 || sx > FRAME_WIDTH + 30)
-            continue;
-
-        if (bl.kind == W_BLASTER) {
-            fillRect(sx - 10, sy - 5, 20, 10, mk(80, 220, 255));
-            fillRect(sx - 6, sy - 3, 12, 6, mk(255, 255, 255));
-            addDirty(b, sx - 12, sy - 7, 24, 14);
-        } else if (bl.kind == W_SHOTGUN) {
-            fillRect(sx - 7, sy - 7, 14, 14, mk(255, 195, 55));
-            fillRect(sx - 4, sy - 4, 8, 8, mk(255, 255, 220));
-            addDirty(b, sx - 9, sy - 9, 18, 18);
-        } else if (bl.kind == W_SAW) {
-            fillRect(sx - 12, sy - 12, 24, 24, mk(210, 220, 235));
-            fillRect(sx - 6, sy - 6, 12, 12, mk(80, 245, 130));
-            addDirty(b, sx - 14, sy - 14, 28, 28);
-        } else {
-            fillRect(sx - 16, sy - 16, 32, 32, mk(235, 65, 215));
-            fillRect(sx - 10, sy - 10, 20, 20, mk(255, 220, 255));
-            addDirty(b, sx - 18, sy - 18, 36, 36);
-        }
-    }
-
-    // 8. Dust & Blood Particles
-    for (int i = 0; i < MAX_PARTS; i++) {
-        Part &p = parts[i];
-        if (p.life <= 0)
-            continue;
-
-        int sx = (int)p.x - camBaseX;
-        int sy = (int)p.y;
-
-        if (sx < -20 || sx > FRAME_WIDTH + 20 ||
-            sy < -20 || sy > FRAME_HEIGHT + 20)
-            continue;
-
-        int sz;
-        Color col = mk(0, 0, 0);
-
-        if (p.kind == 0) {
-            sz = 2 + ((int)p.size - 2) * p.life / p.maxLife;
-            col = (p.life * 2 > p.maxLife) ?
-                  mk(205, 195, 230) :
-                  mk(150, 140, 185);
-        } else {
-            sz = p.size;
-            col = mk(200, 20, 35);
-        }
-
-        fillRect(sx, sy, sz, sz, col);
-        addDirty(b, sx - 1, sy - 1, sz + 2, sz + 2);
-    }
-
-    // 9. Player & Equipped Weapon Barrel
-    if (deadTimer == 0) {
-        int x = (int)px - camBaseX;
-        int y = (int)py;
-
-        int dw = (int)(PW * squashX);
-        int dh = (int)(PH * squashY);
-
-        if (dw < 20) dw = 20;
-        if (dh < 20) dh = 20;
-
-        int dx = x + (PW - dw) / 2;
-        int dy = y + (PH - dh);
-
-        fillRect(dx, dy, dw, dh, mk(140, 0, 15));
-        fillRect(dx + 3, dy + 3, dw - 6, dh - 6, mk(205, 25, 35));
-        drawPlayerFace(dx, dy, dw, dh, facing);
-
-        Color gunCol = mk(95, 215, 255);
-        if (curWeapon == W_SHOTGUN) gunCol = mk(255, 195, 70);
-        else if (curWeapon == W_SAW) gunCol = mk(140, 250, 160);
-        else if (curWeapon == W_PLASMA) gunCol = mk(255, 120, 235);
-
-        int gx = (facing > 0) ? (dx + dw - 4) : (dx - 14);
-        int gy = dy + dh / 2 - 4;
-        fillRect(gx, gy, 18, 10, mk(45, 45, 55));
-        fillRect(gx + (facing > 0 ? 6 : 2), gy + 2, 10, 6, gunCol);
-
-        addDirty(b, x - 20, y - 18, PW + 40, PH + 22);
+        hudFull[b] = false;
     }
 }
 
-// ---------- Cutscene art & Real-Time Animated Gameplay Tutorials ----------
-static void drawCubeK(int x, int y, int k) {
-    fillRect(x, y, 88 * k, 88 * k, mk(140, 0, 15));
-    fillRect(x + 6 * k, y + 6 * k, 76 * k, 76 * k, mk(205, 25, 35));
+// 3D Intro Cutscene: Entering the Old Two-Story House, Door Slams, Stalker Appears Upstairs!
+static void renderIntro3D(int b) {
+    float t = (float)cutTick;
+    float camX0 = 7.5f;
+    float camY0 = 12.8f;
+    float camAng = -1.570796f;
+    float pitch = 0.0f;
+    int subTid = T_INTRO_1;
 
-    fillRect(x + 18 * k, y + 24 * k, 20 * k, 28 * k, mk(255, 255, 255));
-    fillRect(x + 50 * k, y + 24 * k, 20 * k, 28 * k, mk(255, 255, 255));
-
-    fillRect(x + 28 * k, y + 32 * k, 10 * k, 16 * k, mk(0, 0, 0));
-    fillRect(x + 60 * k, y + 32 * k, 10 * k, 16 * k, mk(0, 0, 0));
-
-    fillRect(x + 30 * k, y + 64 * k, 28 * k, 8 * k, mk(120, 0, 12));
-}
-
-static void drawBigCube(int x, int y) {
-    drawCubeK(x, y, 1);
-}
-
-static void drawMiniDemoCube(int x, int y, int dw, int dh, int dir) {
-    fillRect(x, y, dw, dh, mk(140, 0, 15));
-    fillRect(x + 3, y + 3, dw - 6, dh - 6, mk(205, 25, 35));
-    drawPlayerFace(x, y, dw, dh, dir);
-}
-
-static void drawGirlK(int x, int y, int k) {
-    fillRect(x, y, 88 * k, 88 * k, mk(255, 140, 170));
-    fillRect(x, y + 8 * k, 88 * k, 12 * k, mk(240, 230, 200));
-
-    fillRect(x + 18 * k, y + 30 * k, 20 * k, 26 * k, mk(255, 255, 255));
-    fillRect(x + 50 * k, y + 30 * k, 20 * k, 26 * k, mk(255, 255, 255));
-
-    fillRect(x + 26 * k, y + 38 * k, 10 * k, 16 * k, mk(0, 0, 0));
-    fillRect(x + 58 * k, y + 38 * k, 10 * k, 16 * k, mk(0, 0, 0));
-
-    fillRect(x + 34 * k, y + 66 * k, 20 * k, 6 * k, mk(170, 60, 90));
-}
-
-static void drawBigSaw(int cx, int cy, int R) {
-    int R2 = R * R;
-    int inner = (R * 78) / 100;
-    int in2 = inner * inner;
-    int hub = (R / 5) * (R / 5);
-    int t1 = R / 8;
-    int t2 = R / 6;
-
-    for (int dy = -R; dy <= R; dy++) {
-        for (int dx = -R; dx <= R; dx++) {
-            int d2 = dx * dx + dy * dy;
-
-            if (d2 > R2)
-                continue;
-
-            if (d2 < hub) {
-                scene->DrawPixel(cx + dx, cy + dy, mk(50, 50, 55));
-            } else if (d2 <= in2) {
-                scene->DrawPixel(cx + dx, cy + dy, mk(165, 165, 178));
-            } else if (iabs(dx) < t1 || iabs(dy) < t1 ||
-                       iabs(dx - dy) < t2 || iabs(dx + dy) < t2) {
-                scene->DrawPixel(cx + dx, cy + dy, mk(215, 215, 225));
-            }
-        }
-    }
-}
-
-static void drawPadPrompt(int x, int y, bool dirL, bool dirR, bool sqOn, bool xOn, const char *label) {
-    fillRect(x, y, 420, 74, mk(22, 16, 38));
-    fillRect(x + 3, y + 3, 414, 68, mk(38, 28, 62));
-
-    fillRect(x + 18, y + 16, 42, 42, dirL ? mk(90, 200, 255) : mk(55, 45, 80));
-    drawTextC(x + 39, y + 27, "<", 3, mk(255, 255, 255));
-
-    fillRect(x + 68, y + 16, 42, 42, dirR ? mk(90, 200, 255) : mk(55, 45, 80));
-    drawTextC(x + 89, y + 27, ">", 3, mk(255, 255, 255));
-
-    fillRect(x + 130, y + 16, 54, 42, sqOn ? mk(235, 65, 145) : mk(55, 45, 80));
-    fillRect(x + 147, y + 25, 20, 20, mk(255, 255, 255));
-    fillRect(x + 151, y + 29, 12, 12, sqOn ? mk(235, 65, 145) : mk(55, 45, 80));
-
-    fillRect(x + 196, y + 16, 54, 42, xOn ? mk(65, 165, 255) : mk(55, 45, 80));
-    drawTextC(x + 223, y + 27, "X", 3, mk(255, 255, 255));
-
-    drawTextC(x + 332, y + 29, label, 2, (xOn || sqOn) ? mk(255, 235, 110) : mk(190, 180, 215));
-}
-
-static void drawStoryArt(int art) {
-    int ax = 460, ay = 90, aw = 1000, ah = 500;
-    int t = storyAnimTick;
-
-    if (art == 0) {
-        fillRect(ax, ay, aw, ah, mk(20, 25, 60));
-        fillRect(ax + 780, ay + 60, 80, 80, mk(230, 225, 190));
-        fillRect(ax, ay + 380, aw, 120, mk(25, 70, 45));
-
-        for (int i = 0; i < 4; i++) {
-            int x = ax + 60 + i * 240;
-            fillRect(x + 30, ay + 300, 24, 90, mk(70, 45, 30));
-            fillRect(x, ay + 210, 84, 100, mk(15, 55, 35));
-        }
-
-        int sway = SN[(t / 5) & 15] / 32;
-        for (int i = 0; i < 16; i++)
-            drawPlantTuft(ax + 50 + i * 60, ay + 380, 15, sway, 0, i % 3);
-
-        int bob = (t / 12) & 1 ? -6 : 0;
-        drawBigCube(ax + 300, ay + 292 + bob);
-        drawGirlK(ax + 560, ay + 292 - bob, 1);
-        return;
-    }
-
-    if (art == 1) {
-        fillRect(ax, ay, aw, ah, mk(45, 10, 25));
-        fillRect(ax, ay + 420, aw, 80, mk(30, 12, 22));
-
-        int shift = (t % 80) - 40;
-        drawBigSaw(ax + 500 + shift, ay + 230, 150);
-        drawBigCube(ax + 120, ay + 332);
-        drawGirlK(ax + 800, ay + 100 + (SN[(t / 4) & 15] / 32), 1);
-        return;
-    }
-
-    if (art == 2) {
-        fillRect(ax, ay, aw, ah, mk(35, 15, 55));
-        fillRect(ax, ay + 420, aw, 80, mk(25, 12, 40));
-
-        int shake = ((t / 3) & 1) ? 3 : -3;
-        drawCubeK(ax + 368 + shake, ay + 150, 3);
-        fillRect(ax + 368 + 42 + shake, ay + 150 + 40, 84, 14, mk(60, 0, 10));
-        fillRect(ax + 368 + 150 + shake, ay + 150 + 40, 84, 14, mk(60, 0, 10));
-        return;
-    }
-
-    if (art == 3) {
-        fillRect(ax, ay, aw, ah, mk(20, 18, 40));
-        fillRect(ax, ay + 420, aw, 80, mk(25, 25, 35));
-
-        fillRect(ax + 400, ay + 40, 200, 400, mk(55, 45, 80));
-        fillRect(ax + 470, ay + 90, 60, 60, mk(240, 200, 90));
-        fillRect(ax + 470, ay + 190, 60, 60, mk(240, 200, 90));
-        fillRect(ax + 440, ay + 330, 120, 110, mk(30, 25, 50));
-
-        drawBigCube(ax + 160, ay + 332);
-
-        fillRect(ax + 720, ay + 340, 70, 90, mk(235, 230, 215));
-        fillRect(ax + 732, ay + 360, 46, 6, mk(120, 110, 100));
-        fillRect(ax + 732, ay + 378, 46, 6, mk(120, 110, 100));
-        fillRect(ax + 732, ay + 396, 30, 6, mk(120, 110, 100));
-        return;
-    }
-
-    // ---------- Animated Gameplay & Boss Tutorial Cutscenes (art 10..15) ----------
-    if (art == 10) {
-        fillRect(ax, ay, aw, ah, mk(65, 160, 225));
-        fillRect(ax + 820, ay + 35, 70, 70, mk(255, 235, 120));
-
-        fillRect(ax, ay + 400, aw, 100, mk(82, 54, 38));
-        fillRect(ax, ay + 400, aw, 8, mk(65, 190, 75));
-        fillRect(ax + 700, ay + 290, 240, 110, mk(82, 54, 38));
-        fillRect(ax + 700, ay + 290, 240, 8, mk(65, 190, 75));
-
-        int cyc = t % 180;
-        int cx = ax + 90 + (cyc * 4);
-        if (cx > ax + 820) cx = ax + 820;
-        int cy = ay + 356;
-        int dw = 44, dh = 44;
-        bool xOn = false;
-        const char *lbl = "O: SHOOT";
-
-        if (cyc < 75) {
-            Enemy de = {0,0,0,0,0,0,0, E_WALKER, 2,2, (cyc > 55 ? 2 : 0), t, -1, true};
-            drawEnemyChar(de, ax + 480, ay + 356);
-        }
-        if (cyc >= 25 && cyc < 70) {
-            int bx = ax + 240 + (cyc - 25) * 6;
-            fillRect(bx, ay + 372, 20, 10, mk(80, 220, 255));
-        }
-
-        if (cyc >= 110 && cyc < 160) {
-            int jt = cyc - 110;
-            cy = ay + 356 - (jt * (55 - jt)) / 4;
-            if (jt > 32 && cy > ay + 246) cy = ay + 246;
-            xOn = (jt < 34);
-            lbl = "HOLD X";
-        } else if (cyc >= 160) {
-            cy = ay + 246;
-            lbl = "GREAT!";
-        }
-
-        for (int i = 0; i < 14; i++) {
-            int gx = ax + 60 + i * 45;
-            int bend = (iabs(cx + 22 - gx) < 42 && cy > ay + 320) ? 12 : (SN[(t / 5 + i) & 15] / 32);
-            drawPlantTuft(gx, ay + 400, 15, bend, 0, i % 3);
-        }
-
-        drawMiniDemoCube(cx, cy + (44 - dh), dw, dh, 1);
-        drawPadPrompt(ax + 290, ay + 20, false, cyc < 165, cyc < 70, xOn, lbl);
-        return;
-    }
-
-    if (art == 11) {
-        fillRect(ax, ay, aw, ah, mk(215, 125, 75));
-        fillRect(ax + 820, ay + 120, 90, 90, mk(255, 215, 95));
-
-        fillRect(ax, ay + 400, 420, 100, mk(102, 62, 40));
-        fillRect(ax, ay + 400, 420, 8, mk(225, 175, 55));
-        fillRect(ax + 660, ay + 400, 340, 100, mk(102, 62, 40));
-        fillRect(ax + 660, ay + 400, 340, 8, mk(225, 175, 55));
-
-        for (int s = 0; s < 5; s++) {
-            int scx = ax + 450 + s * 46;
-            for (int j = 0; j < 32; j++) {
-                int half = (j * 18) / 31;
-                fillRect(scx - half, ay + 468 + j, 2 * half + 1, 1, mk(215, 215, 225));
-            }
-        }
-
-        int cyc = t % 160;
-        int cx = ax + 70 + cyc * 6;
-        if (cx > ax + 850) cx = ax + 850;
-        int cy = ay + 356;
-        bool sqOn = (cyc < 140);
-        bool xOn = (cyc >= 50 && cyc < 85);
-        const char *lbl = "SHOTGUN";
-
-        if (cyc >= 50 && cyc < 102) {
-            int jt = cyc - 50;
-            cy = ay + 356 - (jt * (52 - jt)) / 5;
-            lbl = "SPRINT+X";
-        }
-
-        for (int i = 0; i < 8; i++) {
-            int wx = ax + 50 + i * 45;
-            int bend = (cx > wx - 25 && cx < wx + 55) ? 12 : (SN[(t / 5 + i) & 15] / 28);
-            drawPlantTuft(wx, ay + 400, 16, bend, 1, i % 2);
-        }
-
-        drawMiniDemoCube(cx, cy, 44, 44, 1);
-        drawPadPrompt(ax + 290, ay + 20, false, cyc < 140, sqOn, xOn, lbl);
-        return;
-    }
-
-    if (art == 12) {
-        fillRect(ax, ay, aw, ah, mk(235, 165, 85));
-        fillRect(ax, ay + 420, aw, 80, mk(165, 118, 68));
-        fillRect(ax, ay + 420, aw, 8, mk(240, 200, 115));
-
-        fillRect(ax + 340, ay + 150, 55, 200, mk(150, 105, 58));
-        fillRect(ax + 590, ay + 120, 55, 300, mk(150, 105, 58));
-        fillRect(ax + 590, ay + 120, 220, 45, mk(165, 118, 68));
-        fillRect(ax + 590, ay + 120, 220, 7, mk(240, 200, 115));
-
-        int cyc = t % 190;
-        int cx = ax + 220;
-        int cy = ay + 376;
-        int dir = 1;
-        bool dirL = false, dirR = false, xOn = false;
-        const char *lbl = "JUMP";
-
-        if (cyc < 35) {
-            cx = ax + 220 + (cyc * 326) / 35;
-            cy = ay + 376 - (cyc * 140) / 35;
-            dirR = true;
-            xOn = (cyc < 10);
-        } else if (cyc < 75) {
-            cx = ax + 546;
-            cy = ay + 236 + ((cyc - 35) * 60) / 40;
-            dirR = true;
-            lbl = "SLIDE";
-        } else if (cyc < 115) {
-            int wt = cyc - 75;
-            cx = ax + 546 - (wt * 151) / 40;
-            cy = ay + 296 - (wt * 120) / 40;
-            dir = -1;
-            dirL = true;
-            xOn = (wt < 12);
-            lbl = "WALL X!";
-        } else if (cyc < 155) {
-            int wt = cyc - 115;
-            cx = ax + 395 + (wt * 225) / 40;
-            cy = ay + 176 - (wt * 100) / 40;
-            if (cy < ay + 76) cy = ay + 76;
-            dir = 1;
-            dirR = true;
-            xOn = (wt < 12);
-            lbl = "WALL X!";
-        } else {
-            cx = ax + 640;
-            cy = ay + 76;
-            lbl = "CLIMBED!";
-        }
-
-        drawMiniDemoCube(cx, cy, 44, 44, dir);
-        drawPadPrompt(ax + 290, ay + 20, dirL, dirR, false, xOn, lbl);
-        return;
-    }
-
-    if (art == 13) {
-        fillRect(ax, ay, aw, ah, mk(52, 85, 130));
-        fillRect(ax, ay + 400, 410, 100, mk(65, 88, 118));
-        fillRect(ax, ay + 400, 410, 8, mk(230, 245, 255));
-        fillRect(ax + 590, ay + 400, 410, 100, mk(65, 88, 118));
-        fillRect(ax + 590, ay + 400, 410, 8, mk(230, 245, 255));
-
-        drawSaw(ax + 500, ay + 370);
-
-        int cyc = t % 160;
-        int cx = ax + 110 + cyc * 5;
-        if (cx > ax + 820) cx = ax + 820;
-        int cy = ay + 356;
-        bool xOn = (cyc >= 50 && cyc < 80);
-        const char *lbl = "SAW GUN";
-
-        if (cyc >= 50 && cyc < 106) {
-            int jt = cyc - 50;
-            cy = ay + 356 - (jt * (56 - jt)) / 4;
-            lbl = "EDGE JUMP";
-        }
-
-        drawMiniDemoCube(cx, cy, 44, 44, 1);
-        drawPadPrompt(ax + 290, ay + 20, false, cyc < 140, false, xOn, lbl);
-        return;
-    }
-
-    // Animated Boss Fight Tutorial Cutscene (art 14 & 15)
-    fillRect(ax, ay, aw, ah, (art == 14) ? mk(55, 20, 30) : mk(28, 22, 58));
-    fillRect(ax, ay + 410, aw, 90, mk(55, 36, 46));
-    fillRect(ax, ay + 410, aw, 8, (art == 14) ? mk(235, 90, 35) : mk(145, 105, 180));
-
-    fillRect(ax + 400, ay + 180, 200, 32, mk(55, 36, 46));
-    fillRect(ax + 460, ay + 164, 80, 16, (t & 8) ? mk(80, 255, 120) : mk(40, 200, 85));
-
-    int cyc = t % 160;
-    int bx = ax + 620 - (cyc < 80 ? cyc * 2 : (160 - cyc) * 2);
-    int by = ay + 306;
-    bool bossHit = (cyc >= 70 && cyc < 110);
-
-    drawBossChar(bx, by, 104, 104, bossHit && (t & 2));
-
-    int cx = ax + 180;
-    int cy = ay + 366;
-    bool xOn = (cyc >= 25 && cyc < 55);
-    const char *lbl = "BOSS FIGHT";
-
-    if (cyc < 25) {
-        cx = ax + 160 + cyc * 5;
-    } else if (cyc < 72) {
-        int jt = cyc - 25;
-        cx = ax + 285 + (jt * 235) / 47;
-        cy = ay + 366 - (jt * (47 - jt)) / 3 - (jt * 104) / 47;
-        lbl = "STOMP+O!";
+    if (cutTick < 130) {
+        // Phase 1: Walk forward into the grand foyer of the two-story house
+        camY0 = 13.0f - (t / 130.0f) * 2.2f;
+        headBob = t * 0.14f;
+        subTid = T_INTRO_1;
+    } else if (cutTick < 260) {
+        // Phase 2: Turn around 180 degrees as the Main Escape Door slams shut!
+        camY0 = 10.8f;
+        float p = (t - 130.0f) / 60.0f;
+        if (p > 1.0f) p = 1.0f;
+        camAng = -1.570796f + p * 3.14159f;
+        subTid = T_INTRO_2;
     } else {
-        int bt = cyc - 72;
-        cx = ax + 520 + (bt * 240) / 88;
-        cy = ay + 262 - (bt * (70 - bt)) / 6;
-        if (cy > ay + 366) cy = ay + 366;
-        lbl = "BOSS HIT!";
+        // Phase 3: Turn back North toward the stairs as the Stalker crosses the hall!
+        camY0 = 10.8f;
+        float p = (t - 260.0f) / 50.0f;
+        if (p > 1.0f) p = 1.0f;
+        camAng = 1.570796f - p * 3.14159f;
+        pitch = 6.0f;
+        subTid = T_INTRO_3;
     }
 
-    drawMiniDemoCube(cx, cy, 44, 44, 1);
-    drawPadPrompt(ax + 290, ay + 20, false, true, true, xOn, lbl);
-}
+    float stalkX = 5.5f + (t / 420.0f) * 4.5f;
+    float stalkY = 6.5f;
 
-// ---------- Cutscenes ----------
-static int storyTotal() {
-    const Page &p = PAGES[storyPage];
-    int total = 0;
+    render3DScene(b, camX0, camY0, camAng, 0, pitch, true,
+                  (cutTick >= 270), stalkX, stalkY, 0);
 
-    if (useAr()) {
-        int cols = 0;
+    // Draw Cutscene Subtitle Banner
+    if (cutTick == 1 || cutTick == 2 || cutTick == 130 || cutTick == 131 || cutTick == 260 || cutTick == 261) {
+        fillRect(0, 0, FRAME_WIDTH, VP_Y0 - 2, mk(12, 8, 18));
+        drawLabel(T_TITLE, 960, 15, 80, 6, mk(215, 35, 55));
 
-        for (int i = 0; i < p.n; i++)
-            if (p.ar[i] >= 0)
-                cols += arW(p.ar[i]);
-
-        total = cols / 14 + 1;
-    } else {
-        int ch = 0;
-
-        for (int i = 0; i < p.n; i++)
-            ch += (int)strlen(p.en[i]);
-
-        total = ch * 2;
-    }
-
-    return total;
-}
-
-static void storyDrawText(int fromT, int toT) {
-    const Page &p = PAGES[storyPage];
-    bool ar = useAr();
-
-    int f = ar ? fromT * 14 : fromT / 2;
-    int t = ar ? toT * 14 : toT / 2;
-    int before = 0;
-
-    for (int i = 0; i < p.n; i++) {
-        int y = 660 + i * 80;
-
-        if (ar) {
-            int id = p.ar[i];
-
-            if (id < 0)
-                continue;
-
-            int w = arW(id);
-            int h = arH(id);
-
-            int a = iclamp(f - before, 0, w);
-            int b2 = iclamp(t - before, 0, w);
-
-            if (b2 > a) {
-                drawArCols(id, 960 - w / 2, y + (70 - h) / 2,
-                           w - b2, w - a, mk(255, 255, 255));
-            }
-
-            before += w;
-        } else {
-            const char *s = p.en[i];
-            int len = (int)strlen(s);
-
-            int a = iclamp(f - before, 0, len);
-            int b2 = iclamp(t - before, 0, len);
-
-            int x0 = 960 - textWidth(s, 4) / 2;
-
-            for (int k = a; k < b2; k++) {
-                char tmp[2] = { s[k], 0 };
-
-                drawText(x0 + k * 24, y + 21, tmp, 4,
-                         mk(255, 255, 255));
-            }
-
-            before += len;
-        }
+        int botY = VP_Y0 + VH * CELL_H;
+        fillRect(0, botY, FRAME_WIDTH, FRAME_HEIGHT - botY, mk(12, 8, 18));
+        drawLabel(subTid, 960, botY + 4, 42, 3, mk(245, 235, 255));
+        drawLabel(T_H_STORY, 960, botY + 42, 26, 2, mk(170, 160, 195));
     }
 }
 
-static void renderStory(int b) {
-    resetClip();
+// 3D Ending Escape Cutscene: Bursting out of the Main Front Door & Looking Back at the House!
+static void renderOutro3D(int b) {
+    float t = (float)cutTick;
+    // Camera pulls away from the Main Door while looking back at the Stalker trapped inside
+    float camX0 = 7.5f;
+    float camY0 = 10.5f + (t / 320.0f) * 3.0f;
+    if (camY0 > 13.4f) camY0 = 13.4f;
+    float camAng = -1.570796f + sinf(t * 0.03f) * 0.12f;
 
-    if (!storyBgDone[b]) {
-        fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT, mk(12, 8, 24));
-        storyBgDone[b] = true;
-        storyDrawnPage[b] = -1;
-    }
+    render3DScene(b, camX0, camY0, camAng, 0, 0.0f, true,
+                  true, 7.5f, 7.5f, 0);
 
-    if (storyDrawnPage[b] != storyPage) {
-        fillRect(460, 630, 1000, 300, mk(30, 22, 48));
+    if (cutTick == 1 || cutTick == 2 || cutTick == 140 || cutTick == 141) {
+        fillRect(0, 0, FRAME_WIDTH, VP_Y0 - 2, mk(15, 55, 38));
+        drawLabel(T_OUTRO_1, 960, 22, 65, 4, mk(140, 255, 175));
 
-        fillRect(460, 950, 1000, 60, mk(12, 8, 24));
-        drawLabel(T_H_STORY, 960, 950, 60, 3, mk(200, 190, 220));
-
-        storyDrawnPage[b] = storyPage;
-        storyShown[b] = 0;
-    }
-
-    drawStoryArt(PAGES[storyPage].art);
-
-    if (typed > storyShown[b]) {
-        storyDrawText(storyShown[b], typed);
-        storyShown[b] = typed;
+        int botY = VP_Y0 + VH * CELL_H;
+        fillRect(0, botY, FRAME_WIDTH, FRAME_HEIGHT - botY, mk(15, 55, 38));
+        drawLabel(T_OUTRO_2, 960, botY + 12, 50, 4, mk(255, 240, 150));
     }
 }
 
-static void markPend(int i) {
-    if (i < 0 || i >= 64)
-        return;
+// 3D Jumpscare Cutscene when the Stalker catches you!
+static void renderCaught3D(int b) {
+    float shakeX = ((cutTick & 2) ? 0.08f : -0.08f);
+    float stalkX = plX + cosf(plAngle) * 0.65f + shakeX;
+    float stalkY = plY + sinf(plAngle) * 0.65f;
 
-    pend[0][i] = true;
-    pend[1][i] = true;
-}
+    render3DScene(b, plX, plY, plAngle, plFloor, 4.0f, true,
+                  true, stalkX, stalkY, plFloor);
 
-static void setState(int s) {
-    state = s;
+    if (cutTick == 1 || cutTick == 2) {
+        fillRect(0, 0, FRAME_WIDTH, VP_Y0 - 2, mk(90, 12, 20));
+        drawLabel(T_CAUGHT_1, 960, 20, 70, 5, mk(255, 220, 220));
 
-    uiFull[0] = true;
-    uiFull[1] = true;
-}
-
-static void startLevel() {
-    currentLevel = levelSel;
-
-    if (currentLevel >= 1 && unlockedWeapons < 2) unlockedWeapons = 2;
-    if (currentLevel >= 3 && unlockedWeapons < 3) unlockedWeapons = 3;
-    if (currentLevel >= 5 && unlockedWeapons < 4) unlockedWeapons = 4;
-
-    buildLevel();
-
-    roomIdx = 0;
-    respawn();
-
-    deaths = 0;
-    splatCount = 0;
-    winTimer = 0;
-    deadTimer = 0;
-    justUnlockedWeapon = false;
-
-    for (int i = 0; i < MAX_PARTS; i++)
-        parts[i].life = 0;
-
-    for (int b = 0; b < 2; b++) {
-        needFull[b] = true;
-        needWin[b] = false;
-        hudNeed[b] = false;
-        dirtyCount[b] = 0;
-    }
-
-    state = S_PLAY;
-}
-
-static void startStory(int id) {
-    storyId = id;
-    storyPage = STORY_FIRST[id];
-    typed = 0;
-    storyAnimTick = 0;
-
-    storyBgDone[0] = false;
-    storyBgDone[1] = false;
-
-    state = S_STORY;
-}
-
-static void launchSelectedLevel(int lvl) {
-    levelSel = lvl;
-    currentLevel = lvl;
-
-    if (lvl == 0 && !introSeen) {
-        introSeen = true;
-        startStory(0);
-    } else if (lvl >= 0 && lvl <= 4) {
-        startStory(2 + lvl);
-    } else if (lvl == 9 || isBossStage(lvl)) {
-        startStory(7);
-    } else {
-        startLevel();
-    }
-}
-
-static void endStory() {
-    if (storyId == 0) {
-        startStory(2);
-    } else if (storyId >= 2 && storyId <= 7) {
-        startLevel();
-    } else {
-        setState(S_LEVELS);
+        int botY = VP_Y0 + VH * CELL_H;
+        fillRect(0, botY, FRAME_WIDTH, FRAME_HEIGHT - botY, mk(90, 12, 20));
+        drawLabel(T_CAUGHT_2, 960, botY + 12, 50, 3, mk(255, 240, 180));
     }
 }
 
 // ---------- Menus ----------
-static const int MENU_T[4] = { T_LEVELS, T_SETTINGS, T_CREDITS, T_EXIT };
+static const int MENU_T[4] = { T_START, T_SETTINGS, T_CREDITS, T_EXIT };
+
+static void setState(int s) {
+    state = s;
+    uiFull[0] = true;
+    uiFull[1] = true;
+    invalidate3DBuffers();
+}
+
+static void markPend(int i) {
+    if (i >= 0 && i < 16) {
+        pend[0][i] = true;
+        pend[1][i] = true;
+    }
+}
 
 static int itemCount() {
     if (state == S_MENU) return 4;
-    if (state == S_LEVELS) return NUM_LEVELS + 1;
     if (state == S_SETTINGS) return 3;
-
     return 0;
 }
 
-static void drawBanner(
-    int tid,
-    int scale,
-    int y,
-    int h,
-    bool cubes
-) {
-    fillRect(460, y, 1000, h,
-             mk(35,25,55));
-
-    drawLabel(tid, 960, y, h, scale, mk(225,40,100));
-
-    if (cubes) {
-        drawBigCube(500, y + (h - 88) / 2);
-        drawBigCube(1332, y + (h - 88) / 2);
-    }
+static void drawBanner(int tid, int scale, int y, int h) {
+    fillRect(420, y, 1080, h, mk(28, 18, 38));
+    fillRect(424, y + 4, 1072, h - 8, mk(42, 24, 52));
+    drawLabel(tid, 960, y, h, scale, mk(225, 40, 75));
 }
 
 static void drawHint(int tid) {
     int w = labelWidth(tid, 3) + 80;
-
-    fillRect(960 - w / 2, 980, w, 60,
-             mk(35,25,55));
-
-    drawLabel(tid, 960, 980, 60, 3, mk(200,190,220));
+    fillRect(960 - w / 2, 980, w, 60, mk(28, 18, 38));
+    drawLabel(tid, 960, 980, 60, 3, mk(200, 190, 220));
 }
 
-static void drawLock(int cx, int cy) {
-    Color g = mk(140,140,155);
-
-    fillRect(cx - 18, cy - 2, 36, 28, g);
-    fillRect(cx - 12, cy - 26, 24, 6, g);
-    fillRect(cx - 12, cy - 22, 6, 20, g);
-    fillRect(cx + 6, cy - 22, 6, 20, g);
-
-    fillRect(cx - 3, cy + 6, 6, 10,
-             mk(40,40,50));
-}
-
-static void drawStatic() {
+static void drawStaticMenu() {
     if (state == S_MENU) {
-        drawBanner(T_TITLE, 12, 140, 150, true);
+        drawBanner(T_TITLE, 10, 130, 150);
         drawHint(T_H_SELECT);
-    }
-
-    else if (state == S_LEVELS) {
-        drawBanner(T_B_LEVELS, 8, 130, 110, false);
-        drawHint(T_H_LEVELS);
-    }
-
-    else if (state == S_SETTINGS) {
-        drawBanner(T_B_SETTINGS, 8, 130, 110, false);
-
-        fillRect(610, 740, 700, 60,
-                 mk(35,25,55));
-
-        drawLabel(T_TIP, 960, 740, 60, 3, mk(200,190,220));
-
+    } else if (state == S_SETTINGS) {
+        drawBanner(T_B_SETTINGS, 8, 130, 110);
+        fillRect(610, 740, 700, 60, mk(28, 18, 38));
+        drawLabel(T_TIP, 960, 740, 60, 3, mk(200, 190, 220));
         drawHint(T_H_BACK);
-    }
-
-    else if (state == S_CREDITS) {
-        drawBanner(T_B_CREDITS, 8, 130, 110, false);
-
-        fillRect(460, 300, 1000, 540,
-                 mk(35,25,55));
-
-        drawLabel(T_DESIGNERS, 960, 340, 60, 5, mk(200,190,220));
-        drawLabel(T_KAREEM, 960, 450, 110, 10, mk(225,40,100));
-        drawLabel(T_CLAUDE, 960, 580, 110, 10, mk(225,40,100));
-        drawLabel(T_GAME, 960, 740, 60, 4, mk(140,140,155));
-
+    } else if (state == S_CREDITS) {
+        drawBanner(T_B_CREDITS, 8, 130, 110);
+        fillRect(460, 300, 1000, 540, mk(28, 18, 38));
+        drawLabel(T_DESIGNERS, 960, 340, 60, 5, mk(200, 190, 220));
+        drawLabel(T_KAREEM, 960, 450, 110, 10, mk(225, 40, 80));
+        drawLabel(T_CLAUDE, 960, 580, 110, 10, mk(225, 40, 80));
+        drawLabel(T_GAME, 960, 740, 60, 4, mk(150, 140, 175));
         drawHint(T_H_BACK);
     }
 }
 
-static void drawItem(int i) {
+static void drawMenuItem(int i) {
     if (state == S_MENU) {
-        if (i < 0 || i > 3)
-            return;
-
+        if (i < 0 || i > 3) return;
         int x = 610;
-        int y = 420 + i * 120;
-
+        int y = 410 + i * 120;
         bool sel = (i == menuSel);
 
-        fillRect(
-            x, y, 700, 90,
-            sel ? mk(205,25,35) : mk(45,35,62)
-        );
-
-        drawLabel(
-            MENU_T[i], 960, y, 90, 6,
-            sel ? mk(255,255,255) : mk(200,190,215)
-        );
-    }
-
-    else if (state == S_LEVELS) {
-        if (i >= 0 && i < NUM_LEVELS) {
-            int col = i % LEVEL_COLS;
-            int row = i / LEVEL_COLS;
-
-            int x = 375 + col * 108;
-            int y = 330 + row * 108;
-
-            bool sel = (i == levelSel);
-            bool unlocked = (i < unlockedLevels);
-            bool boss = isBossStage(i);
-
-            if (sel)
-                fillRect(x, y, 90, 90,
-                         mk(245,245,255));
-            else if (boss && unlocked)
-                fillRect(x, y, 90, 90,
-                         mk(255,195,55));
-
-            int inset = (sel || (boss && unlocked)) ? 6 : 0;
-
-            Color boxCol = unlocked ?
-                           (boss ? mk(165, 15, 45) : mk(205, 25, 35)) :
-                           mk(50, 40, 62);
-
-            fillRect(
-                x + inset,
-                y + inset,
-                90 - 2 * inset,
-                90 - 2 * inset,
-                boxCol
-            );
-
-            if (unlocked) {
-                if (boss) {
-                    fillRect(x + 27, y + 10, 36, 6, mk(255, 215, 70));
-                    fillRect(x + 27, y + 6, 8, 6, mk(255, 215, 70));
-                    fillRect(x + 41, y + 4, 8, 8, mk(255, 215, 70));
-                    fillRect(x + 55, y + 6, 8, 6, mk(255, 215, 70));
-                }
-
-                char buf[4];
-                intToStr(i + 1, buf);
-
-                drawTextC(
-                    x + 45,
-                    y + (boss ? 28 : 24),
-                    buf,
-                    6,
-                    mk(255,255,255)
-                );
-            } else {
-                drawLock(x + 45, y + 45);
-            }
-        }
-
-        else if (i == NUM_LEVELS) {
-            fillRect(610, 880, 700, 60,
-                     mk(35,25,55));
-
-            bool ok = (levelSel < unlockedLevels);
-            Color c = ok ? mk(120,230,140) : mk(255,170,60);
-
-            if (useAr()) {
-                drawLabel(ok ? T_PLAYX : T_LOCKED,
-                          960, 880, 60, 4, c);
-            } else {
-                char buf[64];
-                char n[4];
-
-                strcpy(buf, isBossStage(levelSel) ? "BOSS LEVEL " : "LEVEL ");
-                intToStr(levelSel + 1, n);
-                strcat(buf, n);
-                strcat(buf, ok ? ": PRESS X TO PLAY" : ": LOCKED");
-
-                drawTextC(960, 896, buf, 4, c);
-            }
-        }
-    }
-
-    else if (state == S_SETTINGS) {
-        if (i < 0 || i > 2)
-            return;
-
+        fillRect(x, y, 700, 90, sel ? mk(195, 25, 45) : mk(38, 28, 52));
+        drawLabel(MENU_T[i], 960, y, 90, 6, sel ? mk(255, 255, 255) : mk(200, 190, 215));
+    } else if (state == S_SETTINGS) {
+        if (i < 0 || i > 2) return;
         int x = 510;
         int y = 380 + i * 110;
-
         bool sel = (i == settingsSel);
 
-        fillRect(
-            x, y, 900, 90,
-            sel ? mk(205,25,35) : mk(45,35,62)
-        );
-
-        int tid;
-
-        if (i == 0)
-            tid = controlMode == 1 ? T_CTRL_A : T_CTRL_B;
-        else if (i == 1)
-            tid = T_LANG;
-        else
-            tid = T_BACK;
-
-        drawLabel(
-            tid, 960, y, 90, 6,
-            sel ? mk(255,255,255) : mk(200,190,215)
-        );
+        fillRect(x, y, 900, 90, sel ? mk(195, 25, 45) : mk(38, 28, 52));
+        int tid = (i == 0) ? (controlMode == 1 ? T_CTRL_A : T_CTRL_B) :
+                  ((i == 1) ? T_LANG : T_BACK);
+        drawLabel(tid, 960, y, 90, 6, sel ? mk(255, 255, 255) : mk(200, 190, 215));
     }
 }
 
 static void drawUI(int b) {
-    resetClip();
-
     if (uiFull[b]) {
         scene->FrameBufferClear();
-
-        drawStatic();
-
+        drawStaticMenu();
         int n = itemCount();
-
         for (int i = 0; i < n; i++)
-            drawItem(i);
-
+            drawMenuItem(i);
         uiFull[b] = false;
-
-        for (int i = 0; i < 64; i++)
+        for (int i = 0; i < 16; i++)
             pend[b][i] = false;
-    }
-
-    else {
-        for (int i = 0; i < 64; i++) {
+    } else {
+        for (int i = 0; i < 16; i++) {
             if (pend[b][i]) {
-                drawItem(i);
+                drawMenuItem(i);
                 pend[b][i] = false;
             }
         }
     }
 }
 
-// ---------- UI input ----------
 static void updateUI() {
     bool nu = navEvent(0, in.up);
     bool nd = navEvent(1, in.down);
@@ -4257,7 +1699,6 @@ static void updateUI() {
 
     if (state == S_MENU) {
         int old = menuSel;
-
         if (nu) menuSel = (menuSel + 3) % 4;
         if (nd) menuSel = (menuSel + 1) % 4;
 
@@ -4270,67 +1711,23 @@ static void updateUI() {
         if (ok) {
             if (menuSel == 0) {
                 snd(1);
-                setState(S_LEVELS);
-            }
-
-            else if (menuSel == 1) {
+                resetGame();
+                cutTick = 0;
+                setState(S_INTRO_3D);
+            } else if (menuSel == 1) {
                 snd(1);
                 settingsSel = 0;
                 setState(S_SETTINGS);
-            }
-
-            else if (menuSel == 2) {
+            } else if (menuSel == 2) {
                 snd(1);
                 setState(S_CREDITS);
-            }
-
-            else {
+            } else {
                 snd(2);
                 exit(0);
             }
         }
-    }
-
-    else if (state == S_LEVELS) {
-        int old = levelSel;
-        int n = levelSel;
-
-        if (nl && n > 0) n--;
-        if (nr && n < NUM_LEVELS - 1) n++;
-
-        if (nu && n >= LEVEL_COLS)
-            n -= LEVEL_COLS;
-
-        if (nd && n + LEVEL_COLS <= NUM_LEVELS - 1)
-            n += LEVEL_COLS;
-
-        if (n != old) {
-            levelSel = n;
-
-            markPend(old);
-            markPend(n);
-            markPend(NUM_LEVELS);
-            snd(0);
-        }
-
-        if (ok && levelSel < unlockedLevels) {
-            snd(1);
-            launchSelectedLevel(levelSel);
-        }
-
-        else if (ok) {
-            snd(3);
-        }
-
-        else if (back) {
-            snd(2);
-            setState(S_MENU);
-        }
-    }
-
-    else if (state == S_SETTINGS) {
+    } else if (state == S_SETTINGS) {
         int old = settingsSel;
-
         if (nu) settingsSel = (settingsSel + 2) % 3;
         if (nd) settingsSel = (settingsSel + 1) % 3;
 
@@ -4340,27 +1737,17 @@ static void updateUI() {
             snd(0);
         }
 
-        if (settingsSel == 0) {
-            if (nl || nr || ok) {
-                controlMode = 1 - controlMode;
-                markPend(0);
-                snd(0);
+        if (settingsSel == 0 && (nl || nr || ok)) {
+            controlMode = 1 - controlMode;
+            markPend(0);
+            snd(0);
+        } else if (settingsSel == 1 && (nl || nr || ok)) {
+            if (ARABIC_OK) {
+                lang = 1 - lang;
+                snd(1);
+                setState(S_SETTINGS);
             }
-        }
-
-        else if (settingsSel == 1) {
-            if (nl || nr || ok) {
-                if (ARABIC_OK) {
-                    lang = 1 - lang;
-                    snd(1);
-                    setState(S_SETTINGS);
-                } else {
-                    snd(3);
-                }
-            }
-        }
-
-        else if (ok) {
+        } else if (settingsSel == 2 && ok) {
             snd(2);
             setState(S_MENU);
         }
@@ -4369,9 +1756,7 @@ static void updateUI() {
             snd(2);
             setState(S_MENU);
         }
-    }
-
-    else if (state == S_CREDITS) {
+    } else if (state == S_CREDITS) {
         if (ok || back) {
             snd(2);
             setState(S_MENU);
@@ -4383,34 +1768,17 @@ static void updateUI() {
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    DEBUGLOG << "Creating a scene";
-
-    scene = new Scene2D(
-        FRAME_WIDTH,
-        FRAME_HEIGHT,
-        FRAME_DEPTH
-    );
-
+    scene = new Scene2D(FRAME_WIDTH, FRAME_HEIGHT, FRAME_DEPTH);
     if (!scene->Init(0xC000000, 2)) {
-        DEBUGLOG << "Failed to initialize 2D scene";
-
         for (;;);
     }
 
-    DEBUGLOG << "Initializing controller";
-
     if (!initPad()) {
-        DEBUGLOG << "Failed to initialize controller";
-
         for (;;);
     }
 
     initAudio();
-
-    buildLevel();
-    roomIdx = 0;
-    respawn();
-
+    resetGame();
     setState(S_MENU);
     snd(1);
 
@@ -4419,69 +1787,56 @@ int main(void) {
 
         readInput();
 
-        if (state == S_PLAY) {
+        if (state == S_INTRO_3D) {
+            cutTick++;
+            if (cutTick == 135) snd(6); // Door slam sound in 3D intro!
+            if (cutTick == 275) snd(7); // Stalker sound in 3D intro!
+
+            renderIntro3D(b);
+
+            if (in.crossNew || in.optionsNew || cutTick >= 390) {
+                resetGame();
+                setState(S_PLAY_3D);
+            }
+        }
+        else if (state == S_PLAY_3D) {
             if (in.optionsNew) {
-                setState(S_LEVELS);
-            }
-
-            else if (winTimer > 0) {
-                winTimer--;
-
-                if (winTimer == 0) {
-                    if (currentLevel + 2 > unlockedLevels && unlockedLevels < NUM_LEVELS)
-                        unlockedLevels = currentLevel + 2;
-
-                    if (currentLevel < 11) {
-                        launchSelectedLevel(currentLevel + 1);
-                    } else {
-                        startStory(1);
-                    }
+                setState(S_MENU);
+            } else {
+                updatePlay3D();
+                if (state == S_PLAY_3D) {
+                    render3DScene(b, plX, plY, plAngle, plFloor, plPitch, flashlightOn,
+                                  true, stX, stY, stFloor);
+                    draw3DHUD(b);
                 }
             }
+        }
+        else if (state == S_OUTRO_3D) {
+            cutTick++;
+            renderOutro3D(b);
 
-            else {
-                update();
+            if ((cutTick > 60 && in.crossNew) || in.optionsNew || cutTick >= 360) {
+                setState(S_MENU);
             }
         }
+        else if (state == S_CAUGHT_3D) {
+            cutTick++;
+            renderCaught3D(b);
 
-        else if (state == S_STORY) {
-            int total = storyTotal();
-            storyAnimTick++;
-
-            if (typed < total)
-                typed++;
-
-            if (in.crossNew) {
-                if (typed < total) {
-                    typed = total;
-                } else {
-                    snd(0);
-                    storyPage++;
-                    typed = 0;
-                    storyAnimTick = 0;
-
-                    if (storyPage >= STORY_LAST[storyId])
-                        endStory();
-                }
+            if (cutTick > 35 && in.crossNew) {
+                resetGame();
+                setState(S_PLAY_3D);
+            } else if (in.optionsNew) {
+                setState(S_MENU);
             }
-
-            if (state == S_STORY && in.optionsNew)
-                endStory();
         }
-
         else {
             updateUI();
+            drawUI(b);
         }
 
-        if (state == S_PLAY)
-            renderGame(b);
-        else if (state == S_STORY)
-            renderStory(b);
-        else
-            drawUI(b);
-
         scene->SubmitFlip(frameID);
-        updateGameplayAudio();
+        updateHorrorAudio();
         scene->FrameWait(frameID);
         scene->FrameBufferSwap();
 
