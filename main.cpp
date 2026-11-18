@@ -3,17 +3,23 @@
 #include <string.h>
 #include <sstream>
 #include <math.h>
-#include <pthread.h>
 
 #include <orbis/Pad.h>
 #include <orbis/UserService.h>
-#ifndef NO_AUDIO
-#include <orbis/AudioOut.h>
-#endif
 
 #include "../../_common/graphics.h"
 #include "../../_common/log.h"
 #include "ar_data.h"
+
+// Direct C-ABI bindings to PS4 libSceAudioOut (avoids C++ enum errors in AudioOut.h)
+#ifndef NO_AUDIO
+extern "C" {
+    int sceAudioOutInit(void);
+    int sceAudioOutOpen(int userId, int type, int index, unsigned int len, unsigned int freq, unsigned int param);
+    int sceAudioOutOutput(int handle, const void *ptr);
+    int sceAudioOutSetVolume(int handle, int flag, int *vol);
+}
+#endif
 
 #ifdef NO_ARABIC
 #define ARABIC_OK 0
@@ -61,7 +67,6 @@ static OrbisPadData padData;
 
 #ifndef NO_AUDIO
 static int audioHandle = -1;
-static pthread_t audioThread;
 #endif
 
 // ---------- Game state ----------
@@ -448,34 +453,126 @@ static bool navEvent(int i, bool pressed) {
     return false;
 }
 
-// ---------- Dedicated Thread Halal Audio Engine (256-sample PS4 stream) ----------
-static volatile int sfxReq = -1;
-static volatile int sfxTriggerSeq = 0;
+// ---------- PS4 Halal Audio Engine (Menu SFX + Gameplay Percussion & Vocal Hum) ----------
+static int curSfx = -1;
+static int sfxPos = 0;
+static int sfxLen = 0;
+static int sfxPhase = 0;
 
-// Triggers sound effect for menus & gameplay actions:
-// 0=cursor, 1=select, 2=back, 3=locked, 4=jump, 5=walljump, 6=die, 7=bosshit, 8=win
-static void snd(int k) {
-    sfxReq = k;
-    sfxTriggerSeq++;
+static int bgmSample = 0;
+static int humPhase1 = 0;
+static int humPhase2 = 0;
+static int duffPhase = 0;
+static unsigned int noiseRng = 987654321u;
+
+static void playToneImmediate(int freq, int ms, int vol) {
+#ifndef NO_AUDIO
+    if (audioHandle < 0)
+        return;
+
+    static short buf[256 * 2];
+
+    int total = 48 * ms;
+    int phase = 0;
+    int done = 0;
+
+    while (done < total) {
+        for (int i = 0; i < 256; i++) {
+            int idx = done + i;
+            int s = 0;
+
+            if (idx < total) {
+                phase += freq;
+                if (phase >= 48000)
+                    phase -= 48000;
+
+                int tri = phase < 24000 ? phase : 48000 - phase;
+                s = ((tri - 12000) * vol) / 12000;
+
+                int remain = total - idx;
+                if (remain < 1200)
+                    s = (s * remain) / 1200;
+            }
+
+            buf[i * 2]     = (short)s;
+            buf[i * 2 + 1] = (short)s;
+        }
+
+        sceAudioOutOutput(audioHandle, buf);
+        done += 256;
+    }
+#else
+    (void)freq;
+    (void)ms;
+    (void)vol;
+#endif
 }
 
+static void initAudio() {
 #ifndef NO_AUDIO
-static void *audioThreadMain(void *arg) {
-    (void)arg;
+    sceAudioOutInit();
 
-    short outBuf[256 * 2];
+    // Try opening Main Port with SYSTEM User ID (0xFF) first (standard on PS4 for TV HDMI)
+    audioHandle = sceAudioOutOpen(0xFF, 0, 0, 256, 48000, 1);
 
-    int curSfx = -1;
-    int sfxPos = 0;
-    int sfxLen = 0;
-    int sfxPhase = 0;
-    int lastSeq = 0;
+    // Fallback to initial user ID if 0xFF was rejected
+    if (audioHandle < 0)
+        audioHandle = sceAudioOutOpen(padUserID, 0, 0, 256, 48000, 1);
 
-    int bgmSample = 0;
-    int humPhase1 = 0;
-    int humPhase2 = 0;
-    int duffPhase = 0;
-    unsigned int noiseRng = 987654321u;
+    // Fallback to BGM port if Main port was busy
+    if (audioHandle < 0)
+        audioHandle = sceAudioOutOpen(padUserID, 1, 0, 256, 48000, 1);
+
+    if (audioHandle >= 0) {
+        // Set Left & Right channel volume to 0 dB (32768 = 100% max volume)
+        int vol[8] = { 32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768 };
+        sceAudioOutSetVolume(audioHandle, 3, vol);
+    }
+#endif
+}
+
+// 0=cursor, 1=select, 2=back, 3=locked, 4=jump, 5=walljump, 6=die, 7=bosshit, 8=win
+static void snd(int k) {
+    // In Menus & Story, play crisp immediate tones so UI feedback is 100% instantaneous
+    if (state != S_PLAY) {
+        if (k == 0) {
+            playToneImmediate(880, 25, 16000);
+        } else if (k == 1) {
+            playToneImmediate(660, 35, 18000);
+            playToneImmediate(990, 55, 18000);
+        } else if (k == 2) {
+            playToneImmediate(440, 45, 16000);
+        } else {
+            playToneImmediate(220, 80, 16000);
+        }
+        return;
+    }
+
+    // During Gameplay, queue non-blocking SFX mixed with the Halal Rhythm stream
+    curSfx = k;
+    sfxPos = 0;
+    sfxPhase = 0;
+
+    if (k == 0)      sfxLen = 1400;
+    else if (k == 1) sfxLen = 4000;
+    else if (k == 2) sfxLen = 2600;
+    else if (k == 3) sfxLen = 3500;
+    else if (k == 4) sfxLen = 3200;   // Jump whoosh
+    else if (k == 5) sfxLen = 3600;   // Wall jump kick
+    else if (k == 6) sfxLen = 6500;   // Player death
+    else if (k == 7) sfxLen = 7200;   // Boss hit
+    else             sfxLen = 13000;  // Level complete fanfare
+}
+
+static void updateGameplayAudio() {
+#ifndef NO_AUDIO
+    if (audioHandle < 0)
+        return;
+
+    if (state != S_PLAY)
+        return;
+
+    static short outBuf[256 * 2];
 
     // Acapella vocal hum frequencies (natural fifths, no musical instruments)
     static const int HUM_BASE[4]    = { 110, 130, 146, 130 };
@@ -487,37 +584,14 @@ static void *audioThreadMain(void *arg) {
         1, 1, 3, 2,  0, 2, 3, 2
     };
 
-    for (;;) {
-        if (audioHandle < 0)
-            break;
+    bool playBgm = (winTimer == 0);
+    int stepSamples = bossActive ? 5200 : 6400;
 
-        // Check if main thread requested a new sound effect
-        int seq = sfxTriggerSeq;
-        if (seq != lastSeq) {
-            lastSeq = seq;
-            curSfx = sfxReq;
-            sfxPos = 0;
-            sfxPhase = 0;
-
-            if (curSfx == 0)      sfxLen = 1400;   // Menu cursor move
-            else if (curSfx == 1) sfxLen = 4500;   // Menu select confirm
-            else if (curSfx == 2) sfxLen = 2800;   // Menu back
-            else if (curSfx == 3) sfxLen = 4000;   // Locked
-            else if (curSfx == 4) sfxLen = 3400;   // Jump whoosh
-            else if (curSfx == 5) sfxLen = 3800;   // Wall jump kick
-            else if (curSfx == 6) sfxLen = 6800;   // Player death
-            else if (curSfx == 7) sfxLen = 7500;   // Boss hit
-            else                  sfxLen = 14000;  // Victory chord
-        }
-
-        bool playBgm = (state == S_PLAY && winTimer == 0);
-        bool isBoss = bossActive;
-        int stepSamples = isBoss ? 5200 : 6400;
-
+    // Output 3 blocks of 256 samples per 60Hz frame (768 samples = 16.0 ms)
+    for (int blk = 0; blk < 3; blk++) {
         for (int i = 0; i < 256; i++) {
             int mix = 0;
 
-            // 1) Halal Gameplay Rhythm (Duff percussion + Acapella Vocal Hum)
             if (playBgm) {
                 int step = (bgmSample / stepSamples) & 15;
                 int inStep = bgmSample % stepSamples;
@@ -529,11 +603,11 @@ static void *audioThreadMain(void *arg) {
                 // Deep Duff "Dum" (warm membrane thud)
                 if (hit == 1 && inStep < 3200) {
                     int env = 3200 - inStep;
-                    int freq = 65 + (env >> 6);
+                    int freq = 68 + (env >> 6);
                     duffPhase += freq;
                     if (duffPhase >= 48000) duffPhase -= 48000;
                     int wave = duffPhase < 24000 ? (duffPhase - 12000) : (36000 - duffPhase);
-                    mix += (wave * env) / 8500;
+                    mix += (wave * env) / 4200;
                 }
                 // Crisp Duff "Tak" (hand percussion tap)
                 else if (hit == 2 && inStep < 1400) {
@@ -542,21 +616,21 @@ static void *audioThreadMain(void *arg) {
                     int nz = ((int)(noiseRng >> 20) & 511) - 256;
                     duffPhase += 280;
                     if (duffPhase >= 48000) duffPhase -= 48000;
-                    int body = duffPhase < 24000 ? 220 : -220;
-                    mix += ((nz + body) * env) / 520;
+                    int body = duffPhase < 24000 ? 280 : -280;
+                    mix += ((nz + body) * env) / 280;
                 }
-                // Subtle shaker pulse
+                // Light shaker pulse
                 else if (hit == 3 && inStep < 750) {
                     int env = 750 - inStep;
                     noiseRng = noiseRng * 1664525u + 1013904223u;
                     int nz = ((int)(noiseRng >> 22) & 255) - 128;
-                    mix += (nz * env) / 600;
+                    mix += (nz * env) / 320;
                 }
 
                 // Warm Acapella Vocal Hum
                 int f1 = HUM_BASE[bar];
                 int f2 = HUM_HARMONY[bar];
-                if (isBoss) {
+                if (bossActive) {
                     f1 += 22;
                     f2 += 33;
                 }
@@ -570,57 +644,36 @@ static void *audioThreadMain(void *arg) {
                 int v2 = humPhase2 < 24000 ? (humPhase2 - 12000) : (36000 - humPhase2);
 
                 int breath = inStep < (stepSamples / 2) ? inStep : (stepSamples - inStep);
-                int humAmp = 750 + (breath / 10);
-                mix += ((v1 + v2) * humAmp) / 16000;
+                int humAmp = 1400 + (breath / 6);
+                mix += ((v1 + v2) * humAmp) / 10000;
             }
 
-            // 2) Menu & Gameplay Sound Effects (SFX)
+            // Active Gameplay SFX (Jump, Wall-Jump, Death, Boss Hit, Win)
             if (curSfx >= 0) {
                 int rem = sfxLen - sfxPos;
                 if (rem <= 0) {
                     curSfx = -1;
                 } else {
                     int f = 440;
-                    int vol = 5500;
+                    int vol = 14000;
 
-                    if (curSfx == 0) {
-                        // Menu cursor move (880 Hz crisp tone)
-                        f = 880;
-                        vol = 4800;
-                    } else if (curSfx == 1) {
-                        // Menu select confirm (660 Hz -> 990 Hz)
-                        f = (sfxPos < 1800) ? 660 : 990;
-                        vol = 5800;
-                    } else if (curSfx == 2) {
-                        // Menu back (440 Hz -> 330 Hz)
-                        f = (sfxPos < 1400) ? 440 : 330;
-                        vol = 5000;
-                    } else if (curSfx == 3) {
-                        // Locked
-                        f = 220;
-                        vol = 5000;
-                    } else if (curSfx == 4) {
-                        // Jump rising sweep
+                    if (curSfx == 4) {
                         f = 260 + (sfxPos >> 3);
-                        vol = 4800;
+                        vol = 13000;
                     } else if (curSfx == 5) {
-                        // Wall-jump kick
-                        f = 340 + (sfxPos >> 2);
-                        vol = 5200;
+                        f = 350 + (sfxPos >> 2);
+                        vol = 14500;
                     } else if (curSfx == 6) {
-                        // Death impact
-                        f = 160 - (sfxPos >> 6);
+                        f = 165 - (sfxPos >> 6);
                         if (f < 55) f = 55;
-                        vol = 6000;
+                        vol = 16000;
                     } else if (curSfx == 7) {
-                        // Boss hit boom
-                        f = 210 - (sfxPos >> 6);
+                        f = 220 - (sfxPos >> 6);
                         if (f < 65) f = 65;
-                        vol = 6500;
-                    } else {
-                        // Victory vocal chord
-                        f = (sfxPos < 4500) ? 440 : ((sfxPos < 9000) ? 550 : 660);
-                        vol = 5800;
+                        vol = 17500;
+                    } else if (curSfx == 8) {
+                        f = (sfxPos < 4200) ? 440 : ((sfxPos < 8400) ? 550 : 660);
+                        vol = 16000;
                     }
 
                     sfxPhase += f;
@@ -632,7 +685,7 @@ static void *audioThreadMain(void *arg) {
                     if (curSfx == 6 || curSfx == 7) {
                         noiseRng = noiseRng * 1664525u + 1013904223u;
                         int nz = ((int)(noiseRng >> 19) & 1023) - 512;
-                        s += nz * 5;
+                        s += nz * 8;
                     }
 
                     if (rem < 1200)
@@ -651,22 +704,6 @@ static void *audioThreadMain(void *arg) {
         }
 
         sceAudioOutOutput(audioHandle, outBuf);
-    }
-
-    return NULL;
-}
-#endif
-
-static void initAudio() {
-#ifndef NO_AUDIO
-    sceAudioOutInit();
-    // Exact 256-sample stereo 48kHz port configuration required by PS4 OpenOrbis
-    audioHandle = sceAudioOutOpen(padUserID, 0, 0, 256, 48000, 1);
-    if (audioHandle < 0) {
-        audioHandle = sceAudioOutOpen(0xFF, 0, 0, 256, 48000, 1);
-    }
-    if (audioHandle >= 0) {
-        pthread_create(&audioThread, NULL, audioThreadMain, NULL);
     }
 #endif
 }
@@ -4206,6 +4243,7 @@ int main(void) {
     respawn();
 
     setState(S_MENU);
+    snd(1); // Startup sound chime when Main Menu opens
 
     for (;;) {
         int b = frameID & 1;
@@ -4274,6 +4312,7 @@ int main(void) {
             drawUI(b);
 
         scene->SubmitFlip(frameID);
+        updateGameplayAudio();
         scene->FrameWait(frameID);
         scene->FrameBufferSwap();
 
