@@ -49,15 +49,19 @@ extern "C" {
 #define LEVEL_COLS 11
 
 #define NUM_STARS 75
-#define MAX_SPLATS 240
+#define MAX_SPLATS 260
 #define MAX_PARTS 100
-#define MAX_PLANTS 320
-#define MAX_AMB 20
+#define MAX_PLANTS 640
+#define MAX_AMB 18
+#define MAX_BIRDS 5
 #define MAX_BOSS_SHOTS 14
 #define MAX_ENEMIES 48
 #define MAX_BULLETS 24
 #define MAX_CHECKPOINTS 6
-#define MAX_DIRTY 320
+#define MAX_DIRTY 420
+
+// 1.5 Minutes at 60 FPS = 90 * 60 = 5400 frames
+#define SPLAT_MAX_AGE 5400
 
 std::stringstream debugLogStream;
 
@@ -72,10 +76,13 @@ static OrbisPadData padData;
 static int audioHandle = -1;
 #endif
 
-// ---------- Game & Camera state ----------
+// ---------- Game & 60-FPS Differential Camera state ----------
 static float px, py, vx, vy;
+static int camCol = 0;
 static float camX = 0.0f;
+static int levelCols = COLS;
 static int levelPixelWidth = WORLD_WIDTH;
+
 static float checkpointX = 80.0f;
 static float checkpointY = 900.0f;
 static int checkCols[MAX_CHECKPOINTS];
@@ -166,13 +173,18 @@ struct BossShot {
 
 static BossShot bossShots[MAX_BOSS_SHOTS];
 
+// Blood stains that gradually fade and vanish after 1.5 minutes (5400 frames)
 struct Splat {
-    short x, y, w, h, room;
+    short wx, y, w, h;
+    int bornTick;
+    unsigned char stage;       // 0=100%, 1=75%, 2=50%, 3=25%, 4=vanished
+    unsigned char drawnStage[2];
+    short drawnX[2];
+    bool drawn[2];
 };
 
 static Splat splats[MAX_SPLATS];
 static int splatCount = 0;
-static bool splatDrawn[2][MAX_SPLATS];
 
 struct Part {
     float x, y, vx, vy;
@@ -182,21 +194,23 @@ struct Part {
 
 static Part parts[MAX_PARTS];
 
-// Interactive world plants (world X coordinates for smooth camera)
+// Semi-dense interactive world grass across the entire ground of the world
 struct Plant {
-    short room;
-    int x, y;
+    short wx, y;
     float angle;
     float vel;
     unsigned char height;
     unsigned char style;
     unsigned char seed;
+    signed char drawnBend[2];
+    short drawnX[2];
+    bool drawn[2];
 };
 
 static Plant plants[MAX_PLANTS];
 static int plantCount = 0;
 
-// Ambient living world particles
+// Ambient living world particles & sky birds (rendered at 60 FPS with dirty rects)
 struct AmbPart {
     float x, y, vx, vy;
     unsigned char sz, seed;
@@ -213,12 +227,13 @@ static int dirtyCount[2] = {0, 0};
 
 static bool needFull[2] = {true, true};
 static bool needWin[2] = {false, false};
-static int bufRoom[2] = {0, 0};
+static int bufCamCol[2] = {0, 0};
 static char bufGrid[2][ROWS][ROOM_COLS];
 static bool bufHi[2][ROWS][ROOM_COLS];
 static int bufStar[2] = {0, 0};
 static int hudSq[2] = {0, 0};
 static int hudProg[2] = {0, 0};
+static int hudWeap[2] = {-1, -1};
 static bool hudNeed[2] = {false, false};
 
 static int clipX0 = 0;
@@ -253,7 +268,7 @@ static int settingsSel = 0;
 
 static int controlMode = 1;
 static int lang = 0;            // 0 = English, 1 = Arabic
-static int unlockedLevels = 12; // First 12 stages unlocked
+static int unlockedLevels = 1;  // Locked progression: starts at Level 1, unlocks next level on completion!
 static bool introSeen = false;
 
 static bool uiFull[2] = {true, true};
@@ -1068,7 +1083,7 @@ static void initAmbientParticles() {
     for (int i = 0; i < MAX_AMB; i++) {
         AmbPart &a = ambParts[i];
         a.x = (float)((i * 173 + 47) % FRAME_WIDTH);
-        a.y = (float)((i * 113 + 80) % (FRAME_HEIGHT - 160));
+        a.y = (float)(110 + ((i * 113 + 31) % (FRAME_HEIGHT - 260)));
         a.seed = (unsigned char)i;
 
         if (currentBiome == 0) {
@@ -1099,10 +1114,11 @@ static void initAmbientParticles() {
     }
 }
 
+// Populates semi-dense small interactive grass across the entire ground and platforms of the world
 static void populateLevelPlants() {
     plantCount = 0;
 
-    int maxC = levelPixelWidth / TILE - 1;
+    int maxC = levelCols - 1;
     for (int r = 2; r < ROWS; r++) {
         for (int c = 1; c < maxC; c++) {
             if (level[r][c] != '#')
@@ -1124,18 +1140,25 @@ static void populateLevelPlants() {
             if (nearSaw)
                 continue;
 
-            if (((c * 7 + r * 13) % 3) != 0) {
-                if (plantCount < MAX_PLANTS) {
-                    Plant &p = plants[plantCount++];
-                    p.room = (short)(c / ROOM_COLS);
-                    p.x = c * TILE + 18 + ((c * 11 + r * 5) % 24);
-                    p.y = r * TILE;
-                    p.angle = 0.0f;
-                    p.vel = 0.0f;
-                    p.height = (unsigned char)(16 + ((c * 3 + r * 7) % 10));
-                    p.style = (unsigned char)((c + r) % 3);
-                    p.seed = (unsigned char)((c * 5 + r * 9) & 15);
-                }
+            // Place 2 small tufts on every surface tile for a semi-dense living carpet across the world!
+            for (int sub = 0; sub < 2; sub++) {
+                if (plantCount >= MAX_PLANTS)
+                    break;
+
+                Plant &p = plants[plantCount++];
+                p.wx = (short)(c * TILE + 15 + sub * 28 + ((c * 5 + r * 3 + sub * 7) % 7));
+                p.y  = (short)(r * TILE);
+                p.angle = 0.0f;
+                p.vel   = 0.0f;
+                p.height = (unsigned char)(11 + ((c * 3 + r * 7 + sub * 5) % 6));
+                p.style  = (unsigned char)((c + r + sub) % 3);
+                p.seed   = (unsigned char)((c * 5 + r * 9 + sub * 11) & 15);
+                p.drawn[0] = false;
+                p.drawn[1] = false;
+                p.drawnBend[0] = 99;
+                p.drawnBend[1] = 99;
+                p.drawnX[0] = -1000;
+                p.drawnX[1] = -1000;
             }
         }
     }
@@ -1165,9 +1188,9 @@ static void clearLevelGrid() {
         bullets[i].active = false;
 }
 
-// Builds a rich, continuous scrolling action level with enemies, checkpoints, wall-jumps, bridges, and hazards
 static void buildScrollingActionStage(int stageIdx) {
     baseCol = 0;
+    levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
     // Zone 1 (Cols 1..31): Opening platforms + First Enemy Patrols
@@ -1255,33 +1278,31 @@ static void buildScrollingActionStage(int stageIdx) {
     put(9, 187, 'G');
 }
 
-// Wide Scrolling Boss Arena Builder (Used for Level 5, Level 10, and every 5th level!)
+// Wide Scrolling Boss Arena Builder
 static void buildBossArena(int tier) {
     baseCol = 0;
-    int arenaCols = 46; // 1.45 screens wide so camera scrolls smoothly during Boss Fights!
+    int arenaCols = 44;
+    levelCols = arenaCols;
     levelPixelWidth = arenaCols * TILE;
 
     for (int r = 0; r < ROWS; r++)
         level[r][arenaCols - 1] = '#';
 
-    // Left & Right wall-jump pillars
     wall(3, 6, 13);
     wall(arenaCols - 4, 6, 13);
 
-    // Mid-level combat platforms
-    plat(12, 7, 13);
-    plat(12, 20, 25);
-    plat(12, 32, 38);
+    plat(12, 7, 12);
+    plat(12, 19, 24);
+    plat(12, 31, 36);
 
-    // Upper platform holding the Boss Strike Switch (cols 20..25)
-    plat(7, 19, 26);
+    plat(7, 18, 25);
 
     bossActive = true;
     bossW = 104;
     bossH = 104;
-    bossX = (float)(30 * TILE);
+    bossX = (float)(28 * TILE);
     bossY = (float)((ROWS - 1) * TILE - bossH);
-    bossVX = (tier >= 2) ? -5.6f : -4.4f;
+    bossVX = (tier >= 2) ? -5.5f : -4.4f;
     bossVY = 0.0f;
     bossMaxHP = (tier >= 2) ? 14 : 10;
     bossHP = bossMaxHP;
@@ -1397,21 +1418,55 @@ static bool circleHit(
     return dx * dx + dy * dy < rad * rad;
 }
 
-// ---------- Blood stains and particles ----------
+// ---------- Blood Stains (Gradually Fade & Disappear after 1.5 Minutes) ----------
 static void addSplat(int wx, int wy, int w, int h) {
-    if (splatCount >= MAX_SPLATS)
-        return;
-
     if (wx < 0 || wy < 0 || wx >= levelPixelWidth)
         return;
 
-    Splat &s = splats[splatCount++];
+    int idx = -1;
+    if (splatCount < MAX_SPLATS) {
+        idx = splatCount++;
+    } else {
+        for (int i = 0; i < MAX_SPLATS; i++) {
+            if (splats[i].stage >= 4 && !splats[i].drawn[0] && !splats[i].drawn[1]) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0)
+            return;
+    }
 
-    s.room = (short)(wx / FRAME_WIDTH);
-    s.x = (short)(wx - w / 2);
-    s.y = (short)(wy - h / 2);
-    s.w = (short)w;
-    s.h = (short)h;
+    Splat &s = splats[idx];
+    s.wx = (short)(wx - w / 2);
+    s.y  = (short)(wy - h / 2);
+    s.w  = (short)w;
+    s.h  = (short)h;
+    s.bornTick = tick;
+    s.stage = 0;
+    s.drawn[0] = false;
+    s.drawn[1] = false;
+    s.drawnStage[0] = 99;
+    s.drawnStage[1] = 99;
+    s.drawnX[0] = -1000;
+    s.drawnX[1] = -1000;
+}
+
+static void updateSplatsAging() {
+    for (int i = 0; i < splatCount; i++) {
+        Splat &s = splats[i];
+        if (s.stage >= 4)
+            continue;
+
+        int age = tick - s.bornTick;
+        unsigned char ns = 0;
+        if (age >= SPLAT_MAX_AGE)          ns = 4; // 90s (1.5 min): Completely vanished
+        else if (age >= SPLAT_MAX_AGE - 300) ns = 3; // 85s..90s: 25% size
+        else if (age >= SPLAT_MAX_AGE - 600) ns = 2; // 80s..85s: 50% size
+        else if (age >= SPLAT_MAX_AGE - 900) ns = 1; // 75s..80s: 75% size
+
+        s.stage = ns;
+    }
 }
 
 static void spawnPart(
@@ -1480,7 +1535,7 @@ static void updateParts() {
             p.y += p.vy;
 
             if (solidAt((int)p.x, (int)p.y)) {
-                if (rnd(100) < 45) {
+                if (rnd(100) < 48) {
                     int s = p.size;
 
                     if (solidAt((int)ox, (int)p.y)) {
@@ -1503,40 +1558,41 @@ static void updateParts() {
 static void updatePlantsAndAmbient(bool landedOrJumped) {
     float pcx = px + PW * 0.5f;
     float pby = py + PH;
-    int viewX0 = (int)camX - 120;
-    int viewX1 = (int)camX + FRAME_WIDTH + 120;
+    int viewX0 = camCol * TILE - 40;
+    int viewX1 = camCol * TILE + FRAME_WIDTH + 40;
 
     for (int i = 0; i < plantCount; i++) {
         Plant &p = plants[i];
-        if (p.x < viewX0 || p.x > viewX1)
+        if (p.wx < viewX0 || p.wx > viewX1)
             continue;
 
-        int wIdx = ((tick / 5) + (p.x / 48) + p.seed) & 15;
-        float wind = (float)SN[wIdx] / 256.0f * 2.6f;
+        // Gentle breeze + player physical interaction
+        int wIdx = ((tick / 12) + (p.wx / 60) + p.seed) & 15;
+        float wind = (float)SN[wIdx] / 256.0f * 1.8f;
 
         if (deadTimer == 0) {
-            float dx = pcx - (float)p.x;
+            float dx = pcx - (float)p.wx;
             float dy = pby - (float)p.y;
             float adx = dx < 0 ? -dx : dx;
 
             if (adx < 46.0f && dy > -22.0f && dy < 32.0f) {
                 float prox = 1.0f - (adx / 46.0f);
-                p.vel += vx * 0.36f * prox;
+                p.vel += vx * 0.40f * prox;
 
-                float push = (dx < 0.0f ? 6.5f : -6.5f) * prox;
+                float push = (dx < 0.0f ? 7.0f : -7.0f) * prox;
                 wind += push;
 
                 if (landedOrJumped)
-                    p.vel += (dx < 0.0f ? 4.5f : -4.5f) * prox;
+                    p.vel += (dx < 0.0f ? 5.0f : -5.0f) * prox;
             }
         }
 
-        float force = (wind - p.angle) * 0.16f;
-        p.vel = (p.vel + force) * 0.80f;
+        float force = (wind - p.angle) * 0.18f;
+        p.vel = (p.vel + force) * 0.78f;
         p.angle += p.vel;
 
-        if (p.angle > 14.0f) p.angle = 14.0f;
-        if (p.angle < -14.0f) p.angle = -14.0f;
+        if (p.angle > 12.0f) p.angle = 12.0f;
+        if (p.angle < -12.0f) p.angle = -12.0f;
     }
 
     for (int i = 0; i < MAX_AMB; i++) {
@@ -1547,27 +1603,33 @@ static void updatePlantsAndAmbient(bool landedOrJumped) {
         a.x += a.vx + sway;
         a.y += a.vy;
 
-        if (a.x > (float)(FRAME_WIDTH - 20)) a.x = 20.0f;
-        if (a.x < 20.0f) a.x = (float)(FRAME_WIDTH - 25);
+        if (a.x > (float)(FRAME_WIDTH - 24)) a.x = 24.0f;
+        if (a.x < 24.0f) a.x = (float)(FRAME_WIDTH - 28);
 
-        if (a.y > (float)(FRAME_HEIGHT - 130)) a.y = 70.0f;
-        if (a.y < 65.0f) a.y = (float)(FRAME_HEIGHT - 140);
+        if (a.y > (float)(FRAME_HEIGHT - 130)) a.y = 110.0f;
+        if (a.y < 105.0f) a.y = (float)(FRAME_HEIGHT - 140);
     }
 }
 
 // ---------- Player, Weapons & Enemies Logic ----------
+// 60-FPS Differential Camera with deadzone so tiles shift smoothly column-by-column
 static void updateCamera(bool snap) {
-    float target = px + PW * 0.5f - FRAME_WIDTH * 0.38f;
-    float maxCam = (float)(levelPixelWidth - FRAME_WIDTH);
-    if (maxCam < 0.0f) maxCam = 0.0f;
+    int pCol = ((int)px + PW / 2) / TILE;
+    int maxCol = levelCols - ROOM_COLS;
+    if (maxCol < 0) maxCol = 0;
 
-    if (target < 0.0f) target = 0.0f;
-    if (target > maxCam) target = maxCam;
+    if (snap) {
+        camCol = iclamp(pCol - 12, 0, maxCol);
+    } else {
+        // Deadzone of columns [10..18] on screen so camera follows player without jitter
+        int screenCol = pCol - camCol;
+        if (screenCol > 17 && camCol < maxCol)
+            camCol++;
+        else if (screenCol < 10 && camCol > 0)
+            camCol--;
+    }
 
-    if (snap)
-        camX = target;
-    else
-        camX += (target - camX) * 0.14f;
+    camX = (float)(camCol * TILE);
 }
 
 static void respawn() {
@@ -1587,7 +1649,7 @@ static void respawn() {
     updateCamera(true);
 
     if (bossActive && bossHP > 0) {
-        bossX = (float)(30 * TILE);
+        bossX = (float)(28 * TILE);
         bossY = (float)((ROWS - 1) * TILE - bossH);
         for (int i = 0; i < MAX_BOSS_SHOTS; i++)
             bossShots[i].active = false;
@@ -1596,6 +1658,8 @@ static void respawn() {
 
 static void die() {
     deaths++;
+    hudNeed[0] = true;
+    hudNeed[1] = true;
     snd(6);
 
     float cx = px + PW / 2.0f;
@@ -1683,12 +1747,14 @@ static void killEnemy(Enemy &e) {
     for (int i = 0; i < 16; i++) {
         float pvx = (float)(rnd(160) - 80) / 10.0f;
         float pvy = (float)(rnd(140) - 110) / 10.0f;
-        spawnPart(ecx, ecy, pvx, pvy, 45, 6 + rnd(4), 1);
+        spawnPart(ecx, ecy, pvx, pvy, 55, 6 + rnd(4), 1);
+    }
+    for (int i = 0; i < 3; i++) {
+        addSplat((int)ecx + rnd(24) - 12, (int)e.y + 42, 10 + rnd(8), 6 + rnd(4));
     }
 }
 
 static void updateBulletsAndEnemies() {
-    // Update player bullets
     for (int i = 0; i < MAX_BULLETS; i++) {
         Bullet &b = bullets[i];
         if (!b.active)
@@ -1704,7 +1770,6 @@ static void updateBulletsAndEnemies() {
             continue;
         }
 
-        // Check bullet hitting enemies
         for (int j = 0; j < enemyCount; j++) {
             Enemy &e = enemies[j];
             if (!e.active)
@@ -1730,7 +1795,6 @@ static void updateBulletsAndEnemies() {
             }
         }
 
-        // Check bullet hitting Boss
         if (b.active && bossActive && bossHP > 0) {
             if (rectOverlap((int)b.x - 10, (int)b.y - 10, 20, 20,
                             (int)bossX + 6, (int)bossY + 6, bossW - 12, bossH - 12)) {
@@ -1740,7 +1804,6 @@ static void updateBulletsAndEnemies() {
         }
     }
 
-    // Update enemies within active camera range
     int activeX0 = (int)camX - 300;
     int activeX1 = (int)camX + FRAME_WIDTH + 300;
 
@@ -1784,7 +1847,6 @@ static void updateBulletsAndEnemies() {
             }
         }
 
-        // Player vs Enemy collision (Stomp head to kill vs take damage)
         if (deadTimer == 0 &&
             rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8,
                         (int)e.x + 4, (int)e.y + 4, 36, 36)) {
@@ -1826,7 +1888,7 @@ static void damageBoss(int dmg) {
         for (int i = 0; i < MAX_BOSS_SHOTS; i++)
             bossShots[i].active = false;
 
-        level[16][22] = 'G';
+        level[16][21] = 'G';
         needFull[0] = true;
         needFull[1] = true;
     }
@@ -1891,8 +1953,8 @@ static void updateBoss() {
     if (bossX < (float)(5 * TILE)) {
         bossX = (float)(5 * TILE);
         bossVX = 4.5f;
-    } else if (bossX > (float)(38 * TILE)) {
-        bossX = (float)(38 * TILE);
+    } else if (bossX > (float)(36 * TILE)) {
+        bossX = (float)(36 * TILE);
         bossVX = -4.5f;
     }
 
@@ -1919,7 +1981,7 @@ static void updateBoss() {
     if (deadTimer > 0)
         return;
 
-    int swX = 21 * TILE;
+    int swX = 20 * TILE;
     int swY = 6 * TILE + 20;
     if (bossSwitchCooldown == 0 &&
         rectOverlap((int)px, (int)py, PW, PH, swX, swY, 120, 40)) {
@@ -2008,6 +2070,7 @@ static bool touchingGoal() {
 // ---------- Physics ----------
 static void update() {
     updateParts();
+    updateSplatsAging();
 
     if (deadTimer > 0) {
         updatePlantsAndAmbient(false);
@@ -2025,6 +2088,8 @@ static void update() {
     // Weapon switching (Triangle or L1)
     if (in.switchNew && unlockedWeapons > 1) {
         curWeapon = (curWeapon + 1) % unlockedWeapons;
+        hudNeed[0] = true;
+        hudNeed[1] = true;
         snd(0);
     }
 
@@ -2205,10 +2270,8 @@ static void update() {
         vy = 0;
     }
 
-    // Smooth camera tracking
     updateCamera(false);
 
-    // Checkpoints activation
     for (int i = 0; i < checkCount; i++) {
         if (!checkActive[i]) {
             int cpx = checkCols[i] * TILE;
@@ -2242,7 +2305,6 @@ static void update() {
         needWin[0] = true;
         needWin[1] = true;
 
-        // Unlock new weapon upon completing stages!
         justUnlockedWeapon = false;
         int newWeapCount = unlockedWeapons;
         if (currentLevel >= 0 && unlockedWeapons < 2) newWeapCount = 2;
@@ -2264,7 +2326,7 @@ static void update() {
     roomIdx = nr;
 }
 
-// ---------- Game drawing (With Smooth Camera Offset) ----------
+// ---------- 60-FPS Dirty-Rectangle & Biome Drawing Engine ----------
 static void drawSpikeAt(int screenX, int r) {
     int center = screenX + TILE / 2;
     int top = r * TILE + 20;
@@ -2387,7 +2449,8 @@ static void drawPlayerFace(
     );
 }
 
-static void drawTileCellScreen(int r, int screenX, char ch, bool hi) {
+static void drawTileCell(int r, int cx, char ch, bool hi) {
+    int x = cx * TILE;
     int y = r * TILE;
 
     if (ch == '#') {
@@ -2417,20 +2480,20 @@ static void drawTileCellScreen(int r, int screenX, char ch, bool hi) {
             botC  = mk(34, 20, 28);
         }
 
-        fillRect(screenX, y, TILE, TILE, mainC);
+        fillRect(x, y, TILE, TILE, mainC);
 
         if (hi)
-            fillRect(screenX, y, TILE, 7, topC);
+            fillRect(x, y, TILE, 7, topC);
 
-        fillRect(screenX, y + TILE - 5, TILE, 5, botC);
+        fillRect(x, y + TILE - 5, TILE, 5, botC);
     }
 
     else if (ch == '^') {
-        drawSpikeAt(screenX, r);
+        drawSpikeAt(x, r);
     }
 
     else if (ch == 'G') {
-        int gx = screenX + 8;
+        int gx = x + 8;
         int gy = y + 16;
 
         fillRect(gx, gy, PW, PH, mk(255, 140, 170));
@@ -2440,62 +2503,108 @@ static void drawTileCellScreen(int r, int screenX, char ch, bool hi) {
     }
 }
 
+// Biome-Specific Small Semi-Dense Grass Shapes & Colors!
 static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style) {
-    Color stemDark = mk(40, 145, 55);
-    Color stemBright = mk(75, 205, 85);
-    Color tipCol = mk(255, 220, 75);
-
     if (biome == 0) {
-        stemDark = mk(38, 145, 55);
-        stemBright = mk(80, 215, 90);
-        tipCol = (style == 0) ? mk(255, 95, 125) : mk(255, 225, 75);
+        // Biome 0 (Green Forest): Lush 3-blade emerald grass + wildflower buds
+        Color dark = mk(36, 140, 52);
+        Color mid  = mk(72, 208, 84);
+        Color bud  = (style == 0) ? mk(255, 95, 130) : mk(255, 230, 75);
+        for (int b = -1; b <= 1; b++) {
+            int ox = bx + b * 5;
+            int bh = h - (b == 0 ? 0 : 2);
+            int sh = bh / 2;
+            fillRect(ox - 1, by - sh, 3, sh, dark);
+            fillRect(ox - 1 + (bend / 2) + b, by - bh, 3, bh - sh, mid);
+            if (b == 0 && style != 2)
+                fillRect(ox - 2 + (bend / 2), by - bh - 3, 5, 4, bud);
+        }
     } else if (biome == 1) {
-        stemDark = mk(185, 135, 40);
-        stemBright = mk(240, 195, 70);
-        tipCol = mk(255, 225, 110);
+        // Biome 1 (Countryside): Golden-wheat stalks with segmented grain heads
+        Color stalk = mk(185, 132, 38);
+        Color grain = mk(248, 205, 72);
+        for (int b = -1; b <= 1; b++) {
+            int ox = bx + b * 5;
+            int bh = h + 2 - (b == 0 ? 0 : 2);
+            int sh = bh / 2;
+            fillRect(ox - 1, by - sh, 2, sh, stalk);
+            fillRect(ox - 1 + (bend / 2) + b, by - bh, 2, bh - sh, grain);
+            fillRect(ox - 2 + (bend / 2) + b, by - bh - 4, 4, 5, mk(255, 232, 115));
+        }
     } else if (biome == 2) {
-        stemDark = mk(105, 145, 60);
-        stemBright = mk(155, 195, 85);
-        tipCol = mk(255, 130, 60);
+        // Biome 2 (Sandy Desert): Splayed desert thorny scrub & mini-cactus shape
+        Color scrub = mk(112, 152, 62);
+        Color thorn = mk(235, 155, 65);
+        int s1 = bend / 2;
+        fillRect(bx - 2, by - h, 4, h, scrub);
+        fillRect(bx - 8 + s1, by - (h * 2) / 3, 6, 4, scrub);
+        fillRect(bx - 8 + s1, by - h + 2, 3, 6, scrub);
+        fillRect(bx + 2 + s1, by - (h * 3) / 4, 6, 4, scrub);
+        fillRect(bx + 5 + s1, by - h + 1, 3, 6, scrub);
+        if (style == 0)
+            fillRect(bx - 2 + s1, by - h - 3, 4, 3, thorn);
     } else if (biome == 3) {
-        stemDark = mk(120, 185, 225);
-        stemBright = mk(205, 240, 255);
-        tipCol = mk(255, 255, 255);
+        // Biome 3 (Snowy Peaks): Crystalline frost-blue reeds with snow diamond tips
+        Color iceDark = mk(105, 175, 220);
+        Color iceMid  = mk(185, 230, 255);
+        Color snowTip = mk(255, 255, 255);
+        for (int b = -1; b <= 1; b++) {
+            int ox = bx + b * 5;
+            int bh = h - (b == 0 ? 0 : 3);
+            fillRect(ox - 1, by - bh / 2, 3, bh / 2, iceDark);
+            fillRect(ox - 1 + (bend / 2) + b, by - bh, 3, bh - bh / 2, iceMid);
+            fillRect(ox - 2 + (bend / 2) + b, by - bh - 3, 4, 3, snowTip);
+        }
     } else if (biome == 4) {
-        stemDark = mk(175, 50, 35);
-        stemBright = mk(245, 120, 40);
-        tipCol = mk(255, 220, 80);
+        // Biome 4 (Lava Valley): Fiery curved ember ferns with glowing yellow sparks
+        Color ash   = mk(95, 32, 32);
+        Color flame = mk(242, 102, 32);
+        Color spark = mk(255, 225, 75);
+        for (int b = -1; b <= 1; b++) {
+            int ox = bx + b * 5;
+            int bh = h - (b == 0 ? 0 : 2);
+            fillRect(ox - 1, by - bh / 2, 3, bh / 2, ash);
+            fillRect(ox - 1 + (bend / 2) + b * 2, by - bh, 3, bh - bh / 2, flame);
+            fillRect(ox - 1 + (bend / 2) + b * 2, by - bh - 2, 3, 3, spark);
+        }
     } else {
-        stemDark = mk(85, 60, 135);
-        stemBright = mk(145, 110, 205);
-        tipCol = mk(210, 180, 255);
-    }
-
-    for (int b = -1; b <= 1; b++) {
-        int ox = bx + b * 7;
-        int bh = h - (b == 0 ? 0 : 4);
-        if (bh < 8) bh = 8;
-
-        int segH = bh / 3;
-        if (segH < 3) segH = 3;
-
-        int b1 = (bend * 2) / 7 + b;
-        int b2 = (bend * 4) / 7 + b * 2;
-        int b3 = bend + b * 2;
-
-        fillRect(ox - 2, by - segH, 4, segH, stemDark);
-        fillRect(ox - 2 + b1, by - segH * 2, 4, segH, stemBright);
-        fillRect(ox - 2 + b2, by - segH * 3, 3, segH, stemBright);
-
-        if (biome == 1) {
-            fillRect(ox - 2 + b3, by - segH * 3 - 5, 5, 6, tipCol);
-        } else if (b == 0 && style != 2) {
-            fillRect(ox - 3 + b3, by - segH * 3 - 4, 6, 5, tipCol);
+        // Biome 5 (Night Castle): Gothic violet shadow-grass with glowing spirit tips
+        Color shDark = mk(78, 52, 128);
+        Color shMid  = mk(138, 98, 205);
+        Color shTip  = mk(185, 235, 255);
+        for (int b = -1; b <= 1; b++) {
+            int ox = bx + b * 5;
+            int bh = h - (b == 0 ? 0 : 2);
+            fillRect(ox - 1, by - bh / 2, 3, bh / 2, shDark);
+            fillRect(ox - 1 + (bend / 2) + b, by - bh, 3, bh - bh / 2, shMid);
+            if (b == 0)
+                fillRect(ox - 1 + (bend / 2), by - bh - 3, 3, 3, shTip);
         }
     }
 }
 
-// Helper for star positions & twinkling
+static void drawSplatAt(const Splat &s, int sx) {
+    if (s.stage >= 4)
+        return;
+
+    // Gradually shrink and darken across stages 0..3
+    int div = s.stage + 1;
+    int dw = (s.w * (4 - s.stage)) / 4;
+    int dh = (s.h * (4 - s.stage)) / 4;
+    if (dw < 2) dw = 2;
+    if (dh < 2) dh = 2;
+
+    int ox = sx + (s.w - dw) / 2;
+    int oy = s.y + (s.h - dh) / 2;
+
+    Color c1 = mk(140 / div + 20, 10, 20);
+    Color c2 = mk(185 / div + 20, 22 / div, 34 / div);
+
+    fillRect(ox, oy, dw, dh, c1);
+    if (s.stage <= 1)
+        fillRect(ox + 1, oy + 1, dw / 3 + 1, dh / 3 + 1, c2);
+}
+
 static void starPos(int i, int &sx, int &sy) {
     sx = (i * 271 + 91) % FRAME_WIDTH;
     sy = (i * 137 + 31) % 570;
@@ -2505,33 +2614,9 @@ static bool starDim(int i, int phase) {
     return ((phase + i) % 4) == 0;
 }
 
-// Helper for seamless parallax wrapping
-static int wrapX(int val, int span) {
-    int m = val % span;
-    return m < 0 ? m + span : m;
-}
-
-// Animated flying birds in the sky
-static void drawAnimatedBirds(int camP, Color birdCol) {
-    int wing = ((tick / 8) & 1) ? -7 : 6;
-    for (int i = 0; i < 6; i++) {
-        int bx = wrapX(i * 360 + tick * 2 - camP, FRAME_WIDTH + 120) - 60;
-        int by = 135 + (i % 3) * 55 + (SN[((tick / 6) + i * 3) & 15] >> 5);
-        fillRect(bx, by, 10, 5, birdCol);
-        fillRect(bx - 8, by + wing, 9, 4, birdCol);
-        fillRect(bx + 9, by + wing, 9, 4, birdCol);
-    }
-}
-
-// Vibrant Multi-Layer Parallax Background with Animated World Elements
+// Fast Deterministic Biome Background (Allows 60-FPS Partial Clipping in restoreRect!)
 static void paintBackground() {
-    int pSlow = (int)(camX * 0.08f);
-    int pFar  = (int)(camX * 0.22f);
-    int pNear = (int)(camX * 0.45f);
-    int pulse = SN[(tick / 4) & 15] >> 5;
-
     if (currentBiome == 0) {
-        // Biome 0: Living Green Forest (Animated sun rays, drifting clouds, flapping birds, waterfalls)
         Color sky1 = mk(65, 165, 235);
         Color sky2 = mk(115, 205, 248);
         Color farC = mk(42, 115, 75);
@@ -2542,79 +2627,65 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        int sunX = 1520 - (pSlow % 300);
-        fillRect(sunX - 12 - pulse, 83 - pulse, 134 + pulse * 2, 134 + pulse * 2, mk(255, 245, 175));
-        fillRect(sunX, 95, 110, 110, mk(255, 235, 110));
+        fillRect(1480, 95, 110, 110, mk(255, 235, 120));
+        fillRect(1495, 80, 80, 140, mk(255, 245, 160));
+
+        for (int i = 0; i < 4; i++) {
+            int cx = 180 + i * 440;
+            int cy = 130 + (i & 1) * 55;
+            fillRect(cx, cy, 170, 38, mk(235, 248, 255));
+            fillRect(cx + 30, cy - 20, 110, 24, mk(245, 252, 255));
+        }
 
         for (int i = 0; i < 5; i++) {
-            int cx = wrapX(i * 440 + tick / 2 - pSlow, FRAME_WIDTH + 240) - 180;
-            int cy = 120 + (i & 1) * 60;
-            fillRect(cx, cy, 170, 38, mk(235, 248, 255));
-            fillRect(cx + 30, cy - 20, 110, 24, mk(248, 253, 255));
+            int x = i * 400 + 60;
+            fillRect(x + 60, 430, 140, 140, farC);
+            fillRect(x + 90, 380, 80, 60, farC);
+            if (i % 2 == 1)
+                fillRect(x + 118, 430, 24, 270, mk(150, 225, 255));
+            fillRect(x + 220, 460, 130, 110, farC);
         }
-
-        drawAnimatedBirds(pSlow, mk(30, 75, 55));
 
         for (int i = 0; i < 6; i++) {
-            int x = wrapX(i * 420 - pFar, 2520) - 300;
-            fillRect(x + 60, 420, 160, 150, farC);
-            fillRect(x + 90, 370, 100, 60, farC);
-            if (i % 2 == 0) {
-                fillRect(x + 125, 420, 26, 280, mk(150, 225, 255));
-                int wf = (tick * 4) % 40;
-                fillRect(x + 129, 420 + wf, 18, 24, mk(225, 250, 255));
-                fillRect(x + 129, 520 + wf, 18, 24, mk(225, 250, 255));
-            }
-        }
-
-        int sway = SN[(tick / 6) & 15] >> 5;
-        for (int i = 0; i < 7; i++) {
-            int x = wrapX(i * 340 - pNear, 2380) - 220;
-            fillRect(x + 70, 610, 36, 100, mk(68, 44, 28));
-            fillRect(x + 20 + sway, 500, 136, 120, nearC);
-            fillRect(x + 44 - sway, 455, 88, 55, mk(36, 102, 64));
+            int x = i * 330 + 40;
+            fillRect(x + 70, 620, 36, 90, mk(68, 44, 28));
+            fillRect(x + 20, 510, 136, 120, nearC);
+            fillRect(x + 44, 465, 88, 55, nearC);
         }
         return;
     }
 
     if (currentBiome == 1) {
-        // Biome 1: Golden Countryside (Sunset glow, flying birds, rolling hills, barns & silos)
-        Color sky1 = mk(195, 92, 72);
-        Color sky2 = mk(245, 160, 85);
-        Color farC = mk(138, 82, 52);
+        Color sky1 = mk(195, 95, 75);
+        Color sky2 = mk(240, 155, 85);
+        Color farC = mk(135, 82, 52);
         Color nearC = mk(92, 55, 36);
 
-        fillRect(0, 0, FRAME_WIDTH, 290, sky1);
-        fillRect(0, 290, FRAME_WIDTH, 280, sky2);
+        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
+        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        int sunX = 1440 - (pSlow % 260);
-        fillRect(sunX - 10 - pulse, 190 - pulse, 150 + pulse * 2, 150 + pulse * 2, mk(255, 195, 95));
-        fillRect(sunX, 200, 130, 130, mk(255, 230, 125));
-
-        drawAnimatedBirds(pSlow, mk(95, 40, 30));
-
-        for (int i = 0; i < 5; i++) {
-            int x = wrapX(i * 500 - pFar, 2500) - 300;
-            fillRect(x + 40, 465, 280, 105, farC);
-            fillRect(x + 90, 435, 180, 40, farC);
-        }
+        fillRect(1420, 210, 130, 130, mk(255, 215, 95));
+        fillRect(1440, 195, 90, 160, mk(255, 230, 130));
 
         for (int i = 0; i < 4; i++) {
-            int x = wrapX(i * 620 - pNear, 2480) - 260;
-            fillRect(x + 60, 580, 150, 120, nearC);
-            fillRect(x + 85, 550, 100, 35, nearC);
-            fillRect(x + 250, 550, 76, 150, nearC);
-            fillRect(x + 262, 528, 52, 26, nearC);
+            int x = i * 500;
+            fillRect(x + 40, 470, 260, 100, farC);
+            fillRect(x + 90, 440, 160, 40, farC);
         }
+
+        fillRect(420, 450, 150, 120, nearC);
+        fillRect(445, 420, 100, 35, nearC);
+        fillRect(1160, 420, 76, 150, nearC);
+        fillRect(1172, 398, 52, 26, nearC);
+        fillRect(1265, 455, 110, 115, nearC);
         return;
     }
 
     if (currentBiome == 2) {
-        // Biome 2: Golden Desert
-        Color sky1 = mk(230, 142, 62);
-        Color sky2 = mk(250, 202, 118);
+        Color sky1 = mk(230, 145, 65);
+        Color sky2 = mk(248, 198, 115);
         Color farC = mk(195, 135, 68);
         Color nearC = mk(158, 102, 48);
 
@@ -2623,28 +2694,26 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        int sunX = 1500 - (pSlow % 250);
-        fillRect(sunX - 12 - pulse, 93 - pulse, 144 + pulse * 2, 144 + pulse * 2, mk(255, 230, 145));
-        fillRect(sunX, 105, 120, 120, mk(255, 250, 200));
+        fillRect(1490, 105, 120, 120, mk(255, 245, 175));
+        fillRect(1510, 90, 80, 150, mk(255, 250, 205));
 
-        for (int i = 0; i < 4; i++) {
-            int px0 = wrapX(i * 580 - pFar, 2320) - 200;
+        for (int i = 0; i < 3; i++) {
+            int px0 = 260 + i * 560;
             for (int step = 0; step < 8; step++) {
-                int w = (step + 1) * 34;
+                int w = (step + 1) * 32;
                 fillRect(px0 - w / 2, 410 + step * 20, w, 20, farC);
             }
         }
 
-        for (int i = 0; i < 5; i++) {
-            int x = wrapX(i * 480 - pNear, 2400) - 250;
-            fillRect(x + 60, 605, 290, 95, nearC);
-            fillRect(x + 120, 575, 170, 40, nearC);
+        for (int i = 0; i < 4; i++) {
+            int x = i * 500;
+            fillRect(x + 60, 610, 280, 90, nearC);
+            fillRect(x + 120, 580, 160, 40, nearC);
         }
         return;
     }
 
     if (currentBiome == 3) {
-        // Biome 3: Snowy Peaks (Animated Aurora Borealis ribbons + Snow-capped peaks)
         Color sky1 = mk(32, 56, 96);
         Color sky2 = mk(62, 100, 148);
         Color farC = mk(95, 135, 178);
@@ -2655,25 +2724,22 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        for (int i = 0; i < 8; i++) {
-            int ax = i * 240;
-            int ay = 130 + (SN[((tick / 5) + i * 2) & 15] >> 3);
-            fillRect(ax, ay, 240, 22, mk(65, 215, 175));
-            fillRect(ax, ay + 22, 240, 14, mk(95, 245, 205));
+        for (int i = 0; i < 6; i++) {
+            fillRect(120 + i * 280, 140 + (i & 1) * 18, 220, 18, mk(65, 215, 175));
         }
 
-        fillRect(1500 - (pSlow % 220), 105, 96, 96, mk(225, 245, 255));
+        fillRect(1500, 110, 96, 96, mk(220, 240, 255));
 
-        for (int i = 0; i < 4; i++) {
-            int x = wrapX(i * 620 - pFar, 2480) - 260;
+        for (int i = 0; i < 3; i++) {
+            int x = i * 660;
             fillRect(x + 80, 410, 200, 160, farC);
             fillRect(x + 110, 370, 140, 50, mk(230, 245, 255));
             fillRect(x + 340, 440, 180, 130, farC);
             fillRect(x + 365, 410, 130, 40, mk(230, 245, 255));
         }
 
-        for (int i = 0; i < 5; i++) {
-            int x = wrapX(i * 500 - pNear, 2500) - 250;
+        for (int i = 0; i < 4; i++) {
+            int x = i * 520;
             fillRect(x + 70, 550, 200, 150, nearC);
             fillRect(x + 105, 520, 130, 40, mk(210, 232, 250));
         }
@@ -2681,9 +2747,8 @@ static void paintBackground() {
     }
 
     if (currentBiome == 4) {
-        // Biome 4: Volcanic Lava Valley (Erupting volcanoes, pulsing crimson moon)
         Color sky1 = mk(42, 14, 24);
-        Color sky2 = mk(82, 26, 34);
+        Color sky2 = mk(78, 24, 32);
         Color farC = mk(58, 22, 30);
         Color nearC = mk(38, 15, 22);
 
@@ -2692,27 +2757,24 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        int moonX = 1500 - (pSlow % 220);
-        fillRect(moonX - pulse, 115 - pulse, 100 + pulse * 2, 100 + pulse * 2, mk(235, 95, 50));
-        fillRect(moonX + 18, 130, 65, 70, mk(255, 165, 70));
+        fillRect(1500, 115, 100, 100, mk(235, 95, 50));
+        fillRect(1520, 130, 65, 70, mk(255, 155, 70));
 
-        for (int i = 0; i < 4; i++) {
-            int x = wrapX(i * 640 - pFar, 2560) - 260;
+        for (int i = 0; i < 3; i++) {
+            int x = i * 680;
             fillRect(x + 120, 400, 220, 170, farC);
-            fillRect(x + 180, 392, 100, 20, mk(255, 105, 35));
-            int jetH = 25 + ((tick * 3 + i * 20) % 45);
-            fillRect(x + 218, 392 - jetH, 24, jetH, mk(255, 195, 60));
-            fillRect(x + 222, 412, 16, 158, mk(235, 80, 30));
+            fillRect(x + 180, 392, 100, 20, mk(245, 95, 35));
+            fillRect(x + 220, 412, 18, 158, mk(235, 75, 28));
         }
 
-        for (int i = 0; i < 5; i++) {
-            int x = wrapX(i * 520 - pNear, 2600) - 260;
+        for (int i = 0; i < 4; i++) {
+            int x = i * 540;
             fillRect(x + 80, 540, 200, 160, nearC);
         }
         return;
     }
 
-    // Biome 5: Classic Night Sky with Parallax Moon, Twinkling Stars & Castle Towers
+    // Biome 5: Classic Night Sky
     Color farC = mk(35, 20, 75);
     Color nearC = mk(25, 14, 55);
 
@@ -2721,18 +2783,15 @@ static void paintBackground() {
     fillRect(0, 570, FRAME_WIDTH, 130, farC);
     fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-    int moonX = 1500 - (pSlow % 220);
-    fillRect(moonX, 115, 100, 100, mk(145, 125, 205));
-    fillRect(moonX + 15, 100, 70, 130, mk(145, 125, 205));
-    fillRect(moonX + 20, 125, 65, 75, mk(185, 170, 220));
+    fillRect(1500, 115, 100, 100, mk(145, 125, 205));
+    fillRect(1515, 100, 70, 130, mk(145, 125, 205));
+    fillRect(1520, 125, 65, 75, mk(185, 170, 220));
 
     int phase = tick / 20;
 
     for (int i = 0; i < NUM_STARS; i++) {
-        int sx0, sy0;
-        starPos(i, sx0, sy0);
-        int sx = wrapX(sx0 - (pSlow / 2), FRAME_WIDTH);
-        int sy = sy0 % 550;
+        int sx, sy;
+        starPos(i, sx, sy);
 
         if (i % 7 == 0)
             fillRect(sx - 2, sy - 2, 7, 7, mk(70, 55, 110));
@@ -2744,18 +2803,94 @@ static void paintBackground() {
         );
     }
 
-    for (int i = 0; i < 4; i++) {
-        int x = wrapX(i * 680 - pFar, 2720) - 280;
+    for (int i = 0; i < 3; i++) {
+        int x = i * 700;
+
         fillRect(x + 80, 450, 180, 130, farC);
         fillRect(x + 220, 390, 180, 190, farC);
         fillRect(x + 390, 470, 180, 110, farC);
     }
 
-    for (int i = 0; i < 5; i++) {
-        int x = wrapX(i * 540 - pNear, 2700) - 260;
+    for (int i = 0; i < 4; i++) {
+        int x = i * 560;
+
         fillRect(x + 70, 590, 160, 120, nearC);
         fillRect(x + 220, 530, 180, 180, nearC);
-        fillRect(x + 145, 560, 18, 28, (tick & 16) ? mk(245, 210, 95) : mk(185, 145, 65));
+        fillRect(x + 380, 630, 130, 80, nearC);
+    }
+}
+
+static void drawSplatsClipped(int b) {
+    int camBaseX = bufCamCol[b] * TILE;
+    for (int i = 0; i < splatCount; i++) {
+        if (splats[i].drawn[b] && splats[i].stage < 4)
+            drawSplatAt(splats[i], splats[i].wx - camBaseX);
+    }
+}
+
+static void drawPlantsClipped(int b) {
+    int camBaseX = bufCamCol[b] * TILE;
+    for (int i = 0; i < plantCount; i++) {
+        Plant &p = plants[i];
+        int sx = p.wx - camBaseX;
+        if (sx + 16 < clipX0 || sx - 16 > clipX1)
+            continue;
+        if (p.y < clipY0 || p.y - p.height - 6 > clipY1)
+            continue;
+        drawPlantTuft(sx, p.y, p.height, (int)p.angle, currentBiome, p.style);
+        p.drawn[b] = true;
+        p.drawnX[b] = (short)sx;
+        p.drawnBend[b] = (signed char)((int)p.angle);
+    }
+}
+
+// 60-FPS Partial Screen Restorer (repaints only the small dirty rectangle!)
+static void restoreRect(
+    int b, int x, int y, int w, int h, bool withDetails
+) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+
+    if (x + w > FRAME_WIDTH) w = FRAME_WIDTH - x;
+    if (y + h > FRAME_HEIGHT) h = FRAME_HEIGHT - y;
+
+    if (w <= 0 || h <= 0)
+        return;
+
+    setClip(x, y, w, h);
+
+    paintBackground();
+
+    int c0 = x / TILE;
+    int c1 = (x + w - 1) / TILE;
+    int r0 = y / TILE;
+    int r1 = (y + h - 1) / TILE;
+
+    for (int r = r0; r <= r1; r++) {
+        for (int c = c0; c <= c1; c++) {
+            char ch = bufGrid[b][r][c];
+
+            if (ch != '.')
+                drawTileCell(r, c, ch, bufHi[b][r][c]);
+        }
+    }
+
+    if (withDetails) {
+        drawSplatsClipped(b);
+        drawPlantsClipped(b);
+    }
+
+    resetClip();
+}
+
+static void addDirty(int b, int x, int y, int w, int h) {
+    if (dirtyCount[b] < MAX_DIRTY) {
+        Rect &d = dirty[b][dirtyCount[b]++];
+
+        d.x = x;
+        d.y = y;
+        d.w = w;
+        d.h = h;
     }
 }
 
@@ -2805,7 +2940,6 @@ static void drawHUDFull(int b) {
         fillRect(700, 43, prog, 14, mk(205, 40, 100));
     }
 
-    // Current Weapon HUD badge at top-right
     int wTid = T_W0 + curWeapon;
     Color wCol = mk(95, 215, 255);
     if (curWeapon == W_SHOTGUN) wCol = mk(255, 195, 70);
@@ -2818,6 +2952,7 @@ static void drawHUDFull(int b) {
 
     hudSq[b] = hudN;
     hudProg[b] = prog;
+    hudWeap[b] = curWeapon;
     hudNeed[b] = false;
 }
 
@@ -2904,48 +3039,237 @@ static void renderGame(int b) {
         return;
     }
 
-    int camI = (int)camX;
+    int camBaseX = camCol * TILE;
 
-    // 1. Vibrant Multi-Layer Parallax Background
-    paintBackground();
+    if (needFull[b]) {
+        paintBackground();
 
-    // 2. Visible World Tiles
-    int c0 = camI / TILE;
-    int c1 = (camI + FRAME_WIDTH) / TILE + 1;
-    if (c0 < 0) c0 = 0;
-    if (c1 > COLS) c1 = COLS;
+        for (int r = 0; r < ROWS; r++) {
+            for (int c = 0; c < ROOM_COLS; c++) {
+                int wc = camCol + c;
 
-    for (int r = 0; r < ROWS; r++) {
-        for (int c = c0; c < c1; c++) {
-            char ch = staticChar(r, c);
-            if (ch != '.') {
-                drawTileCellScreen(r, c * TILE - camI, ch, hiAt(r, c));
+                char ch = staticChar(r, wc);
+                bool hi = hiAt(r, wc);
+
+                bufGrid[b][r][c] = ch;
+                bufHi[b][r][c] = hi;
+
+                if (ch != '.')
+                    drawTileCell(r, c, ch, hi);
             }
+        }
+
+        bufCamCol[b] = camCol;
+
+        for (int i = 0; i < splatCount; i++) {
+            Splat &s = splats[i];
+            int sx = s.wx - camBaseX;
+            if (s.stage < 4 && sx + s.w >= 0 && sx < FRAME_WIDTH) {
+                drawSplatAt(s, sx);
+                s.drawn[b] = true;
+                s.drawnX[b] = (short)sx;
+                s.drawnStage[b] = s.stage;
+            } else {
+                s.drawn[b] = false;
+            }
+        }
+
+        for (int i = 0; i < plantCount; i++) {
+            Plant &p = plants[i];
+            int sx = p.wx - camBaseX;
+            if (sx >= -16 && sx <= FRAME_WIDTH + 16) {
+                int bend = (int)p.angle;
+                drawPlantTuft(sx, p.y, p.height, bend, currentBiome, p.style);
+                p.drawn[b] = true;
+                p.drawnX[b] = (short)sx;
+                p.drawnBend[b] = (signed char)bend;
+            } else {
+                p.drawn[b] = false;
+            }
+        }
+
+        bufStar[b] = tick / 20;
+        dirtyCount[b] = 0;
+
+        drawHUDFull(b);
+
+        needFull[b] = false;
+    }
+
+    else {
+        bool trans = (bufCamCol[b] != camCol);
+
+        // 1. Restore all moving-object dirty rectangles from previous frame in buffer b
+        for (int i = 0; i < dirtyCount[b]; i++) {
+            Rect d = dirty[b][i];
+
+            if (d.y < 85)
+                hudNeed[b] = true;
+
+            restoreRect(b, d.x, d.y, d.w, d.h, !trans);
+        }
+
+        dirtyCount[b] = 0;
+
+        // 2. If camera column shifted, differentially update only changed tiles, splats, and grass!
+        if (trans) {
+            for (int i = 0; i < splatCount; i++) {
+                if (splats[i].drawn[b]) {
+                    Splat &s = splats[i];
+                    restoreRect(b, s.drawnX[b] - 1, s.y - 1, s.w + 2, s.h + 2, false);
+                    s.drawn[b] = false;
+                }
+            }
+
+            for (int i = 0; i < plantCount; i++) {
+                if (plants[i].drawn[b]) {
+                    Plant &p = plants[i];
+                    restoreRect(b, p.drawnX[b] - 12, p.y - p.height - 5, 24, p.height + 5, false);
+                    p.drawn[b] = false;
+                }
+            }
+
+            for (int r = 0; r < ROWS; r++) {
+                for (int c = 0; c < ROOM_COLS; c++) {
+                    int wc = camCol + c;
+
+                    char nc = staticChar(r, wc);
+                    bool nh = hiAt(r, wc);
+
+                    char oc = bufGrid[b][r][c];
+                    bool oh = bufHi[b][r][c];
+
+                    if (nc == oc && nh == oh)
+                        continue;
+
+                    bool needBg = (oc != '.') && (nc != '#');
+
+                    if (needBg) {
+                        setClip(c * TILE, r * TILE, TILE, TILE);
+                        paintBackground();
+                        resetClip();
+                    }
+
+                    bufGrid[b][r][c] = nc;
+                    bufHi[b][r][c] = nh;
+
+                    if (nc != '.')
+                        drawTileCell(r, c, nc, nh);
+
+                    if (r <= 1)
+                        hudNeed[b] = true;
+                }
+            }
+
+            bufCamCol[b] = camCol;
+        }
+
+        // 3. Incrementally update blood splats (new splats or splats that aged to a new fade stage!)
+        for (int i = 0; i < splatCount; i++) {
+            Splat &s = splats[i];
+            int sx = s.wx - camBaseX;
+            bool vis = (s.stage < 4 && sx + s.w >= 0 && sx < FRAME_WIDTH);
+
+            if (s.drawn[b] && (!vis || s.drawnStage[b] != s.stage || s.drawnX[b] != sx)) {
+                restoreRect(b, s.drawnX[b] - 1, s.y - 1, s.w + 2, s.h + 2, false);
+                s.drawn[b] = false;
+            }
+
+            if (vis && !s.drawn[b]) {
+                drawSplatAt(s, sx);
+                s.drawn[b] = true;
+                s.drawnX[b] = (short)sx;
+                s.drawnStage[b] = s.stage;
+            }
+        }
+
+        // 4. Incrementally update semi-dense interactive grass (only redraw tufts whose bend changed!)
+        for (int i = 0; i < plantCount; i++) {
+            Plant &p = plants[i];
+            int sx = p.wx - camBaseX;
+            bool vis = (sx >= -16 && sx <= FRAME_WIDTH + 16);
+            int bend = (int)p.angle;
+
+            if (p.drawn[b] && (!vis || p.drawnBend[b] != bend || p.drawnX[b] != sx)) {
+                restoreRect(b, p.drawnX[b] - 12, p.y - p.height - 5, 24, p.height + 5, false);
+                p.drawn[b] = false;
+            }
+
+            if (vis && !p.drawn[b]) {
+                drawPlantTuft(sx, p.y, p.height, bend, currentBiome, p.style);
+                p.drawn[b] = true;
+                p.drawnX[b] = (short)sx;
+                p.drawnBend[b] = (signed char)bend;
+            }
+        }
+
+        int ph = tick / 20;
+
+        if (currentBiome == 5 && bufStar[b] != ph) {
+            for (int i = 0; i < NUM_STARS; i++) {
+                if (starDim(i, bufStar[b]) != starDim(i, ph)) {
+                    int sx, sy;
+                    starPos(i, sx, sy);
+
+                    restoreRect(b, sx - 3, sy - 3, 9, 9, true);
+                }
+            }
+
+            bufStar[b] = ph;
+        }
+
+        int hudN = deaths < 30 ? deaths : 30;
+        int prog = progressNow();
+
+        if (hudNeed[b] || hudWeap[b] != curWeapon) {
+            drawHUDFull(b);
+        } else {
+            for (int i = hudSq[b]; i < hudN; i++) {
+                fillRect(
+                    70 + i * 20, 60,
+                    13, 13,
+                    mk(205, 25, 35)
+                );
+            }
+
+            hudSq[b] = hudN;
+
+            if (prog > hudProg[b]) {
+                fillRect(
+                    700 + hudProg[b], 43,
+                    prog - hudProg[b], 14,
+                    bossActive ? mk(245, 55, 40) : mk(205, 40, 100)
+                );
+            } else if (prog < hudProg[b]) {
+                fillRect(
+                    700 + prog, 43,
+                    hudProg[b] - prog, 14,
+                    bossActive ? mk(65, 25, 35) : mk(45, 35, 70)
+                );
+            }
+
+            hudProg[b] = prog;
         }
     }
 
-    // 3. Checkpoint Flags
-    for (int i = 0; i < checkCount; i++) {
-        int fx = checkCols[i] * TILE + 24 - camI;
-        int fy = checkRows[i] * TILE - 64;
-        if (fx < -40 || fx > FRAME_WIDTH + 40)
-            continue;
-        fillRect(fx, fy, 6, 64, mk(220, 220, 235));
-        Color flagCol = checkActive[i] ? mk(65, 235, 110) : mk(235, 190, 55);
-        fillRect(fx + 6, fy + 4, 28, 20, flagCol);
+    // ----- Moving Objects (Tracked via addDirty for locked 60 FPS!) -----
+    resetClip();
+
+    // 1. Animated Sky Birds in Biomes 0, 1, 2
+    if (currentBiome <= 2) {
+        Color birdCol = (currentBiome == 0) ? mk(26, 75, 52) : mk(95, 42, 30);
+        int wing = ((tick / 8) & 1) ? -6 : 5;
+        for (int i = 0; i < MAX_BIRDS; i++) {
+            int bx = (i * 390 + tick * 2) % (FRAME_WIDTH - 80) + 40;
+            int by = 125 + (i % 3) * 48 + (SN[((tick / 6) + i * 3) & 15] >> 5);
+            fillRect(bx, by, 10, 4, birdCol);
+            fillRect(bx - 7, by + wing, 8, 4, birdCol);
+            fillRect(bx + 9, by + wing, 8, 4, birdCol);
+            addDirty(b, bx - 9, by - 8, 28, 18);
+        }
     }
 
-    // 4. Visible Blood Splats
-    for (int i = 0; i < splatCount; i++) {
-        const Splat &s = splats[i];
-        int sx = s.x - camI;
-        if (sx + s.w < 0 || sx > FRAME_WIDTH)
-            continue;
-        fillRect(sx, s.y, s.w, s.h, mk(140, 10, 20));
-        fillRect(sx + 1, s.y + 1, s.w / 3 + 1, s.h / 3 + 1, mk(185, 22, 34));
-    }
-
-    // 5. Ambient Living World Particles
+    // 2. Ambient Living World Particles
     Color ambCol = mk(235, 245, 255);
     if (currentBiome == 0) ambCol = mk(140, 235, 110);
     else if (currentBiome == 1) ambCol = mk(255, 230, 130);
@@ -2956,98 +3280,122 @@ static void renderGame(int b) {
 
     for (int i = 0; i < MAX_AMB; i++) {
         AmbPart &a = ambParts[i];
-        fillRect((int)a.x, (int)a.y, a.sz, a.sz, ambCol);
+        int ax = (int)a.x;
+        int ay = (int)a.y;
+        int sz = a.sz;
+        fillRect(ax, ay, sz, sz, ambCol);
+        addDirty(b, ax - 1, ay - 1, sz + 2, sz + 2);
     }
 
-    // 6. Interactive World Plants
-    for (int i = 0; i < plantCount; i++) {
-        const Plant &p = plants[i];
-        int sx = p.x - camI;
-        if (sx < -30 || sx > FRAME_WIDTH + 30)
+    // 3. Checkpoint Flags
+    for (int i = 0; i < checkCount; i++) {
+        int fx = checkCols[i] * TILE + 24 - camBaseX;
+        int fy = checkRows[i] * TILE - 64;
+        if (fx < -40 || fx > FRAME_WIDTH + 40)
             continue;
-        drawPlantTuft(sx, p.y, p.height, (int)p.angle, currentBiome, p.style);
+        fillRect(fx, fy, 6, 64, mk(220, 220, 235));
+        Color flagCol = checkActive[i] ? mk(65, 235, 110) : mk(235, 190, 55);
+        fillRect(fx + 6, fy + 4, 28, 20, flagCol);
+        addDirty(b, fx - 2, fy - 2, 38, 66);
     }
 
-    // 7. Spinning Saws
+    // 4. Spinning Saws
     for (int r = 0; r < ROWS; r++) {
-        for (int c = c0; c < c1; c++) {
+        for (int c = camCol; c < camCol + ROOM_COLS && c < COLS; c++) {
             if (level[r][c] == 'O') {
-                drawSaw(c * TILE + 30 - camI, r * TILE + 30);
+                int cx = c * TILE + 30 - camBaseX;
+                int cy = r * TILE + 30;
+                drawSaw(cx, cy);
+                addDirty(b, cx - 27, cy - 27, 55, 55);
             }
         }
     }
 
-    // 8. Active Enemies
+    // 5. Active Enemies
     for (int i = 0; i < enemyCount; i++) {
         const Enemy &e = enemies[i];
         if (!e.active)
             continue;
-        int sx = (int)e.x - camI;
+        int sx = (int)e.x - camBaseX;
+        int sy = (int)e.y;
         if (sx < -60 || sx > FRAME_WIDTH + 60)
             continue;
-        drawEnemyChar(e, sx, (int)e.y);
+        drawEnemyChar(e, sx, sy);
+        addDirty(b, sx - 16, sy - 8, 76, 60);
     }
 
-    // 9. Boss Arena Objects & Projectiles
+    // 6. Boss Arena Objects & Projectiles
     if (bossActive && bossHP > 0) {
-        int swX = 21 * TILE + 20 - camI;
+        int swX = 20 * TILE + 20 - camBaseX;
         int swY = 7 * TILE - 18;
         Color swCol = (bossSwitchCooldown == 0) ?
                       ((tick & 8) ? mk(80, 255, 120) : mk(40, 200, 85)) :
                       mk(90, 80, 100);
         fillRect(swX, swY, 80, 18, swCol);
+        addDirty(b, swX - 2, swY - 2, 84, 22);
 
-        int bx = (int)bossX - camI;
+        int bx = (int)bossX - camBaseX;
         int by = (int)bossY;
 
         if (bossBeamTimer > 0) {
             int beamX = bx + bossW / 2 - 16;
             fillRect(beamX, 7 * TILE, 32, by - 7 * TILE + 20, mk(120, 255, 220));
+            addDirty(b, beamX - 4, 7 * TILE, 40, by - 7 * TILE + 24);
         }
 
         drawBossChar(bx, by, bossW, bossH, (bossHurt & 2) != 0);
+        addDirty(b, bx - 6, by - 12, bossW + 12, bossH + 16);
     }
 
     for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
         BossShot &s = bossShots[i];
         if (!s.active)
             continue;
-        int sx = (int)s.x - camI;
+        int sx = (int)s.x - camBaseX;
         int sy = (int)s.y;
+        if (sx < -30 || sx > FRAME_WIDTH + 30)
+            continue;
         fillRect(sx - 14, sy - 14, 28, 28, mk(255, 95, 35));
         fillRect(sx - 8, sy - 8, 16, 16, mk(255, 235, 90));
+        addDirty(b, sx - 16, sy - 16, 32, 32);
     }
 
-    // 10. Player Weapon Bullets
+    // 7. Player Weapon Bullets
     for (int i = 0; i < MAX_BULLETS; i++) {
         const Bullet &bl = bullets[i];
         if (!bl.active)
             continue;
-        int sx = (int)bl.x - camI;
+        int sx = (int)bl.x - camBaseX;
         int sy = (int)bl.y;
+        if (sx < -30 || sx > FRAME_WIDTH + 30)
+            continue;
 
         if (bl.kind == W_BLASTER) {
             fillRect(sx - 10, sy - 5, 20, 10, mk(80, 220, 255));
             fillRect(sx - 6, sy - 3, 12, 6, mk(255, 255, 255));
+            addDirty(b, sx - 12, sy - 7, 24, 14);
         } else if (bl.kind == W_SHOTGUN) {
             fillRect(sx - 7, sy - 7, 14, 14, mk(255, 195, 55));
             fillRect(sx - 4, sy - 4, 8, 8, mk(255, 255, 220));
+            addDirty(b, sx - 9, sy - 9, 18, 18);
         } else if (bl.kind == W_SAW) {
             fillRect(sx - 12, sy - 12, 24, 24, mk(210, 220, 235));
             fillRect(sx - 6, sy - 6, 12, 12, mk(80, 245, 130));
+            addDirty(b, sx - 14, sy - 14, 28, 28);
         } else {
             fillRect(sx - 16, sy - 16, 32, 32, mk(235, 65, 215));
             fillRect(sx - 10, sy - 10, 20, 20, mk(255, 220, 255));
+            addDirty(b, sx - 18, sy - 18, 36, 36);
         }
     }
 
-    // 11. Dust & Blood Particles
+    // 8. Dust & Blood Particles
     for (int i = 0; i < MAX_PARTS; i++) {
         Part &p = parts[i];
         if (p.life <= 0)
             continue;
 
-        int sx = (int)p.x - camI;
+        int sx = (int)p.x - camBaseX;
         int sy = (int)p.y;
 
         if (sx < -20 || sx > FRAME_WIDTH + 20 ||
@@ -3068,11 +3416,12 @@ static void renderGame(int b) {
         }
 
         fillRect(sx, sy, sz, sz, col);
+        addDirty(b, sx - 1, sy - 1, sz + 2, sz + 2);
     }
 
-    // 12. Player & Equipped Weapon Barrel
+    // 9. Player & Equipped Weapon Barrel
     if (deadTimer == 0) {
-        int x = (int)px - camI;
+        int x = (int)px - camBaseX;
         int y = (int)py;
 
         int dw = (int)(PW * squashX);
@@ -3088,7 +3437,6 @@ static void renderGame(int b) {
         fillRect(dx + 3, dy + 3, dw - 6, dh - 6, mk(205, 25, 35));
         drawPlayerFace(dx, dy, dw, dh, facing);
 
-        // Draw equipped weapon on Meat Cube's side
         Color gunCol = mk(95, 215, 255);
         if (curWeapon == W_SHOTGUN) gunCol = mk(255, 195, 70);
         else if (curWeapon == W_SAW) gunCol = mk(140, 250, 160);
@@ -3098,10 +3446,9 @@ static void renderGame(int b) {
         int gy = dy + dh / 2 - 4;
         fillRect(gx, gy, 18, 10, mk(45, 45, 55));
         fillRect(gx + (facing > 0 ? 6 : 2), gy + 2, 10, 6, gunCol);
-    }
 
-    // 13. HUD Overlay
-    drawHUDFull(b);
+        addDirty(b, x - 20, y - 18, PW + 40, PH + 22);
+    }
 }
 
 // ---------- Cutscene art & Real-Time Animated Gameplay Tutorials ----------
@@ -3204,8 +3551,8 @@ static void drawStoryArt(int art) {
         }
 
         int sway = SN[(t / 5) & 15] / 32;
-        for (int i = 0; i < 9; i++)
-            drawPlantTuft(ax + 80 + i * 105, ay + 380, 22, sway, 0, i % 3);
+        for (int i = 0; i < 16; i++)
+            drawPlantTuft(ax + 50 + i * 60, ay + 380, 15, sway, 0, i % 3);
 
         int bob = (t / 12) & 1 ? -6 : 0;
         drawBigCube(ax + 300, ay + 292 + bob);
@@ -3291,10 +3638,10 @@ static void drawStoryArt(int art) {
             lbl = "GREAT!";
         }
 
-        for (int i = 0; i < 7; i++) {
-            int gx = ax + 110 + i * 80;
+        for (int i = 0; i < 14; i++) {
+            int gx = ax + 60 + i * 45;
             int bend = (iabs(cx + 22 - gx) < 42 && cy > ay + 320) ? 12 : (SN[(t / 5 + i) & 15] / 32);
-            drawPlantTuft(gx, ay + 400, 22, bend, 0, i % 3);
+            drawPlantTuft(gx, ay + 400, 15, bend, 0, i % 3);
         }
 
         drawMiniDemoCube(cx, cy + (44 - dh), dw, dh, 1);
@@ -3333,10 +3680,10 @@ static void drawStoryArt(int art) {
             lbl = "SPRINT+X";
         }
 
-        for (int i = 0; i < 5; i++) {
-            int wx = ax + 80 + i * 70;
-            int bend = (cx > wx - 25 && cx < wx + 70) ? 14 : (SN[(t / 5 + i) & 15] / 28);
-            drawPlantTuft(wx, ay + 400, 26, bend, 1, i % 2);
+        for (int i = 0; i < 8; i++) {
+            int wx = ax + 50 + i * 45;
+            int bend = (cx > wx - 25 && cx < wx + 55) ? 12 : (SN[(t / 5 + i) & 15] / 28);
+            drawPlantTuft(wx, ay + 400, 16, bend, 1, i % 2);
         }
 
         drawMiniDemoCube(cx, cy, 44, 44, 1);
@@ -3585,7 +3932,6 @@ static void setState(int s) {
 static void startLevel() {
     currentLevel = levelSel;
 
-    // Unlock weapons matching the stage progression automatically
     if (currentLevel >= 1 && unlockedWeapons < 2) unlockedWeapons = 2;
     if (currentLevel >= 3 && unlockedWeapons < 3) unlockedWeapons = 3;
     if (currentLevel >= 5 && unlockedWeapons < 4) unlockedWeapons = 4;
@@ -3605,9 +3951,6 @@ static void startLevel() {
         parts[i].life = 0;
 
     for (int b = 0; b < 2; b++) {
-        for (int i = 0; i < MAX_SPLATS; i++)
-            splatDrawn[b][i] = false;
-
         needFull[b] = true;
         needWin[b] = false;
         hudNeed[b] = false;
