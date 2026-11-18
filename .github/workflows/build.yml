@@ -48,15 +48,8 @@ jobs:
           sed -i 's/^TITLE[ ]*:=.*/TITLE       := Meat Cube/' Makefile
           sed -i 's/^TITLE_ID[ ]*:=.*/TITLE_ID    := BREW00091/' Makefile
           sed -i 's/^CONTENT_ID[ ]*:=.*/CONTENT_ID  := IV0000-BREW00091_00-MEATCUBE00000000/' Makefile
-          cp Makefile Makefile.titles
-          sed -i 's/^LIBS .*/& -lSceAudioOut/' Makefile
-          if ! make; then
-            echo "=== BUILD WITH AUDIO FAILED, RETRYING WITHOUT AUDIO ==="
-            cp Makefile.titles Makefile
-            sed -i 's/^#EXTRAFLAGS.*/EXTRAFLAGS := -DNO_AUDIO/' Makefile
-            make clean || true
-            make
-          fi
+          sed -i 's/^LIBS[ ]*:=.*/& -lSceAudioOut/' Makefile
+          make
           mkdir -p $GITHUB_WORKSPACE/out
           find . -name '*.pkg' -exec cp {} $GITHUB_WORKSPACE/out/ \;
           ls -la $GITHUB_WORKSPACE/out
