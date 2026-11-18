@@ -11,7 +11,7 @@
 #include "../../_common/log.h"
 #include "ar_data.h"
 
-// Direct C-ABI bindings to PS4 libSceAudioOut (avoids C++ enum errors in AudioOut.h)
+// Direct C-ABI bindings to PS4 libSceAudioOut
 #ifndef NO_AUDIO
 extern "C" {
     int sceAudioOutInit(void);
@@ -49,11 +49,14 @@ extern "C" {
 #define LEVEL_COLS 11
 
 #define NUM_STARS 75
-#define MAX_SPLATS 200
-#define MAX_PARTS 80
-#define MAX_PLANTS 260
-#define MAX_AMB 16
-#define MAX_BOSS_SHOTS 8
+#define MAX_SPLATS 240
+#define MAX_PARTS 100
+#define MAX_PLANTS 320
+#define MAX_AMB 20
+#define MAX_BOSS_SHOTS 14
+#define MAX_ENEMIES 48
+#define MAX_BULLETS 24
+#define MAX_CHECKPOINTS 6
 #define MAX_DIRTY 320
 
 std::stringstream debugLogStream;
@@ -69,8 +72,17 @@ static OrbisPadData padData;
 static int audioHandle = -1;
 #endif
 
-// ---------- Game state ----------
+// ---------- Game & Camera state ----------
 static float px, py, vx, vy;
+static float camX = 0.0f;
+static int levelPixelWidth = WORLD_WIDTH;
+static float checkpointX = 80.0f;
+static float checkpointY = 900.0f;
+static int checkCols[MAX_CHECKPOINTS];
+static int checkRows[MAX_CHECKPOINTS];
+static bool checkActive[MAX_CHECKPOINTS];
+static int checkCount = 0;
+
 static int roomIdx = 0;
 static int currentLevel = 0;
 static int currentBiome = 0;
@@ -90,6 +102,46 @@ static int tick = 0;
 static int frameID = 0;
 
 static unsigned int rng = 12345;
+
+// ---------- Weapons System ----------
+enum {
+    W_BLASTER = 0,
+    W_SHOTGUN = 1,
+    W_SAW     = 2,
+    W_PLASMA  = 3,
+    W_TOTAL   = 4
+};
+
+static int unlockedWeapons = 1;
+static int curWeapon = 0;
+static int shootCooldown = 0;
+static bool justUnlockedWeapon = false;
+
+struct Bullet {
+    float x, y, vx, vy;
+    int kind, life, dmg, pierce;
+    bool active;
+};
+
+static Bullet bullets[MAX_BULLETS];
+
+// ---------- Enemies System ----------
+enum {
+    E_WALKER = 0,
+    E_FLYER  = 1,
+    E_JUMPER = 2,
+    E_TURRET = 3
+};
+
+struct Enemy {
+    float x, y, vx, vy;
+    float minX, maxX, baseY;
+    int kind, hp, maxHp, hurt, timer, dir;
+    bool active;
+};
+
+static Enemy enemies[MAX_ENEMIES];
+static int enemyCount = 0;
 
 // ---------- Boss Fight state (Every 5 levels: Level 5, 10, 15...) ----------
 static bool bossActive = false;
@@ -130,10 +182,10 @@ struct Part {
 
 static Part parts[MAX_PARTS];
 
-// Interactive world plants
+// Interactive world plants (world X coordinates for smooth camera)
 struct Plant {
     short room;
-    short x, y;
+    int x, y;
     float angle;
     float vel;
     unsigned char height;
@@ -201,7 +253,7 @@ static int settingsSel = 0;
 
 static int controlMode = 1;
 static int lang = 0;            // 0 = English, 1 = Arabic
-static int unlockedLevels = 12; // All 12 stages (including Boss 5 & Boss 10) unlocked
+static int unlockedLevels = 12; // First 12 stages unlocked
 static bool introSeen = false;
 
 static bool uiFull[2] = {true, true};
@@ -243,6 +295,11 @@ static int storyShown[2] = {0, 0};
     X(T_GAME, "MEAT CUBE", AR(GAME_NAME)) \
     X(T_DEATHS, "DEATHS", AR(DEATHS)) \
     X(T_BOSS_HP, "BOSS HP", AR(BOSS_HP)) \
+    X(T_W0, "WEAPON: BLASTER  -  O: SHOOT  TRIANGLE: SWITCH", AR(W_BLASTER)) \
+    X(T_W1, "WEAPON: SHOTGUN  -  O: SHOOT  TRIANGLE: SWITCH", AR(W_SHOTGUN)) \
+    X(T_W2, "WEAPON: SAW LAUNCHER  -  O: SHOOT  TRIANGLE: SWITCH", AR(W_SAW)) \
+    X(T_W3, "WEAPON: PLASMA CANNON  -  O: SHOOT  TRIANGLE: SWITCH", AR(W_PLASMA)) \
+    X(T_NEW_WEAPON, "NEW WEAPON UNLOCKED! PRESS TRIANGLE TO SWITCH", AR(NEW_WEAPON)) \
     X(T_COMPLETE, "LEVEL COMPLETE", AR(COMPLETE)) \
     X(T_GREAT, "GREAT JOB", AR(GREAT))
 
@@ -286,29 +343,29 @@ static const Page PAGES[11] = {
      {AR(P4L0), -1, -1}},
 
     // Animated Gameplay & Boss Tutorial Cutscenes (Pages 5..10)
-    {10, 3, {"STAGE 1: GREEN FOREST - JUMPING",
-             "TAP X FOR SHORT JUMP, HOLD X FOR HIGH JUMP.",
-             "MOVE THROUGH THE LIVING GRASS AND CLEAR SPIKES!"},
+    {10, 3, {"STAGE 1: LIVING FOREST - JUMP AND SHOOT",
+             "PRESS X TO JUMP, PRESS O OR R1 TO SHOOT ENEMIES.",
+             "BEAT STAGES TO UNLOCK WEAPONS AND SWITCH WITH TRIANGLE!"},
      {AR(T1L0), AR(T1L1), AR(T1L2)}},
-    {11, 3, {"STAGE 2: COUNTRYSIDE - SPRINTING",
-             "HOLD SQUARE TO SPRINT AT MAXIMUM SPEED.",
-             "SPRINT AND PRESS X TO LEAP ACROSS WIDE GAPS!"},
+    {11, 3, {"STAGE 2: COUNTRYSIDE - SPRINT AND SHOTGUN",
+             "HOLD SQUARE TO SPRINT AND FIRE YOUR SPREAD SHOTGUN.",
+             "STOMP ENEMIES OR BLAST THEM ACROSS WIDE GAPS!"},
      {AR(T2L0), AR(T2L1), AR(T2L2)}},
     {12, 3, {"STAGE 3: GOLDEN DESERT - TWO-WALL JUMP",
              "ENTER BETWEEN TWO WALLS AND SLIDE SLOWLY.",
-             "PRESS X TO JUMP BACK AND FORTH BETWEEN WALLS!"},
+             "PRESS X TO CLIMB AND DESTROY DESERT TURRETS!"},
      {AR(T3L0), AR(T3L1), AR(T3L2)}},
-    {13, 3, {"STAGE 4: SNOWY PEAKS - SAW TIMING",
-             "WATCH THE SPINNING SAWS AND TIME YOUR JUMPS.",
-             "JUMP AT THE VERY EDGE OF LEDGES TO CROSS FAR!"},
+    {13, 3, {"STAGE 4: SNOWY PEAKS - SAW LAUNCHER",
+             "FIRE PIERCING SAW BLADES AT FLYING ENEMIES.",
+             "DODGE SPINNING SAWS ACROSS FROZEN BRIDGES!"},
      {AR(T4L0), AR(T4L1), AR(T4L2)}},
     {14, 3, {"STAGE 5: BOSS FIGHT - MAGMA CRUSHER!",
-             "STOMP ON THE BOSS HEAD OR HIT THE TOP SWITCH.",
-             "DODGE THE FIRE SAWS AND DEFEAT THE BOSS!"},
+             "SHOOT WITH O, STOMP ITS HEAD, OR HIT THE TOP SWITCH.",
+             "DEFEAT IT TO UNLOCK THE HEAVY PLASMA CANNON!"},
      {AR(T5L0), AR(T5L1), AR(T5L2)}},
     {15, 3, {"STAGE 10: BOSS FIGHT - SAW OVERLORD!",
-             "THIS ARMORED BOSS FIRES DOUBLE SAW BLADES.",
-             "USE THE SIDE WALLS TO BOUNCE ON ITS HEAD!"},
+             "USE YOUR PLASMA CANNON AND SIDE WALLS TO FIGHT.",
+             "DODGE DOUBLE SAWS AND SAVE THE FOREST!"},
      {AR(T10L0), AR(T10L1), AR(T10L2)}}
 };
 
@@ -320,11 +377,13 @@ struct Input {
     bool up, down, left, right;
     bool dleft, dright;
 
-    bool cross, circle, options, square;
+    bool cross, circle, options, square, triangle, r1, l1;
 
     bool crossNew;
     bool circleNew;
     bool optionsNew;
+    bool shootNew;
+    bool switchNew;
 
     float ana;
 };
@@ -334,6 +393,8 @@ static Input in;
 static bool prevCross = false;
 static bool prevCircle = false;
 static bool prevOptions = false;
+static bool prevShoot = false;
+static bool prevSwitch = false;
 
 static int holdCnt[4] = {0, 0, 0, 0};
 
@@ -425,14 +486,24 @@ static void readInput() {
     in.circle = (btn & ORBIS_PAD_BUTTON_CIRCLE) != 0;
     in.options = (btn & ORBIS_PAD_BUTTON_OPTIONS) != 0;
     in.square = (btn & ORBIS_PAD_BUTTON_SQUARE) != 0;
+    in.triangle = (btn & ORBIS_PAD_BUTTON_TRIANGLE) != 0;
+    in.r1 = (btn & ORBIS_PAD_BUTTON_R1) != 0;
+    in.l1 = (btn & ORBIS_PAD_BUTTON_L1) != 0;
+
+    bool shootBtn = in.circle || in.r1;
+    bool switchBtn = in.triangle || in.l1;
 
     in.crossNew = in.cross && !prevCross;
     in.circleNew = in.circle && !prevCircle;
     in.optionsNew = in.options && !prevOptions;
+    in.shootNew = shootBtn && !prevShoot;
+    in.switchNew = switchBtn && !prevSwitch;
 
     prevCross = in.cross;
     prevCircle = in.circle;
     prevOptions = in.options;
+    prevShoot = shootBtn;
+    prevSwitch = switchBtn;
 }
 
 static bool navEvent(int i, bool pressed) {
@@ -512,28 +583,23 @@ static void initAudio() {
 #ifndef NO_AUDIO
     sceAudioOutInit();
 
-    // Try opening Main Port with SYSTEM User ID (0xFF) first (standard on PS4 for TV HDMI)
     audioHandle = sceAudioOutOpen(0xFF, 0, 0, 256, 48000, 1);
 
-    // Fallback to initial user ID if 0xFF was rejected
     if (audioHandle < 0)
         audioHandle = sceAudioOutOpen(padUserID, 0, 0, 256, 48000, 1);
 
-    // Fallback to BGM port if Main port was busy
     if (audioHandle < 0)
         audioHandle = sceAudioOutOpen(padUserID, 1, 0, 256, 48000, 1);
 
     if (audioHandle >= 0) {
-        // Set Left & Right channel volume to 0 dB (32768 = 100% max volume)
         int vol[8] = { 32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768 };
         sceAudioOutSetVolume(audioHandle, 3, vol);
     }
 #endif
 }
 
-// 0=cursor, 1=select, 2=back, 3=locked, 4=jump, 5=walljump, 6=die, 7=bosshit, 8=win
+// 0=cursor, 1=select, 2=back, 3=locked, 4=jump, 5=walljump, 6=die, 7=bosshit, 8=win, 9=shoot, 10=enemykill
 static void snd(int k) {
-    // In Menus & Story, play crisp immediate tones so UI feedback is 100% instantaneous
     if (state != S_PLAY) {
         if (k == 0) {
             playToneImmediate(880, 25, 16000);
@@ -548,7 +614,6 @@ static void snd(int k) {
         return;
     }
 
-    // During Gameplay, queue non-blocking SFX mixed with the Halal Rhythm stream
     curSfx = k;
     sfxPos = 0;
     sfxPhase = 0;
@@ -557,11 +622,13 @@ static void snd(int k) {
     else if (k == 1) sfxLen = 4000;
     else if (k == 2) sfxLen = 2600;
     else if (k == 3) sfxLen = 3500;
-    else if (k == 4) sfxLen = 3200;   // Jump whoosh
-    else if (k == 5) sfxLen = 3600;   // Wall jump kick
+    else if (k == 4) sfxLen = 2800;   // Jump whoosh
+    else if (k == 5) sfxLen = 3400;   // Wall jump kick
     else if (k == 6) sfxLen = 6500;   // Player death
     else if (k == 7) sfxLen = 7200;   // Boss hit
-    else             sfxLen = 13000;  // Level complete fanfare
+    else if (k == 8) sfxLen = 13000;  // Level complete fanfare
+    else if (k == 9) sfxLen = 2200;   // Weapon fire pulse
+    else             sfxLen = 3800;   // Enemy defeated pop
 }
 
 static void updateGameplayAudio() {
@@ -574,11 +641,9 @@ static void updateGameplayAudio() {
 
     static short outBuf[256 * 2];
 
-    // Acapella vocal hum frequencies (natural fifths, no musical instruments)
     static const int HUM_BASE[4]    = { 110, 130, 146, 130 };
     static const int HUM_HARMONY[4] = { 165, 195, 220, 195 };
 
-    // 16-step Halal Percussion Pattern (1 = Dum / low duff, 2 = Tak / crisp rim, 3 = light shaker)
     static const unsigned char BEAT_PAT[16] = {
         1, 0, 3, 2,  1, 0, 2, 0,
         1, 1, 3, 2,  0, 2, 3, 2
@@ -587,7 +652,6 @@ static void updateGameplayAudio() {
     bool playBgm = (winTimer == 0);
     int stepSamples = bossActive ? 5200 : 6400;
 
-    // Output 3 blocks of 256 samples per 60Hz frame (768 samples = 16.0 ms)
     for (int blk = 0; blk < 3; blk++) {
         for (int i = 0; i < 256; i++) {
             int mix = 0;
@@ -600,7 +664,6 @@ static void updateGameplayAudio() {
 
                 unsigned char hit = BEAT_PAT[step];
 
-                // Deep Duff "Dum" (warm membrane thud)
                 if (hit == 1 && inStep < 3200) {
                     int env = 3200 - inStep;
                     int freq = 68 + (env >> 6);
@@ -609,7 +672,6 @@ static void updateGameplayAudio() {
                     int wave = duffPhase < 24000 ? (duffPhase - 12000) : (36000 - duffPhase);
                     mix += (wave * env) / 4200;
                 }
-                // Crisp Duff "Tak" (hand percussion tap)
                 else if (hit == 2 && inStep < 1400) {
                     int env = 1400 - inStep;
                     noiseRng = noiseRng * 1664525u + 1013904223u;
@@ -619,7 +681,6 @@ static void updateGameplayAudio() {
                     int body = duffPhase < 24000 ? 280 : -280;
                     mix += ((nz + body) * env) / 280;
                 }
-                // Light shaker pulse
                 else if (hit == 3 && inStep < 750) {
                     int env = 750 - inStep;
                     noiseRng = noiseRng * 1664525u + 1013904223u;
@@ -627,7 +688,6 @@ static void updateGameplayAudio() {
                     mix += (nz * env) / 320;
                 }
 
-                // Warm Acapella Vocal Hum
                 int f1 = HUM_BASE[bar];
                 int f2 = HUM_HARMONY[bar];
                 if (bossActive) {
@@ -648,7 +708,6 @@ static void updateGameplayAudio() {
                 mix += ((v1 + v2) * humAmp) / 10000;
             }
 
-            // Active Gameplay SFX (Jump, Wall-Jump, Death, Boss Hit, Win)
             if (curSfx >= 0) {
                 int rem = sfxLen - sfxPos;
                 if (rem <= 0) {
@@ -657,7 +716,13 @@ static void updateGameplayAudio() {
                     int f = 440;
                     int vol = 14000;
 
-                    if (curSfx == 4) {
+                    if (curSfx == 0) {
+                        f = 720;
+                        vol = 12000;
+                    } else if (curSfx == 1) {
+                        f = (sfxPos < 1800) ? 580 : 880;
+                        vol = 14000;
+                    } else if (curSfx == 4) {
                         f = 260 + (sfxPos >> 3);
                         vol = 13000;
                     } else if (curSfx == 5) {
@@ -674,6 +739,13 @@ static void updateGameplayAudio() {
                     } else if (curSfx == 8) {
                         f = (sfxPos < 4200) ? 440 : ((sfxPos < 8400) ? 550 : 660);
                         vol = 16000;
+                    } else if (curSfx == 9) {
+                        f = 620 - (sfxPos >> 2);
+                        if (f < 180) f = 180;
+                        vol = 14500;
+                    } else if (curSfx == 10) {
+                        f = 300 + (sfxPos >> 3);
+                        vol = 15500;
                     }
 
                     sfxPhase += f;
@@ -682,10 +754,10 @@ static void updateGameplayAudio() {
                     int tri = sfxPhase < 24000 ? sfxPhase : 48000 - sfxPhase;
                     int s = ((tri - 12000) * vol) / 12000;
 
-                    if (curSfx == 6 || curSfx == 7) {
+                    if (curSfx == 6 || curSfx == 7 || curSfx == 9) {
                         noiseRng = noiseRng * 1664525u + 1013904223u;
                         int nz = ((int)(noiseRng >> 19) & 1023) - 512;
-                        s += nz * 8;
+                        s += nz * 6;
                     }
 
                     if (rem < 1200)
@@ -932,7 +1004,7 @@ static int labelWidth(int tid, int sc) {
     return textWidth(TXT_EN[tid], sc);
 }
 
-// ---------- Level construction ----------
+// ---------- Level, Enemy & Checkpoint Construction ----------
 static int baseCol = 0;
 
 static void put(int row, int c, char ch) {
@@ -959,6 +1031,37 @@ static void spk(int row, int a, int b) {
 
 static void sawAt(int row, int col) {
     put(row, col, 'O');
+}
+
+static void addEnemy(int kind, int col, int row, int minC, int maxC) {
+    if (enemyCount >= MAX_ENEMIES)
+        return;
+
+    Enemy &e = enemies[enemyCount++];
+    e.kind = kind;
+    e.x = (float)((baseCol + col) * TILE + 8);
+    e.y = (float)(row * TILE - 44);
+    e.baseY = e.y;
+    e.minX = (float)((baseCol + minC) * TILE + 4);
+    e.maxX = (float)((baseCol + maxC) * TILE + 12);
+    e.dir = 1;
+    e.vx = (kind == E_WALKER) ? 2.6f : ((kind == E_FLYER) ? 3.2f : 2.0f);
+    e.vy = 0.0f;
+    e.maxHp = (kind == E_TURRET) ? 3 : 2;
+    e.hp = e.maxHp;
+    e.hurt = 0;
+    e.timer = (col * 17) & 63;
+    e.active = true;
+}
+
+static void addCheckpoint(int col, int row) {
+    if (checkCount >= MAX_CHECKPOINTS)
+        return;
+
+    checkCols[checkCount] = baseCol + col;
+    checkRows[checkCount] = row;
+    checkActive[checkCount] = false;
+    checkCount++;
 }
 
 static void initAmbientParticles() {
@@ -999,8 +1102,9 @@ static void initAmbientParticles() {
 static void populateLevelPlants() {
     plantCount = 0;
 
+    int maxC = levelPixelWidth / TILE - 1;
     for (int r = 2; r < ROWS; r++) {
-        for (int c = 1; c < COLS - 1; c++) {
+        for (int c = 1; c < maxC; c++) {
             if (level[r][c] != '#')
                 continue;
             if (level[r - 1][c] != '.')
@@ -1022,13 +1126,10 @@ static void populateLevelPlants() {
 
             if (((c * 7 + r * 13) % 3) != 0) {
                 if (plantCount < MAX_PLANTS) {
-                    int rm = c / ROOM_COLS;
-                    int lc = c % ROOM_COLS;
-
                     Plant &p = plants[plantCount++];
-                    p.room = (short)rm;
-                    p.x = (short)(lc * TILE + 18 + ((c * 11 + r * 5) % 24));
-                    p.y = (short)(r * TILE);
+                    p.room = (short)(c / ROOM_COLS);
+                    p.x = c * TILE + 18 + ((c * 11 + r * 5) % 24);
+                    p.y = r * TILE;
                     p.angle = 0.0f;
                     p.vel = 0.0f;
                     p.height = (unsigned char)(16 + ((c * 3 + r * 7) % 10));
@@ -1057,291 +1158,132 @@ static void clearLevelGrid() {
         level[r][0] = '#';
         level[r][COLS - 1] = '#';
     }
+
+    enemyCount = 0;
+    checkCount = 0;
+    for (int i = 0; i < MAX_BULLETS; i++)
+        bullets[i].active = false;
 }
 
-// Original classic level (preserved 100% as Level 6)
-static void buildClassicLevel() {
-    baseCol = 0 * ROOM_COLS;
-    spk(16, 9, 10);
-    plat(15, 14, 17);
-    plat(13, 19, 22);
-    plat(11, 24, 27);
-    spk(16, 13, 28);
-
-    baseCol = 1 * ROOM_COLS;
-    spk(16, 5, 6);
-    wall(12, 4, 14);
-    wall(15, 4, 16);
-    plat(4, 15, 25);
-    spk(16, 16, 23);
-    sawAt(2, 20);
-
-    baseCol = 2 * ROOM_COLS;
-    spk(16, 2, 29);
-    plat(15, 3, 4);
-    plat(15, 7, 8);
-    plat(15, 11, 12);
-    plat(15, 15, 16);
-    plat(15, 19, 20);
-    plat(15, 23, 24);
-    plat(15, 27, 28);
-    sawAt(14, 9);
-    sawAt(14, 17);
-    sawAt(14, 25);
-
-    baseCol = 3 * ROOM_COLS;
-    spk(16, 4, 27);
-    plat(15, 5, 7);
-    plat(13, 10, 12);
-    plat(11, 15, 17);
-    plat(9, 20, 22);
-    plat(7, 25, 27);
-    sawAt(10, 18);
-    sawAt(8, 23);
-
-    baseCol = 4 * ROOM_COLS;
-    spk(16, 2, 29);
-    plat(15, 3, 5);
-    plat(13, 8, 10);
-    plat(11, 13, 15);
-    plat(9, 18, 20);
-    plat(11, 23, 25);
-    plat(13, 28, 30);
-    sawAt(8, 21);
-
-    baseCol = 5 * ROOM_COLS;
-    spk(16, 3, 28);
-    plat(15, 4, 6);
-    plat(13, 9, 11);
-    plat(15, 14, 16);
-    plat(13, 19, 21);
-    plat(11, 24, 29);
-    sawAt(14, 7);
-    sawAt(12, 22);
-    spk(10, 26, 26);
-    put(10, 28, 'G');
-
+// Builds a rich, continuous scrolling action level with enemies, checkpoints, wall-jumps, bridges, and hazards
+static void buildScrollingActionStage(int stageIdx) {
     baseCol = 0;
+    levelPixelWidth = WORLD_WIDTH;
+
+    // Zone 1 (Cols 1..31): Opening platforms + First Enemy Patrols
+    plat(14, 7, 13);
+    addEnemy(E_WALKER, 10, 14, 7, 13);
+
+    spk(16, 15, 18);
+    plat(12, 16, 22);
+    addEnemy(E_WALKER, 19, 12, 16, 22);
+
+    plat(14, 24, 30);
+    if (stageIdx >= 1)
+        addEnemy(E_JUMPER, 27, 14, 24, 30);
+
+    addCheckpoint(31, 17);
+
+    // Zone 2 (Cols 32..63): Elevated Bridges, Flying Enemies & Sprinting Chasms
+    spk(16, 35, 58);
+    plat(14, 34, 41);
+    addEnemy(E_WALKER, 37, 14, 34, 41);
+
+    plat(12, 44, 51);
+    addEnemy(E_FLYER, 47, 9, 42, 53);
+
+    plat(10, 54, 60);
+    if (stageIdx >= 2)
+        addEnemy(E_TURRET, 58, 10, 54, 60);
+
+    addCheckpoint(63, 17);
+
+    // Zone 3 (Cols 64..95): Twin-Wall Jump Chimneys & Elevated Fortresses
+    wall(70, 6, 14);
+    wall(73, 6, 16);
+    plat(6, 73, 82);
+    spk(16, 74, 83);
+    addEnemy(E_WALKER, 78, 6, 74, 82);
+
+    plat(11, 84, 92);
+    addEnemy(E_JUMPER, 88, 11, 84, 92);
+    if (stageIdx >= 3)
+        sawAt(10, 86);
+
+    addCheckpoint(95, 17);
+
+    // Zone 4 (Cols 96..127): Saw Gauntlet + Turret Guards + Mid-air Flyers
+    spk(16, 99, 123);
+    plat(15, 98, 104);
+    sawAt(14, 106);
+    plat(13, 108, 115);
+    addEnemy(E_WALKER, 112, 13, 108, 115);
+    addEnemy(E_FLYER, 115, 8, 108, 122);
+
+    plat(11, 118, 125);
+    addEnemy(E_TURRET, 123, 11, 118, 125);
+
+    addCheckpoint(127, 17);
+
+    // Zone 5 (Cols 128..159): Double Wall Tower & High Altitude Combat
+    plat(14, 131, 136);
+    addEnemy(E_JUMPER, 134, 14, 131, 136);
+
+    wall(139, 5, 14);
+    wall(142, 5, 16);
+    plat(5, 142, 151);
+    spk(16, 143, 156);
+    addEnemy(E_WALKER, 147, 5, 143, 151);
+
+    plat(10, 153, 158);
+    if (stageIdx >= 1)
+        sawAt(9, 155);
+
+    addCheckpoint(160, 17);
+
+    // Zone 6 (Cols 160..190): Final Citadel Climb to Bandage Girl
+    spk(16, 163, 185);
+    plat(14, 162, 168);
+    addEnemy(E_WALKER, 165, 14, 162, 168);
+
+    plat(12, 171, 177);
+    addEnemy(E_FLYER, 174, 8, 169, 180);
+    if (stageIdx >= 2)
+        addEnemy(E_TURRET, 176, 12, 171, 177);
+
+    plat(10, 180, 189);
+    put(9, 187, 'G');
 }
 
-// Level 1: Green Forest (Tutorial: Short Jump vs High Jump)
-static void buildForestLevel() {
-    baseCol = 0 * ROOM_COLS;
-    plat(15, 6, 9);
-    spk(16, 12, 12);
-    plat(14, 15, 18);
-    spk(16, 21, 22);
-    plat(15, 24, 28);
-
-    baseCol = 1 * ROOM_COLS;
-    plat(15, 5, 9);
-    plat(13, 12, 16);
-    plat(11, 19, 23);
-    plat(14, 25, 29);
-    spk(16, 10, 24);
-
-    baseCol = 2 * ROOM_COLS;
-    plat(12, 8, 18);
-    spk(16, 10, 10);
-    spk(16, 15, 15);
-    plat(14, 21, 24);
-    plat(12, 26, 29);
-    spk(16, 21, 28);
-
-    baseCol = 3 * ROOM_COLS;
-    spk(16, 5, 27);
-    plat(15, 4, 8);
-    plat(13, 10, 14);
-    plat(11, 16, 20);
-    plat(13, 22, 26);
-    plat(15, 27, 30);
-
-    baseCol = 4 * ROOM_COLS;
-    spk(16, 5, 27);
-    plat(15, 4, 7);
-    plat(14, 9, 12);
-    plat(12, 14, 17);
-    plat(14, 19, 22);
-    plat(15, 24, 28);
-
-    baseCol = 5 * ROOM_COLS;
-    spk(16, 6, 27);
-    plat(15, 5, 9);
-    plat(13, 11, 15);
-    plat(11, 17, 21);
-    plat(10, 23, 29);
-    put(9, 27, 'G');
-
-    baseCol = 0;
-}
-
-// Level 2: Golden Countryside (Tutorial: Sprinting with Square + Long Jumps)
-static void buildCountryLevel() {
-    baseCol = 0 * ROOM_COLS;
-    spk(16, 11, 14);
-    spk(16, 22, 25);
-
-    baseCol = 1 * ROOM_COLS;
-    plat(15, 4, 10);
-    plat(15, 15, 21);
-    plat(14, 25, 29);
-    spk(16, 8, 28);
-
-    baseCol = 2 * ROOM_COLS;
-    plat(15, 4, 8);
-    plat(13, 10, 15);
-    plat(14, 20, 27);
-    spk(16, 8, 26);
-
-    baseCol = 3 * ROOM_COLS;
-    spk(16, 5, 28);
-    plat(15, 4, 9);
-    plat(13, 14, 19);
-    plat(11, 24, 29);
-
-    baseCol = 4 * ROOM_COLS;
-    spk(16, 5, 28);
-    plat(15, 4, 8);
-    plat(14, 13, 17);
-    plat(14, 22, 28);
-
-    baseCol = 5 * ROOM_COLS;
-    spk(16, 5, 28);
-    plat(15, 4, 9);
-    plat(13, 14, 19);
-    plat(11, 24, 29);
-    put(10, 27, 'G');
-
-    baseCol = 0;
-}
-
-// Level 3: Sandy Desert (Every room has TWO parallel walls to jump between!)
-static void buildDesertLevel() {
-    baseCol = 0 * ROOM_COLS;
-    wall(11, 7, 14);
-    wall(14, 7, 16);
-    plat(7, 14, 23);
-    spk(16, 15, 23);
-    plat(12, 25, 29);
-
-    baseCol = 1 * ROOM_COLS;
-    wall(10, 5, 14);
-    wall(13, 5, 16);
-    plat(5, 13, 22);
-    spk(16, 14, 22);
-    plat(13, 24, 29);
-
-    baseCol = 2 * ROOM_COLS;
-    wall(8, 8, 14);
-    wall(11, 8, 16);
-    plat(8, 11, 16);
-    wall(19, 6, 14);
-    wall(22, 6, 16);
-    plat(6, 22, 28);
-    spk(16, 12, 18);
-    spk(16, 23, 28);
-
-    baseCol = 3 * ROOM_COLS;
-    wall(10, 4, 14);
-    wall(13, 4, 16);
-    plat(4, 13, 20);
-    plat(10, 22, 28);
-    spk(16, 14, 27);
-
-    baseCol = 4 * ROOM_COLS;
-    spk(16, 5, 27);
-    plat(15, 4, 8);
-    wall(10, 6, 14);
-    wall(13, 6, 15);
-    plat(6, 13, 19);
-    plat(11, 21, 28);
-
-    baseCol = 5 * ROOM_COLS;
-    wall(10, 5, 14);
-    wall(13, 5, 16);
-    plat(5, 13, 20);
-    spk(16, 14, 28);
-    plat(9, 22, 29);
-    put(8, 27, 'G');
-
-    baseCol = 0;
-}
-
-// Level 4: Snowy Peaks (Tutorial: Spinning Saws & Ledge Timing)
-static void buildSnowLevel() {
-    baseCol = 0 * ROOM_COLS;
-    plat(13, 10, 16);
-    sawAt(16, 13);
-    plat(13, 20, 26);
-    sawAt(16, 23);
-
-    baseCol = 1 * ROOM_COLS;
-    spk(16, 5, 27);
-    plat(15, 4, 9);
-    sawAt(14, 11);
-    plat(15, 13, 18);
-    sawAt(14, 20);
-    plat(15, 22, 28);
-
-    baseCol = 2 * ROOM_COLS;
-    spk(16, 5, 27);
-    plat(15, 4, 9);
-    plat(12, 11, 19);
-    sawAt(11, 15);
-    plat(14, 21, 28);
-
-    baseCol = 3 * ROOM_COLS;
-    spk(16, 5, 27);
-    plat(15, 4, 8);
-    plat(13, 10, 14);
-    sawAt(12, 16);
-    plat(11, 18, 22);
-    plat(13, 24, 28);
-
-    baseCol = 4 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 4, 7);
-    plat(14, 9, 12);
-    sawAt(13, 14);
-    plat(14, 16, 19);
-    sawAt(13, 21);
-    plat(15, 23, 28);
-
-    baseCol = 5 * ROOM_COLS;
-    spk(16, 5, 28);
-    plat(15, 4, 8);
-    plat(13, 10, 14);
-    sawAt(12, 16);
-    plat(11, 18, 22);
-    plat(10, 24, 29);
-    put(9, 27, 'G');
-
-    baseCol = 0;
-}
-
-// Boss Arena Builder (Used for Level 5, Level 10, and every 5th level!)
+// Wide Scrolling Boss Arena Builder (Used for Level 5, Level 10, and every 5th level!)
 static void buildBossArena(int tier) {
     baseCol = 0;
+    int arenaCols = 46; // 1.45 screens wide so camera scrolls smoothly during Boss Fights!
+    levelPixelWidth = arenaCols * TILE;
 
     for (int r = 0; r < ROWS; r++)
-        level[r][ROOM_COLS - 1] = '#';
+        level[r][arenaCols - 1] = '#';
 
-    wall(3, 7, 13);
-    wall(28, 7, 13);
+    // Left & Right wall-jump pillars
+    wall(3, 6, 13);
+    wall(arenaCols - 4, 6, 13);
 
-    plat(12, 6, 10);
-    plat(12, 21, 25);
+    // Mid-level combat platforms
+    plat(12, 7, 13);
+    plat(12, 20, 25);
+    plat(12, 32, 38);
 
-    plat(7, 13, 18);
+    // Upper platform holding the Boss Strike Switch (cols 20..25)
+    plat(7, 19, 26);
 
     bossActive = true;
     bossW = 104;
     bossH = 104;
-    bossX = (float)(22 * TILE);
+    bossX = (float)(30 * TILE);
     bossY = (float)((ROWS - 1) * TILE - bossH);
-    bossVX = (tier >= 2) ? -5.2f : -4.0f;
+    bossVX = (tier >= 2) ? -5.6f : -4.4f;
     bossVY = 0.0f;
-    bossMaxHP = (tier >= 2) ? 7 : 5;
+    bossMaxHP = (tier >= 2) ? 14 : 10;
     bossHP = bossMaxHP;
     bossHurt = 0;
     bossState = 0;
@@ -1353,292 +1295,12 @@ static void buildBossArena(int tier) {
         bossShots[i].active = false;
 }
 
-// Level 7: Crystal Cavern
-static void buildCrystalLevel() {
-    baseCol = 0 * ROOM_COLS;
-    spk(16, 6, 26);
-    plat(15, 4, 8);
-    wall(11, 7, 14);
-    wall(14, 7, 16);
-    plat(7, 14, 20);
-    sawAt(6, 17);
-    plat(12, 22, 28);
-
-    baseCol = 1 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 3, 7);
-    plat(13, 10, 14);
-    sawAt(12, 12);
-    plat(11, 17, 21);
-    plat(13, 24, 29);
-
-    baseCol = 2 * ROOM_COLS;
-    wall(9, 5, 14);
-    wall(12, 5, 16);
-    plat(5, 12, 22);
-    sawAt(4, 16);
-    sawAt(4, 19);
-    spk(16, 13, 23);
-    plat(12, 24, 29);
-
-    baseCol = 3 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 4, 8);
-    plat(12, 11, 15);
-    wall(18, 6, 13);
-    wall(21, 6, 15);
-    plat(6, 21, 28);
-
-    baseCol = 4 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(15, 3, 6);
-    sawAt(14, 8);
-    plat(14, 10, 13);
-    sawAt(13, 15);
-    plat(13, 17, 20);
-    sawAt(12, 22);
-    plat(12, 24, 29);
-
-    baseCol = 5 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 4, 7);
-    wall(10, 6, 14);
-    wall(13, 6, 16);
-    plat(6, 13, 19);
-    plat(10, 22, 29);
-    put(9, 27, 'G');
-
-    baseCol = 0;
-}
-
-// Level 8: Autumn Winds
-static void buildAutumnLevel() {
-    baseCol = 0 * ROOM_COLS;
-    spk(16, 9, 14);
-    plat(14, 15, 20);
-    spk(16, 21, 26);
-
-    baseCol = 1 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 3, 8);
-    plat(14, 13, 18);
-    sawAt(13, 15);
-    plat(13, 23, 29);
-
-    baseCol = 2 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 3, 7);
-    plat(12, 11, 16);
-    plat(15, 20, 24);
-    plat(13, 26, 30);
-
-    baseCol = 3 * ROOM_COLS;
-    wall(9, 6, 14);
-    wall(12, 6, 16);
-    plat(6, 12, 18);
-    spk(16, 13, 28);
-    plat(10, 22, 29);
-
-    baseCol = 4 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(15, 3, 7);
-    sawAt(14, 9);
-    plat(14, 11, 15);
-    sawAt(13, 17);
-    plat(13, 19, 23);
-    plat(12, 25, 29);
-
-    baseCol = 5 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 3, 8);
-    plat(13, 13, 18);
-    plat(11, 23, 29);
-    put(10, 27, 'G');
-
-    baseCol = 0;
-}
-
-// Level 9: Mystic Swamp
-static void buildSwampLevel() {
-    baseCol = 0 * ROOM_COLS;
-    spk(16, 5, 27);
-    plat(15, 4, 6);
-    plat(14, 9, 11);
-    plat(13, 14, 16);
-    plat(14, 19, 21);
-    plat(15, 24, 28);
-
-    baseCol = 1 * ROOM_COLS;
-    wall(8, 5, 14);
-    wall(11, 5, 16);
-    plat(5, 11, 17);
-    wall(20, 5, 14);
-    wall(23, 5, 16);
-    plat(5, 23, 29);
-    spk(16, 12, 19);
-
-    baseCol = 2 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(15, 3, 6);
-    sawAt(13, 8);
-    plat(13, 10, 13);
-    sawAt(11, 15);
-    plat(11, 17, 20);
-    plat(13, 23, 29);
-
-    baseCol = 3 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 4, 7);
-    wall(10, 6, 14);
-    wall(13, 6, 15);
-    plat(6, 13, 18);
-    sawAt(5, 16);
-    plat(11, 21, 28);
-
-    baseCol = 4 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(15, 3, 6);
-    plat(13, 9, 12);
-    plat(11, 15, 18);
-    plat(13, 21, 24);
-    plat(14, 26, 29);
-    sawAt(12, 13);
-    sawAt(12, 19);
-
-    baseCol = 5 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 3, 6);
-    wall(9, 6, 14);
-    wall(12, 6, 16);
-    plat(6, 12, 18);
-    plat(10, 21, 29);
-    put(9, 27, 'G');
-
-    baseCol = 0;
-}
-
-// Level 11: Sky Citadel
-static void buildSkyLevel() {
-    baseCol = 0 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 3, 7);
-    plat(12, 10, 14);
-    plat(9, 17, 21);
-    plat(12, 24, 29);
-
-    baseCol = 1 * ROOM_COLS;
-    spk(16, 3, 29);
-    wall(8, 4, 14);
-    wall(11, 4, 16);
-    plat(4, 11, 18);
-    sawAt(3, 15);
-    plat(10, 21, 29);
-
-    baseCol = 2 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(14, 3, 7);
-    sawAt(13, 9);
-    plat(12, 11, 15);
-    sawAt(11, 17);
-    plat(10, 19, 23);
-    plat(12, 25, 29);
-
-    baseCol = 3 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(15, 3, 6);
-    wall(9, 6, 14);
-    wall(12, 6, 15);
-    plat(6, 12, 17);
-    wall(20, 5, 13);
-    wall(23, 5, 15);
-    plat(5, 23, 29);
-
-    baseCol = 4 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(15, 3, 7);
-    plat(13, 11, 15);
-    sawAt(12, 13);
-    plat(11, 19, 23);
-    sawAt(10, 21);
-    plat(13, 25, 29);
-
-    baseCol = 5 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(15, 3, 7);
-    plat(12, 10, 14);
-    plat(9, 17, 21);
-    plat(10, 24, 29);
-    put(9, 27, 'G');
-
-    baseCol = 0;
-}
-
-// Level 12: Dark Obsidian Tower
-static void buildObsidianLevel() {
-    baseCol = 0 * ROOM_COLS;
-    spk(16, 4, 28);
-    plat(15, 3, 6);
-    sawAt(14, 8);
-    plat(13, 10, 13);
-    wall(16, 6, 13);
-    wall(19, 6, 15);
-    plat(6, 19, 24);
-    plat(12, 26, 29);
-
-    baseCol = 1 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(15, 3, 7);
-    sawAt(14, 9);
-    plat(13, 11, 15);
-    sawAt(12, 17);
-    plat(11, 19, 23);
-    plat(13, 25, 29);
-
-    baseCol = 2 * ROOM_COLS;
-    wall(7, 5, 14);
-    wall(10, 5, 16);
-    plat(5, 10, 16);
-    sawAt(4, 13);
-    wall(19, 5, 14);
-    wall(22, 5, 16);
-    plat(5, 22, 29);
-    spk(16, 11, 18);
-
-    baseCol = 3 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(15, 3, 6);
-    plat(13, 9, 12);
-    sawAt(12, 14);
-    plat(11, 16, 19);
-    sawAt(10, 21);
-    plat(12, 23, 29);
-
-    baseCol = 4 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(15, 3, 6);
-    wall(9, 5, 14);
-    wall(12, 5, 15);
-    plat(5, 12, 18);
-    plat(10, 20, 24);
-    plat(13, 26, 29);
-
-    baseCol = 5 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(15, 3, 6);
-    sawAt(14, 8);
-    plat(13, 10, 13);
-    wall(16, 6, 13);
-    wall(19, 6, 15);
-    plat(6, 19, 23);
-    plat(10, 24, 29);
-    put(9, 28, 'G');
-
-    baseCol = 0;
-}
-
 static void buildLevel() {
     clearLevelGrid();
     bossActive = false;
+
+    checkpointX = (float)(TILE + 16);
+    checkpointY = (float)((ROWS - 1) * TILE - PH);
 
     if (isBossStage(currentLevel)) {
         int tier = (currentLevel + 1) / 5;
@@ -1650,17 +1312,18 @@ static void buildLevel() {
     }
 
     int idx = currentLevel % 12;
-    if (idx == 0)      { currentBiome = 0; buildForestLevel(); }
-    else if (idx == 1) { currentBiome = 1; buildCountryLevel(); }
-    else if (idx == 2) { currentBiome = 2; buildDesertLevel(); }
-    else if (idx == 3) { currentBiome = 3; buildSnowLevel(); }
-    else if (idx == 5) { currentBiome = 5; buildClassicLevel(); }
-    else if (idx == 6) { currentBiome = 3; buildCrystalLevel(); }
-    else if (idx == 7) { currentBiome = 1; buildAutumnLevel(); }
-    else if (idx == 8) { currentBiome = 0; buildSwampLevel(); }
-    else if (idx == 10){ currentBiome = 2; buildSkyLevel(); }
-    else               { currentBiome = 4; buildObsidianLevel(); }
+    if (idx == 0)      currentBiome = 0;
+    else if (idx == 1) currentBiome = 1;
+    else if (idx == 2) currentBiome = 2;
+    else if (idx == 3) currentBiome = 3;
+    else if (idx == 5) currentBiome = 5;
+    else if (idx == 6) currentBiome = 3;
+    else if (idx == 7) currentBiome = 1;
+    else if (idx == 8) currentBiome = 0;
+    else if (idx == 10)currentBiome = 2;
+    else               currentBiome = 4;
 
+    buildScrollingActionStage(currentLevel);
     populateLevelPlants();
     initAmbientParticles();
 }
@@ -1739,18 +1402,13 @@ static void addSplat(int wx, int wy, int w, int h) {
     if (splatCount >= MAX_SPLATS)
         return;
 
-    if (wx < 0 || wy < 0)
-        return;
-
-    int room = wx / FRAME_WIDTH;
-
-    if (room > LAST_ROOM)
+    if (wx < 0 || wy < 0 || wx >= levelPixelWidth)
         return;
 
     Splat &s = splats[splatCount++];
 
-    s.room = (short)room;
-    s.x = (short)(wx - room * FRAME_WIDTH - w / 2);
+    s.room = (short)(wx / FRAME_WIDTH);
+    s.x = (short)(wx - w / 2);
     s.y = (short)(wy - h / 2);
     s.w = (short)w;
     s.h = (short)h;
@@ -1843,12 +1501,14 @@ static void updateParts() {
 }
 
 static void updatePlantsAndAmbient(bool landedOrJumped) {
-    float pcx = (px - (float)(roomIdx * FRAME_WIDTH)) + PW * 0.5f;
+    float pcx = px + PW * 0.5f;
     float pby = py + PH;
+    int viewX0 = (int)camX - 120;
+    int viewX1 = (int)camX + FRAME_WIDTH + 120;
 
     for (int i = 0; i < plantCount; i++) {
         Plant &p = plants[i];
-        if (p.room != roomIdx)
+        if (p.x < viewX0 || p.x > viewX1)
             continue;
 
         int wIdx = ((tick / 5) + (p.x / 48) + p.seed) & 15;
@@ -1859,8 +1519,8 @@ static void updatePlantsAndAmbient(bool landedOrJumped) {
             float dy = pby - (float)p.y;
             float adx = dx < 0 ? -dx : dx;
 
-            if (adx < 44.0f && dy > -22.0f && dy < 32.0f) {
-                float prox = 1.0f - (adx / 44.0f);
+            if (adx < 46.0f && dy > -22.0f && dy < 32.0f) {
+                float prox = 1.0f - (adx / 46.0f);
                 p.vel += vx * 0.36f * prox;
 
                 float push = (dx < 0.0f ? 6.5f : -6.5f) * prox;
@@ -1895,10 +1555,24 @@ static void updatePlantsAndAmbient(bool landedOrJumped) {
     }
 }
 
-// ---------- Player ----------
+// ---------- Player, Weapons & Enemies Logic ----------
+static void updateCamera(bool snap) {
+    float target = px + PW * 0.5f - FRAME_WIDTH * 0.38f;
+    float maxCam = (float)(levelPixelWidth - FRAME_WIDTH);
+    if (maxCam < 0.0f) maxCam = 0.0f;
+
+    if (target < 0.0f) target = 0.0f;
+    if (target > maxCam) target = maxCam;
+
+    if (snap)
+        camX = target;
+    else
+        camX += (target - camX) * 0.14f;
+}
+
 static void respawn() {
-    px = (float)(roomIdx * FRAME_WIDTH + TILE + 8);
-    py = (float)((ROWS - 1) * TILE - PH);
+    px = checkpointX;
+    py = checkpointY;
 
     vx = 0;
     vy = 0;
@@ -1910,8 +1584,10 @@ static void respawn() {
     wallLock = 0;
     coyote = 0;
 
+    updateCamera(true);
+
     if (bossActive && bossHP > 0) {
-        bossX = (float)(22 * TILE);
+        bossX = (float)(30 * TILE);
         bossY = (float)((ROWS - 1) * TILE - bossH);
         for (int i = 0; i < MAX_BOSS_SHOTS; i++)
             bossShots[i].active = false;
@@ -1953,12 +1629,186 @@ static void die() {
     deadTimer = 28;
 }
 
-static void damageBoss() {
+static void spawnPlayerBullet(float bx, float by, float bvx, float bvy, int kind, int dmg, int pierce) {
+    for (int i = 0; i < MAX_BULLETS; i++) {
+        if (!bullets[i].active) {
+            Bullet &b = bullets[i];
+            b.x = bx;
+            b.y = by;
+            b.vx = bvx;
+            b.vy = bvy;
+            b.kind = kind;
+            b.dmg = dmg;
+            b.pierce = pierce;
+            b.life = (kind == W_SHOTGUN) ? 34 : 65;
+            b.active = true;
+            return;
+        }
+    }
+}
+
+static void fireWeapon() {
+    float bx = facing > 0 ? (px + PW + 4.0f) : (px - 16.0f);
+    float by = py + PH * 0.45f;
+    float dir = (float)facing;
+
+    snd(9);
+
+    if (curWeapon == W_BLASTER) {
+        spawnPlayerBullet(bx, by, dir * 15.0f, 0.0f, W_BLASTER, 1, 0);
+        shootCooldown = 12;
+    } else if (curWeapon == W_SHOTGUN) {
+        spawnPlayerBullet(bx, by, dir * 14.0f, -2.4f, W_SHOTGUN, 1, 0);
+        spawnPlayerBullet(bx, by, dir * 15.0f,  0.0f, W_SHOTGUN, 1, 0);
+        spawnPlayerBullet(bx, by, dir * 14.0f,  2.4f, W_SHOTGUN, 1, 0);
+        shootCooldown = 22;
+    } else if (curWeapon == W_SAW) {
+        spawnPlayerBullet(bx, by, dir * 12.5f, 0.0f, W_SAW, 1, 2);
+        shootCooldown = 18;
+    } else {
+        spawnPlayerBullet(bx, by, dir * 11.5f, 0.0f, W_PLASMA, 2, 1);
+        shootCooldown = 24;
+    }
+}
+
+static void damageBoss(int dmg);
+static void spawnBossShot(float sx, float sy, float svx, float svy);
+
+static void killEnemy(Enemy &e) {
+    e.active = false;
+    snd(10);
+
+    float ecx = e.x + 22.0f;
+    float ecy = e.y + 22.0f;
+    for (int i = 0; i < 16; i++) {
+        float pvx = (float)(rnd(160) - 80) / 10.0f;
+        float pvy = (float)(rnd(140) - 110) / 10.0f;
+        spawnPart(ecx, ecy, pvx, pvy, 45, 6 + rnd(4), 1);
+    }
+}
+
+static void updateBulletsAndEnemies() {
+    // Update player bullets
+    for (int i = 0; i < MAX_BULLETS; i++) {
+        Bullet &b = bullets[i];
+        if (!b.active)
+            continue;
+
+        b.x += b.vx;
+        b.y += b.vy;
+        b.life--;
+
+        if (b.life <= 0 || solidAt((int)b.x, (int)b.y)) {
+            spawnDust(b.x, b.y, 3, 1.8f);
+            b.active = false;
+            continue;
+        }
+
+        // Check bullet hitting enemies
+        for (int j = 0; j < enemyCount; j++) {
+            Enemy &e = enemies[j];
+            if (!e.active)
+                continue;
+
+            if (rectOverlap((int)b.x - 10, (int)b.y - 10, 20, 20,
+                            (int)e.x, (int)e.y, 44, 44)) {
+                e.hp -= b.dmg;
+                e.hurt = 10;
+                spawnDust(b.x, b.y, 4, 2.2f);
+
+                if (e.hp <= 0)
+                    killEnemy(e);
+                else
+                    snd(0);
+
+                if (b.pierce > 0) {
+                    b.pierce--;
+                } else {
+                    b.active = false;
+                    break;
+                }
+            }
+        }
+
+        // Check bullet hitting Boss
+        if (b.active && bossActive && bossHP > 0) {
+            if (rectOverlap((int)b.x - 10, (int)b.y - 10, 20, 20,
+                            (int)bossX + 6, (int)bossY + 6, bossW - 12, bossH - 12)) {
+                damageBoss(b.dmg);
+                b.active = false;
+            }
+        }
+    }
+
+    // Update enemies within active camera range
+    int activeX0 = (int)camX - 300;
+    int activeX1 = (int)camX + FRAME_WIDTH + 300;
+
+    for (int i = 0; i < enemyCount; i++) {
+        Enemy &e = enemies[i];
+        if (!e.active)
+            continue;
+        if ((int)e.x < activeX0 || (int)e.x > activeX1)
+            continue;
+
+        if (e.hurt > 0)
+            e.hurt--;
+        e.timer++;
+
+        if (e.kind == E_WALKER) {
+            e.x += e.vx * e.dir;
+            if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; }
+            if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
+        } else if (e.kind == E_FLYER) {
+            e.x += e.vx * e.dir;
+            if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; }
+            if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
+            int wave = SN[(e.timer / 4) & 15];
+            e.y = e.baseY + (wave * 28) / 256;
+        } else if (e.kind == E_JUMPER) {
+            e.x += e.vx * e.dir;
+            if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; }
+            if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
+            if (e.timer % 55 == 0 && e.y >= e.baseY - 2.0f)
+                e.vy = -12.5f;
+            e.vy += 0.65f;
+            e.y += e.vy;
+            if (e.y >= e.baseY) {
+                e.y = e.baseY;
+                e.vy = 0.0f;
+            }
+        } else if (e.kind == E_TURRET) {
+            e.dir = (px < e.x) ? -1 : 1;
+            if (e.timer % 95 == 0) {
+                spawnBossShot(e.x + 22.0f, e.y + 18.0f, (float)e.dir * 6.5f, 0.0f);
+            }
+        }
+
+        // Player vs Enemy collision (Stomp head to kill vs take damage)
+        if (deadTimer == 0 &&
+            rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8,
+                        (int)e.x + 4, (int)e.y + 4, 36, 36)) {
+            if (vy > 0.0f && (py + PH) < (e.y + 26.0f)) {
+                py = e.y - PH;
+                vy = -15.5f;
+                squashX = 0.72f;
+                squashY = 1.28f;
+                killEnemy(e);
+            } else {
+                die();
+                return;
+            }
+        }
+    }
+}
+
+static void damageBoss(int dmg) {
     if (bossHurt > 0 || bossHP <= 0)
         return;
 
-    bossHP--;
-    bossHurt = 45;
+    bossHP -= dmg;
+    if (bossHP < 0) bossHP = 0;
+    bossHurt = 24;
     hudNeed[0] = true;
     hudNeed[1] = true;
     snd(7);
@@ -1966,17 +1816,17 @@ static void damageBoss() {
     float bcx = bossX + bossW * 0.5f;
     float bcy = bossY + bossH * 0.5f;
 
-    for (int i = 0; i < 24; i++) {
+    for (int i = 0; i < 18; i++) {
         float pvx = (float)(rnd(200) - 100) / 10.0f;
         float pvy = (float)(rnd(160) - 130) / 10.0f;
-        spawnPart(bcx, bcy, pvx, pvy, 60, 7 + rnd(5), 1);
+        spawnPart(bcx, bcy, pvx, pvy, 50, 6 + rnd(5), 1);
     }
 
     if (bossHP <= 0) {
         for (int i = 0; i < MAX_BOSS_SHOTS; i++)
             bossShots[i].active = false;
 
-        level[16][15] = 'G';
+        level[16][22] = 'G';
         needFull[0] = true;
         needFull[1] = true;
     }
@@ -1990,6 +1840,31 @@ static void spawnBossShot(float sx, float sy, float svx, float svy) {
             bossShots[i].vx = svx;
             bossShots[i].vy = svy;
             bossShots[i].active = true;
+            return;
+        }
+    }
+}
+
+static void updateProjectiles() {
+    for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
+        BossShot &s = bossShots[i];
+        if (!s.active)
+            continue;
+
+        s.x += s.vx;
+        s.y += s.vy;
+
+        if (s.x < (float)TILE || s.x > (float)(levelPixelWidth - TILE) ||
+            s.y < (float)TILE || s.y > (float)(FRAME_HEIGHT - TILE) ||
+            solidAt((int)s.x, (int)s.y)) {
+            s.active = false;
+            continue;
+        }
+
+        if (deadTimer == 0 && rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8,
+                                          (int)s.x - 14, (int)s.y - 14, 28, 28)) {
+            s.active = false;
+            die();
             return;
         }
     }
@@ -2015,13 +1890,13 @@ static void updateBoss() {
 
     if (bossX < (float)(5 * TILE)) {
         bossX = (float)(5 * TILE);
-        bossVX = 4.2f;
-    } else if (bossX > (float)(24 * TILE)) {
-        bossX = (float)(24 * TILE);
-        bossVX = -4.2f;
+        bossVX = 4.5f;
+    } else if (bossX > (float)(38 * TILE)) {
+        bossX = (float)(38 * TILE);
+        bossVX = -4.5f;
     }
 
-    if (bossTimer % 110 == 50 && bossY >= floorY - 2.0f) {
+    if (bossTimer % 105 == 50 && bossY >= floorY - 2.0f) {
         bossVY = -14.5f;
     }
 
@@ -2032,47 +1907,26 @@ static void updateBoss() {
         bossVY = 0.0f;
     }
 
-    int fireRate = (tier >= 2) ? 65 : 85;
+    int fireRate = (tier >= 2) ? 60 : 80;
     if (bossTimer % fireRate == 0) {
         float dir = (px < bossX) ? -1.0f : 1.0f;
-        spawnBossShot(bossX + bossW * 0.5f, bossY + bossH - 28.0f, dir * 6.5f, 0.0f);
+        spawnBossShot(bossX + bossW * 0.5f, bossY + bossH - 28.0f, dir * 7.0f, 0.0f);
         if (tier >= 2) {
-            spawnBossShot(bossX + bossW * 0.5f, bossY + 24.0f, dir * 5.5f, -2.5f);
-        }
-    }
-
-    for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
-        BossShot &s = bossShots[i];
-        if (!s.active)
-            continue;
-
-        s.x += s.vx;
-        s.y += s.vy;
-
-        if (s.x < (float)TILE || s.x > (float)(FRAME_WIDTH - TILE) ||
-            s.y < (float)TILE || s.y > (float)(FRAME_HEIGHT - TILE)) {
-            s.active = false;
-            continue;
-        }
-
-        if (deadTimer == 0 && rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8,
-                                          (int)s.x - 14, (int)s.y - 14, 28, 28)) {
-            die();
-            return;
+            spawnBossShot(bossX + bossW * 0.5f, bossY + 24.0f, dir * 6.0f, -2.5f);
         }
     }
 
     if (deadTimer > 0)
         return;
 
-    int swX = 15 * TILE;
+    int swX = 21 * TILE;
     int swY = 6 * TILE + 20;
     if (bossSwitchCooldown == 0 &&
         rectOverlap((int)px, (int)py, PW, PH, swX, swY, 120, 40)) {
-        bossSwitchCooldown = 140;
+        bossSwitchCooldown = 130;
         bossBeamTimer = 25;
         vy = -12.0f;
-        damageBoss();
+        damageBoss(2);
         return;
     }
 
@@ -2083,7 +1937,7 @@ static void updateBoss() {
             vy = -16.5f;
             squashX = 0.70f;
             squashY = 1.32f;
-            damageBoss();
+            damageBoss(2);
         } else if (bossHurt == 0) {
             die();
         }
@@ -2130,8 +1984,13 @@ static bool touchingHazard() {
 }
 
 static bool touchingGoal() {
+    int c0 = ((int)px / TILE) - 2;
+    int c1 = ((int)px + PW) / TILE + 2;
+    if (c0 < 0) c0 = 0;
+    if (c1 >= COLS) c1 = COLS - 1;
+
     for (int r = 0; r < ROWS; r++) {
-        for (int c = 0; c < COLS; c++) {
+        for (int c = c0; c <= c1; c++) {
             if (level[r][c] == 'G') {
                 if (rectOverlap(
                     (int)px, (int)py, PW, PH,
@@ -2158,6 +2017,20 @@ static void update() {
             respawn();
 
         return;
+    }
+
+    if (shootCooldown > 0)
+        shootCooldown--;
+
+    // Weapon switching (Triangle or L1)
+    if (in.switchNew && unlockedWeapons > 1) {
+        curWeapon = (curWeapon + 1) % unlockedWeapons;
+        snd(0);
+    }
+
+    // Weapon firing (Circle or R1)
+    if ((in.shootNew || ((in.circle || in.r1) && shootCooldown == 0)) && shootCooldown == 0) {
+        fireWeapon();
     }
 
     bool wasGround = onGround;
@@ -2204,7 +2077,7 @@ static void update() {
     bool wallL = rectSolid((int)px - 1, (int)py, 1, PH);
     bool wallR = rectSolid((int)px + PW, (int)py, 1, PH);
 
-    float maxSpeed = (run ? 8.0f : 5.5f) * scale;
+    float maxSpeed = (run ? 8.2f : 5.6f) * scale;
 
     if (dir != 0)
         facing = dir;
@@ -2332,7 +2205,26 @@ static void update() {
         vy = 0;
     }
 
+    // Smooth camera tracking
+    updateCamera(false);
+
+    // Checkpoints activation
+    for (int i = 0; i < checkCount; i++) {
+        if (!checkActive[i]) {
+            int cpx = checkCols[i] * TILE;
+            if ((int)px + PW >= cpx) {
+                checkActive[i] = true;
+                checkpointX = (float)cpx;
+                checkpointY = (float)(checkRows[i] * TILE - PH);
+                snd(1);
+                spawnDust((float)(cpx + 20), (float)(checkRows[i] * TILE - 40), 10, 3.5f);
+            }
+        }
+    }
+
     updatePlantsAndAmbient(didJumpOrLand);
+    updateBulletsAndEnemies();
+    updateProjectiles();
 
     if (bossActive)
         updateBoss();
@@ -2346,24 +2238,35 @@ static void update() {
     }
 
     if (touchingGoal()) {
-        winTimer = 150;
+        winTimer = 160;
         needWin[0] = true;
         needWin[1] = true;
+
+        // Unlock new weapon upon completing stages!
+        justUnlockedWeapon = false;
+        int newWeapCount = unlockedWeapons;
+        if (currentLevel >= 0 && unlockedWeapons < 2) newWeapCount = 2;
+        if (currentLevel >= 2 && unlockedWeapons < 3) newWeapCount = 3;
+        if (currentLevel >= 4 && unlockedWeapons < 4) newWeapCount = 4;
+
+        if (newWeapCount > unlockedWeapons) {
+            unlockedWeapons = newWeapCount;
+            curWeapon = unlockedWeapons - 1;
+            justUnlockedWeapon = true;
+        }
+
         snd(8);
     }
 
-    // Screen (room) selection
     int nr = ((int)px + PW / 2) / FRAME_WIDTH;
-
     if (nr < 0) nr = 0;
     if (nr > LAST_ROOM) nr = LAST_ROOM;
-
     roomIdx = nr;
 }
 
-// ---------- Game drawing ----------
-static void drawSpike(int cx, int r) {
-    int center = cx * TILE + TILE / 2;
+// ---------- Game drawing (With Smooth Camera Offset) ----------
+static void drawSpikeAt(int screenX, int r) {
+    int center = screenX + TILE / 2;
     int top = r * TILE + 20;
 
     Color spCol = mk(205, 205, 215);
@@ -2388,6 +2291,9 @@ static void drawSpike(int cx, int r) {
 }
 
 static void drawSaw(int cx, int cy) {
+    if (cx < -30 || cx > FRAME_WIDTH + 30)
+        return;
+
     int a = (tick / 2) & 15;
 
     int cc = CS[a];
@@ -2400,29 +2306,25 @@ static void drawSaw(int cx, int cy) {
             if (d2 > 26 * 26)
                 continue;
 
+            int px0 = cx + dx;
+            int py0 = cy + dy;
+            if (px0 < 0 || px0 >= FRAME_WIDTH || py0 < 0 || py0 >= FRAME_HEIGHT)
+                continue;
+
             int u = (dx * cc + dy * ss) >> 8;
             int v = (-dx * ss + dy * cc) >> 8;
 
             if (d2 < 36) {
-                scene->DrawPixel(
-                    cx + dx, cy + dy,
-                    mk(50, 50, 55)
-                );
+                scene->DrawPixel(px0, py0, mk(50, 50, 55));
             } else if (d2 <= 20 * 20) {
-                scene->DrawPixel(
-                    cx + dx, cy + dy,
-                    mk(165, 165, 178)
-                );
+                scene->DrawPixel(px0, py0, mk(165, 165, 178));
             } else if (
                 iabs(u) < 6 ||
                 iabs(v) < 6 ||
                 iabs(u - v) < 8 ||
                 iabs(u + v) < 8
             ) {
-                scene->DrawPixel(
-                    cx + dx, cy + dy,
-                    mk(215, 215, 225)
-                );
+                scene->DrawPixel(px0, py0, mk(215, 215, 225));
             }
         }
     }
@@ -2485,8 +2387,7 @@ static void drawPlayerFace(
     );
 }
 
-static void drawTileCell(int r, int cx, char ch, bool hi) {
-    int x = cx * TILE;
+static void drawTileCellScreen(int r, int screenX, char ch, bool hi) {
     int y = r * TILE;
 
     if (ch == '#') {
@@ -2516,20 +2417,20 @@ static void drawTileCell(int r, int cx, char ch, bool hi) {
             botC  = mk(34, 20, 28);
         }
 
-        fillRect(x, y, TILE, TILE, mainC);
+        fillRect(screenX, y, TILE, TILE, mainC);
 
         if (hi)
-            fillRect(x, y, TILE, 7, topC);
+            fillRect(screenX, y, TILE, 7, topC);
 
-        fillRect(x, y + TILE - 5, TILE, 5, botC);
+        fillRect(screenX, y + TILE - 5, TILE, 5, botC);
     }
 
     else if (ch == '^') {
-        drawSpike(cx, r);
+        drawSpikeAt(screenX, r);
     }
 
     else if (ch == 'G') {
-        int gx = x + 8;
+        int gx = screenX + 8;
         int gy = y + 16;
 
         fillRect(gx, gy, PW, PH, mk(255, 140, 170));
@@ -2594,90 +2495,117 @@ static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style)
     }
 }
 
-static void drawSplat(const Splat &s) {
-    fillRect(s.x, s.y, s.w, s.h, mk(140, 10, 20));
-    fillRect(s.x + 1, s.y + 1, s.w / 3 + 1, s.h / 3 + 1,
-             mk(185, 22, 34));
+// Helper for seamless parallax wrapping
+static int wrapX(int val, int span) {
+    int m = val % span;
+    return m < 0 ? m + span : m;
 }
 
-static void starPos(int i, int &sx, int &sy) {
-    sx = (i * 271 + 91) % FRAME_WIDTH;
-    sy = (i * 137 + 31) % 570;
+// Animated flying birds in the sky
+static void drawAnimatedBirds(int camP, Color birdCol) {
+    int wing = ((tick / 8) & 1) ? -7 : 6;
+    for (int i = 0; i < 6; i++) {
+        int bx = wrapX(i * 360 + tick * 2 - camP, FRAME_WIDTH + 120) - 60;
+        int by = 135 + (i % 3) * 55 + (SN[((tick / 6) + i * 3) & 15] >> 5);
+        fillRect(bx, by, 10, 5, birdCol);
+        fillRect(bx - 8, by + wing, 9, 4, birdCol);
+        fillRect(bx + 9, by + wing, 9, 4, birdCol);
+    }
 }
 
-static bool starDim(int i, int phase) {
-    return ((phase + i) % 4) == 0;
-}
-
+// Vibrant Multi-Layer Parallax Background with Animated World Elements
 static void paintBackground() {
-    if (currentBiome == 0) {
-        Color sky1 = mk(75, 170, 235);
-        Color sky2 = mk(115, 200, 245);
-        Color farC = mk(42, 110, 75);
-        Color nearC = mk(26, 78, 52);
+    int pSlow = (int)(camX * 0.08f);
+    int pFar  = (int)(camX * 0.22f);
+    int pNear = (int)(camX * 0.45f);
+    int pulse = SN[(tick / 4) & 15] >> 5;
 
-        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
-        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
+    if (currentBiome == 0) {
+        // Biome 0: Living Green Forest (Animated sun rays, drifting clouds, flapping birds, waterfalls)
+        Color sky1 = mk(65, 165, 235);
+        Color sky2 = mk(115, 205, 248);
+        Color farC = mk(42, 115, 75);
+        Color nearC = mk(26, 82, 52);
+
+        fillRect(0, 0, FRAME_WIDTH, 280, sky1);
+        fillRect(0, 280, FRAME_WIDTH, 290, sky2);
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        fillRect(1480, 95, 110, 110, mk(255, 235, 120));
-        fillRect(1495, 80, 80, 140, mk(255, 245, 160));
-
-        for (int i = 0; i < 4; i++) {
-            int cx = 180 + i * 440;
-            int cy = 130 + (i & 1) * 55;
-            fillRect(cx, cy, 170, 38, mk(235, 248, 255));
-            fillRect(cx + 30, cy - 20, 110, 24, mk(245, 252, 255));
-        }
+        int sunX = 1520 - (pSlow % 300);
+        fillRect(sunX - 12 - pulse, 83 - pulse, 134 + pulse * 2, 134 + pulse * 2, mk(255, 245, 175));
+        fillRect(sunX, 95, 110, 110, mk(255, 235, 110));
 
         for (int i = 0; i < 5; i++) {
-            int x = i * 400 + 60;
-            fillRect(x + 60, 430, 140, 140, farC);
-            fillRect(x + 90, 380, 80, 60, farC);
-            fillRect(x + 220, 460, 130, 110, farC);
+            int cx = wrapX(i * 440 + tick / 2 - pSlow, FRAME_WIDTH + 240) - 180;
+            int cy = 120 + (i & 1) * 60;
+            fillRect(cx, cy, 170, 38, mk(235, 248, 255));
+            fillRect(cx + 30, cy - 20, 110, 24, mk(248, 253, 255));
         }
 
+        drawAnimatedBirds(pSlow, mk(30, 75, 55));
+
         for (int i = 0; i < 6; i++) {
-            int x = i * 330 + 40;
-            fillRect(x + 70, 620, 36, 90, mk(68, 44, 28));
-            fillRect(x + 20, 510, 136, 120, nearC);
-            fillRect(x + 44, 465, 88, 55, nearC);
+            int x = wrapX(i * 420 - pFar, 2520) - 300;
+            fillRect(x + 60, 420, 160, 150, farC);
+            fillRect(x + 90, 370, 100, 60, farC);
+            // Animated waterfall on distant cliffs
+            if (i % 2 == 0) {
+                fillRect(x + 125, 420, 26, 280, mk(150, 225, 255));
+                int wf = (tick * 4) % 40;
+                fillRect(x + 129, 420 + wf, 18, 24, mk(225, 250, 255));
+                fillRect(x + 129, 520 + wf, 18, 24, mk(225, 250, 255));
+            }
+        }
+
+        int sway = SN[(tick / 6) & 15] >> 5;
+        for (int i = 0; i < 7; i++) {
+            int x = wrapX(i * 340 - pNear, 2380) - 220;
+            fillRect(x + 70, 610, 36, 100, mk(68, 44, 28));
+            fillRect(x + 20 + sway, 500, 136, 120, nearC);
+            fillRect(x + 44 - sway, 455, 88, 55, mk(36, 102, 64));
         }
         return;
     }
 
     if (currentBiome == 1) {
-        Color sky1 = mk(195, 95, 75);
-        Color sky2 = mk(240, 155, 85);
-        Color farC = mk(135, 82, 52);
+        // Biome 1: Golden Countryside (Sunset glow, flying birds, rolling hills, barns & silos)
+        Color sky1 = mk(195, 92, 72);
+        Color sky2 = mk(245, 160, 85);
+        Color farC = mk(138, 82, 52);
         Color nearC = mk(92, 55, 36);
 
-        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
-        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
+        fillRect(0, 0, FRAME_WIDTH, 290, sky1);
+        fillRect(0, 290, FRAME_WIDTH, 280, sky2);
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        fillRect(1420, 210, 130, 130, mk(255, 215, 95));
-        fillRect(1440, 195, 90, 160, mk(255, 230, 130));
+        int sunX = 1440 - (pSlow % 260);
+        fillRect(sunX - 10 - pulse, 190 - pulse, 150 + pulse * 2, 150 + pulse * 2, mk(255, 195, 95));
+        fillRect(sunX, 200, 130, 130, mk(255, 230, 125));
 
-        for (int i = 0; i < 4; i++) {
-            int x = i * 500;
-            fillRect(x + 40, 470, 260, 100, farC);
-            fillRect(x + 90, 440, 160, 40, farC);
+        drawAnimatedBirds(pSlow, mk(95, 40, 30));
+
+        for (int i = 0; i < 5; i++) {
+            int x = wrapX(i * 500 - pFar, 2500) - 300;
+            fillRect(x + 40, 465, 280, 105, farC);
+            fillRect(x + 90, 435, 180, 40, farC);
         }
 
-        fillRect(420, 450, 150, 120, nearC);
-        fillRect(445, 420, 100, 35, nearC);
-        fillRect(1160, 420, 76, 150, nearC);
-        fillRect(1172, 398, 52, 26, nearC);
-        fillRect(1265, 455, 110, 115, nearC);
+        for (int i = 0; i < 4; i++) {
+            int x = wrapX(i * 620 - pNear, 2480) - 260;
+            fillRect(x + 60, 580, 150, 120, nearC);
+            fillRect(x + 85, 550, 100, 35, nearC);
+            fillRect(x + 250, 550, 76, 150, nearC);
+            fillRect(x + 262, 528, 52, 26, nearC);
+        }
         return;
     }
 
     if (currentBiome == 2) {
-        Color sky1 = mk(230, 145, 65);
-        Color sky2 = mk(248, 198, 115);
+        // Biome 2: Golden Desert (Shimmering sun, drifting sand clouds, parallax pyramids & dunes)
+        Color sky1 = mk(230, 142, 62);
+        Color sky2 = mk(250, 202, 118);
         Color farC = mk(195, 135, 68);
         Color nearC = mk(158, 102, 48);
 
@@ -2686,28 +2614,30 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        fillRect(1490, 105, 120, 120, mk(255, 245, 175));
-        fillRect(1510, 90, 80, 150, mk(255, 250, 205));
+        int sunX = 1500 - (pSlow % 250);
+        fillRect(sunX - 12 - pulse, 93 - pulse, 144 + pulse * 2, 144 + pulse * 2, mk(255, 230, 145));
+        fillRect(sunX, 105, 120, 120, mk(255, 250, 200));
 
-        for (int i = 0; i < 3; i++) {
-            int px0 = 260 + i * 560;
+        for (int i = 0; i < 4; i++) {
+            int px0 = wrapX(i * 580 - pFar, 2320) - 200;
             for (int step = 0; step < 8; step++) {
-                int w = (step + 1) * 32;
+                int w = (step + 1) * 34;
                 fillRect(px0 - w / 2, 410 + step * 20, w, 20, farC);
             }
         }
 
-        for (int i = 0; i < 4; i++) {
-            int x = i * 500;
-            fillRect(x + 60, 610, 280, 90, nearC);
-            fillRect(x + 120, 580, 160, 40, nearC);
+        for (int i = 0; i < 5; i++) {
+            int x = wrapX(i * 480 - pNear, 2400) - 250;
+            fillRect(x + 60, 605, 290, 95, nearC);
+            fillRect(x + 120, 575, 170, 40, nearC);
         }
         return;
     }
 
     if (currentBiome == 3) {
-        Color sky1 = mk(38, 62, 102);
-        Color sky2 = mk(68, 105, 152);
+        // Biome 3: Snowy Peaks (Animated Aurora Borealis ribbons + Snow-capped parallax peaks)
+        Color sky1 = mk(32, 56, 96);
+        Color sky2 = mk(62, 100, 148);
         Color farC = mk(95, 135, 178);
         Color nearC = mk(62, 95, 135);
 
@@ -2716,18 +2646,26 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        fillRect(1500, 110, 96, 96, mk(220, 240, 255));
+        // Animated Aurora Borealis ribbons in the arctic sky
+        for (int i = 0; i < 8; i++) {
+            int ax = i * 240;
+            int ay = 130 + (SN[((tick / 5) + i * 2) & 15] >> 3);
+            fillRect(ax, ay, 240, 22, mk(65, 215, 175));
+            fillRect(ax, ay + 22, 240, 14, mk(95, 245, 205));
+        }
 
-        for (int i = 0; i < 3; i++) {
-            int x = i * 660;
+        fillRect(1500 - (pSlow % 220), 105, 96, 96, mk(225, 245, 255));
+
+        for (int i = 0; i < 4; i++) {
+            int x = wrapX(i * 620 - pFar, 2480) - 260;
             fillRect(x + 80, 410, 200, 160, farC);
             fillRect(x + 110, 370, 140, 50, mk(230, 245, 255));
             fillRect(x + 340, 440, 180, 130, farC);
             fillRect(x + 365, 410, 130, 40, mk(230, 245, 255));
         }
 
-        for (int i = 0; i < 4; i++) {
-            int x = i * 520;
+        for (int i = 0; i < 5; i++) {
+            int x = wrapX(i * 500 - pNear, 2500) - 250;
             fillRect(x + 70, 550, 200, 150, nearC);
             fillRect(x + 105, 520, 130, 40, mk(210, 232, 250));
         }
@@ -2735,8 +2673,9 @@ static void paintBackground() {
     }
 
     if (currentBiome == 4) {
+        // Biome 4: Volcanic Lava Valley (Erupting volcanoes, pulsing crimson moon, magma rivers)
         Color sky1 = mk(42, 14, 24);
-        Color sky2 = mk(78, 24, 32);
+        Color sky2 = mk(82, 26, 34);
         Color farC = mk(58, 22, 30);
         Color nearC = mk(38, 15, 22);
 
@@ -2745,23 +2684,28 @@ static void paintBackground() {
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        fillRect(1500, 115, 100, 100, mk(235, 95, 50));
-        fillRect(1520, 130, 65, 70, mk(255, 155, 70));
-
-        for (int i = 0; i < 3; i++) {
-            int x = i * 680;
-            fillRect(x + 120, 400, 220, 170, farC);
-            fillRect(x + 180, 395, 100, 18, mk(245, 95, 35));
-        }
+        int moonX = 1500 - (pSlow % 220);
+        fillRect(moonX - pulse, 115 - pulse, 100 + pulse * 2, 100 + pulse * 2, mk(235, 95, 50));
+        fillRect(moonX + 18, 130, 65, 70, mk(255, 165, 70));
 
         for (int i = 0; i < 4; i++) {
-            int x = i * 540;
+            int x = wrapX(i * 640 - pFar, 2560) - 260;
+            fillRect(x + 120, 400, 220, 170, farC);
+            fillRect(x + 180, 392, 100, 20, mk(255, 105, 35));
+            // Animated lava fountain jetting from volcano crater
+            int jetH = 25 + ((tick * 3 + i * 20) % 45);
+            fillRect(x + 218, 392 - jetH, 24, jetH, mk(255, 195, 60));
+            fillRect(x + 222, 412, 16, 158, mk(235, 80, 30));
+        }
+
+        for (int i = 0; i < 5; i++) {
+            int x = wrapX(i * 520 - pNear, 2600) - 260;
             fillRect(x + 80, 540, 200, 160, nearC);
         }
         return;
     }
 
-    // Biome 5: Classic Night Sky
+    // Biome 5: Classic Night Sky with Parallax Moon, Twinkling Stars & Castle Towers
     Color farC = mk(35, 20, 75);
     Color nearC = mk(25, 14, 55);
 
@@ -2770,15 +2714,16 @@ static void paintBackground() {
     fillRect(0, 570, FRAME_WIDTH, 130, farC);
     fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-    fillRect(1500, 115, 100, 100, mk(145, 125, 205));
-    fillRect(1515, 100, 70, 130, mk(145, 125, 205));
-    fillRect(1520, 125, 65, 75, mk(185, 170, 220));
+    int moonX = 1500 - (pSlow % 220);
+    fillRect(moonX, 115, 100, 100, mk(145, 125, 205));
+    fillRect(moonX + 15, 100, 70, 130, mk(145, 125, 205));
+    fillRect(moonX + 20, 125, 65, 75, mk(185, 170, 220));
 
     int phase = tick / 20;
 
     for (int i = 0; i < NUM_STARS; i++) {
-        int sx, sy;
-        starPos(i, sx, sy);
+        int sx = wrapX((i * 271 + 91) - (pSlow / 2), FRAME_WIDTH);
+        int sy = (i * 137 + 31) % 550;
 
         if (i % 7 == 0)
             fillRect(sx - 2, sy - 2, 7, 7, mk(70, 55, 110));
@@ -2790,74 +2735,18 @@ static void paintBackground() {
         );
     }
 
-    for (int i = 0; i < 3; i++) {
-        int x = i * 700;
-
+    for (int i = 0; i < 4; i++) {
+        int x = wrapX(i * 680 - pFar, 2720) - 280;
         fillRect(x + 80, 450, 180, 130, farC);
         fillRect(x + 220, 390, 180, 190, farC);
         fillRect(x + 390, 470, 180, 110, farC);
     }
 
-    for (int i = 0; i < 4; i++) {
-        int x = i * 560;
-
+    for (int i = 0; i < 5; i++) {
+        int x = wrapX(i * 540 - pNear, 2700) - 260;
         fillRect(x + 70, 590, 160, 120, nearC);
         fillRect(x + 220, 530, 180, 180, nearC);
-        fillRect(x + 380, 630, 130, 80, nearC);
-    }
-}
-
-static void drawSplatsClipped(int b) {
-    for (int i = 0; i < splatCount; i++) {
-        if (splatDrawn[b][i])
-            drawSplat(splats[i]);
-    }
-}
-
-static void restoreRect(
-    int b, int x, int y, int w, int h, bool withSplats
-) {
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-
-    if (x + w > FRAME_WIDTH) w = FRAME_WIDTH - x;
-    if (y + h > FRAME_HEIGHT) h = FRAME_HEIGHT - y;
-
-    if (w <= 0 || h <= 0)
-        return;
-
-    setClip(x, y, w, h);
-
-    paintBackground();
-
-    int c0 = x / TILE;
-    int c1 = (x + w - 1) / TILE;
-    int r0 = y / TILE;
-    int r1 = (y + h - 1) / TILE;
-
-    for (int r = r0; r <= r1; r++) {
-        for (int c = c0; c <= c1; c++) {
-            char ch = bufGrid[b][r][c];
-
-            if (ch != '.')
-                drawTileCell(r, c, ch, bufHi[b][r][c]);
-        }
-    }
-
-    if (withSplats)
-        drawSplatsClipped(b);
-
-    resetClip();
-}
-
-static void addDirty(int b, int x, int y, int w, int h) {
-    if (dirtyCount[b] < MAX_DIRTY) {
-        Rect &d = dirty[b][dirtyCount[b]++];
-
-        d.x = x;
-        d.y = y;
-        d.w = w;
-        d.h = h;
+        fillRect(x + 145, 560, 18, 28, (tick & 16) ? mk(245, 210, 95) : mk(185, 145, 65));
     }
 }
 
@@ -2867,7 +2756,7 @@ static int progressNow() {
         return (bossHP * 520) / bossMaxHP;
     }
 
-    int p = (int)((px / (float)WORLD_WIDTH) * 520.0f);
+    int p = (int)((px / (float)levelPixelWidth) * 520.0f);
 
     if (p < 0) p = 0;
     if (p > 520) p = 520;
@@ -2876,20 +2765,20 @@ static int progressNow() {
 }
 
 static void drawHUDFull(int b) {
-    int hudN = deaths < 40 ? deaths : 40;
+    int hudN = deaths < 30 ? deaths : 30;
 
     if (useAr() && TXT_AR[T_DEATHS] >= 0) {
         int id = TXT_AR[T_DEATHS];
-        drawArCols(id, 70, 28, 0, arW(id), mk(220, 210, 240));
+        drawArCols(id, 70, 22, 0, arW(id), mk(235, 225, 255));
     } else {
-        drawText(70, 35, "DEATHS", 3, mk(220, 210, 240));
+        drawText(70, 28, "DEATHS", 3, mk(235, 225, 255));
     }
 
     for (int i = 0; i < hudN; i++) {
         fillRect(
-            70 + i * 22,
-            70,
-            14, 14,
+            70 + i * 20,
+            60,
+            13, 13,
             mk(205, 25, 35)
         );
     }
@@ -2897,26 +2786,66 @@ static void drawHUDFull(int b) {
     int prog = progressNow();
 
     if (bossActive) {
-        drawLabel(T_BOSS_HP, 960, 10, 32, 3, mk(255, 215, 90));
-        fillRect(696, 42, 528, 22, mk(30, 18, 45));
-        fillRect(700, 45, 520, 16, mk(65, 25, 35));
-        fillRect(700, 45, prog, 16, mk(245, 55, 40));
+        drawLabel(T_BOSS_HP, 960, 10, 30, 3, mk(255, 215, 90));
+        fillRect(696, 40, 528, 20, mk(30, 18, 45));
+        fillRect(700, 43, 520, 14, mk(65, 25, 35));
+        fillRect(700, 43, prog, 14, mk(245, 55, 40));
     } else {
-        fillRect(700, 45, 520, 14, mk(45, 35, 70));
-        fillRect(700, 45, prog, 14, mk(205, 40, 100));
+        fillRect(696, 40, 528, 20, mk(30, 20, 50));
+        fillRect(700, 43, 520, 14, mk(45, 35, 70));
+        fillRect(700, 43, prog, 14, mk(205, 40, 100));
     }
+
+    // Current Weapon HUD badge at top-right
+    int wTid = T_W0 + curWeapon;
+    Color wCol = mk(95, 215, 255);
+    if (curWeapon == W_SHOTGUN) wCol = mk(255, 195, 70);
+    else if (curWeapon == W_SAW) wCol = mk(140, 250, 160);
+    else if (curWeapon == W_PLASMA) wCol = mk(255, 120, 235);
+
+    fillRect(1300, 22, 560, 46, mk(28, 20, 48));
+    fillRect(1303, 25, 554, 40, mk(44, 32, 72));
+    drawLabel(wTid, 1580, 25, 40, 2, wCol);
 
     hudSq[b] = hudN;
     hudProg[b] = prog;
     hudNeed[b] = false;
 }
 
-static void drawRoomSplats(int b) {
-    for (int i = 0; i < splatCount; i++) {
-        if (splats[i].room == bufRoom[b]) {
-            drawSplat(splats[i]);
-            splatDrawn[b][i] = true;
-        }
+static void drawEnemyChar(const Enemy &e, int sx, int sy) {
+    bool flash = (e.hurt & 2) != 0;
+
+    if (e.kind == E_WALKER) {
+        Color body = flash ? mk(255, 255, 255) : mk(145, 35, 165);
+        Color trim = mk(85, 18, 105);
+        fillRect(sx, sy, 44, 44, trim);
+        fillRect(sx + 4, sy + 4, 36, 36, body);
+        // Spiky helmet
+        fillRect(sx + 10, sy - 6, 8, 6, mk(225, 225, 235));
+        fillRect(sx + 26, sy - 6, 8, 6, mk(225, 225, 235));
+        drawFace(sx, sy, e.dir, mk(255, 235, 90));
+    } else if (e.kind == E_FLYER) {
+        Color body = flash ? mk(255, 255, 255) : mk(225, 85, 35);
+        int wingY = ((tick / 4) & 1) ? -10 : 8;
+        fillRect(sx - 12, sy + 14 + wingY, 14, 10, mk(175, 45, 25));
+        fillRect(sx + 42, sy + 14 + wingY, 14, 10, mk(175, 45, 25));
+        fillRect(sx + 4, sy + 4, 36, 36, body);
+        drawFace(sx, sy, e.dir, mk(255, 245, 120));
+    } else if (e.kind == E_JUMPER) {
+        Color body = flash ? mk(255, 255, 255) : mk(45, 185, 135);
+        fillRect(sx, sy, 44, 44, mk(25, 115, 80));
+        fillRect(sx + 4, sy + 4, 36, 36, body);
+        // Spring coil feet
+        fillRect(sx + 12, sy + 42, 20, 6, mk(210, 220, 230));
+        drawFace(sx, sy, e.dir, mk(255, 255, 255));
+    } else {
+        // E_TURRET: Armored Cannon
+        Color body = flash ? mk(255, 255, 255) : mk(95, 105, 125);
+        fillRect(sx, sy + 6, 44, 38, mk(50, 55, 70));
+        fillRect(sx + 4, sy + 10, 36, 30, body);
+        int barrelX = (e.dir < 0) ? (sx - 14) : (sx + 38);
+        fillRect(barrelX, sy + 18, 18, 12, mk(235, 75, 45));
+        fillRect(sx + 14, sy + 16, 16, 12, mk(255, 215, 70));
     }
 }
 
@@ -2951,11 +2880,17 @@ static void renderGame(int b) {
             fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT,
                      mk(20, 90, 60));
 
-            drawLabel(T_COMPLETE, 960, 370, 110, 10,
+            drawLabel(T_COMPLETE, 960, 330, 110, 10,
                       mk(255, 255, 255));
 
-            drawLabel(T_GREAT, 960, 520, 80, 6,
+            drawLabel(T_GREAT, 960, 470, 80, 6,
                       mk(255, 220, 180));
+
+            if (justUnlockedWeapon) {
+                fillRect(410, 600, 1100, 84, mk(35, 25, 60));
+                fillRect(414, 604, 1092, 76, mk(215, 145, 30));
+                drawLabel(T_NEW_WEAPON, 960, 604, 76, 4, mk(255, 255, 255));
+            }
 
             needWin[b] = false;
         }
@@ -2963,168 +2898,48 @@ static void renderGame(int b) {
         return;
     }
 
-    if (needFull[b]) {
-        paintBackground();
+    int camI = (int)camX;
 
-        for (int r = 0; r < ROWS; r++) {
-            for (int c = 0; c < ROOM_COLS; c++) {
-                int wc = roomIdx * ROOM_COLS + c;
+    // 1. Vibrant Multi-Layer Parallax Background
+    paintBackground();
 
-                char ch = staticChar(r, wc);
-                bool hi = hiAt(r, wc);
+    // 2. Visible World Tiles
+    int c0 = camI / TILE;
+    int c1 = (camI + FRAME_WIDTH) / TILE + 1;
+    if (c0 < 0) c0 = 0;
+    if (c1 > COLS) c1 = COLS;
 
-                bufGrid[b][r][c] = ch;
-                bufHi[b][r][c] = hi;
-
-                if (ch != '.')
-                    drawTileCell(r, c, ch, hi);
+    for (int r = 0; r < ROWS; r++) {
+        for (int c = c0; c < c1; c++) {
+            char ch = staticChar(r, c);
+            if (ch != '.') {
+                drawTileCellScreen(r, c * TILE - camI, ch, hiAt(r, c));
             }
-        }
-
-        bufRoom[b] = roomIdx;
-
-        for (int i = 0; i < MAX_SPLATS; i++)
-            splatDrawn[b][i] = false;
-
-        drawRoomSplats(b);
-
-        bufStar[b] = tick / 20;
-        dirtyCount[b] = 0;
-
-        drawHUDFull(b);
-
-        needFull[b] = false;
-    }
-
-    else {
-        bool trans = (bufRoom[b] != roomIdx);
-
-        for (int i = 0; i < dirtyCount[b]; i++) {
-            Rect d = dirty[b][i];
-
-            if (d.y < 100)
-                hudNeed[b] = true;
-
-            restoreRect(b, d.x, d.y, d.w, d.h, !trans);
-        }
-
-        dirtyCount[b] = 0;
-
-        if (trans) {
-            for (int i = 0; i < splatCount; i++) {
-                if (splatDrawn[b][i]) {
-                    Splat &s = splats[i];
-
-                    restoreRect(
-                        b,
-                        s.x - 1, s.y - 1,
-                        s.w + 2, s.h + 2,
-                        false
-                    );
-
-                    splatDrawn[b][i] = false;
-                }
-            }
-
-            for (int r = 0; r < ROWS; r++) {
-                for (int c = 0; c < ROOM_COLS; c++) {
-                    int wc = roomIdx * ROOM_COLS + c;
-
-                    char nc = staticChar(r, wc);
-                    bool nh = hiAt(r, wc);
-
-                    char oc = bufGrid[b][r][c];
-                    bool oh = bufHi[b][r][c];
-
-                    if (nc == oc && nh == oh)
-                        continue;
-
-                    bool needBg = (oc != '.') && (nc != '#');
-
-                    if (needBg) {
-                        setClip(c * TILE, r * TILE, TILE, TILE);
-                        paintBackground();
-                        resetClip();
-                    }
-
-                    bufGrid[b][r][c] = nc;
-                    bufHi[b][r][c] = nh;
-
-                    if (nc != '.')
-                        drawTileCell(r, c, nc, nh);
-
-                    if (r <= 1)
-                        hudNeed[b] = true;
-                }
-            }
-
-            bufRoom[b] = roomIdx;
-
-            drawRoomSplats(b);
-        }
-
-        for (int i = 0; i < splatCount; i++) {
-            if (!splatDrawn[b][i] &&
-                splats[i].room == bufRoom[b]) {
-                drawSplat(splats[i]);
-                splatDrawn[b][i] = true;
-            }
-        }
-
-        int ph = tick / 20;
-
-        if (currentBiome == 5 && bufStar[b] != ph) {
-            for (int i = 0; i < NUM_STARS; i++) {
-                if (starDim(i, bufStar[b]) != starDim(i, ph)) {
-                    int sx, sy;
-                    starPos(i, sx, sy);
-
-                    restoreRect(b, sx - 3, sy - 3, 9, 9, true);
-                }
-            }
-
-            bufStar[b] = ph;
-        }
-
-        int hudN = deaths < 40 ? deaths : 40;
-        int prog = progressNow();
-
-        if (hudNeed[b]) {
-            drawHUDFull(b);
-        } else {
-            for (int i = hudSq[b]; i < hudN; i++) {
-                fillRect(
-                    70 + i * 22, 70,
-                    14, 14,
-                    mk(205, 25, 35)
-                );
-            }
-
-            hudSq[b] = hudN;
-
-            if (prog > hudProg[b]) {
-                fillRect(
-                    700 + hudProg[b], 45,
-                    prog - hudProg[b], 14,
-                    bossActive ? mk(245, 55, 40) : mk(205, 40, 100)
-                );
-            } else if (prog < hudProg[b]) {
-                fillRect(
-                    700 + prog, 45,
-                    hudProg[b] - prog, 14,
-                    bossActive ? mk(65, 25, 35) : mk(45, 35, 70)
-                );
-            }
-
-            hudProg[b] = prog;
         }
     }
 
-    // ----- Moving & Living objects -----
-    resetClip();
+    // 3. Checkpoint Flags
+    for (int i = 0; i < checkCount; i++) {
+        int fx = checkCols[i] * TILE + 24 - camI;
+        int fy = checkRows[i] * TILE - 64;
+        if (fx < -40 || fx > FRAME_WIDTH + 40)
+            continue;
+        fillRect(fx, fy, 6, 64, mk(220, 220, 235));
+        Color flagCol = checkActive[i] ? mk(65, 235, 110) : mk(235, 190, 55);
+        fillRect(fx + 6, fy + 4, 28, 20, flagCol);
+    }
 
-    int roomX = roomIdx * FRAME_WIDTH;
+    // 4. Visible Blood Splats
+    for (int i = 0; i < splatCount; i++) {
+        const Splat &s = splats[i];
+        int sx = s.x - camI;
+        if (sx + s.w < 0 || sx > FRAME_WIDTH)
+            continue;
+        fillRect(sx, s.y, s.w, s.h, mk(140, 10, 20));
+        fillRect(sx + 1, s.y + 1, s.w / 3 + 1, s.h / 3 + 1, mk(185, 22, 34));
+    }
 
+    // 5. Ambient Living World Particles
     Color ambCol = mk(235, 245, 255);
     if (currentBiome == 0) ambCol = mk(140, 235, 110);
     else if (currentBiome == 1) ambCol = mk(255, 230, 130);
@@ -3135,79 +2950,98 @@ static void renderGame(int b) {
 
     for (int i = 0; i < MAX_AMB; i++) {
         AmbPart &a = ambParts[i];
-        int ax = (int)a.x;
-        int ay = (int)a.y;
-        int sz = a.sz;
-
-        fillRect(ax, ay, sz, sz, ambCol);
-        addDirty(b, ax - 1, ay - 1, sz + 2, sz + 2);
+        fillRect((int)a.x, (int)a.y, a.sz, a.sz, ambCol);
     }
 
+    // 6. Interactive World Plants
     for (int i = 0; i < plantCount; i++) {
-        Plant &p = plants[i];
-        if (p.room != roomIdx)
+        const Plant &p = plants[i];
+        int sx = p.x - camI;
+        if (sx < -30 || sx > FRAME_WIDTH + 30)
             continue;
-
-        int bend = (int)p.angle;
-        drawPlantTuft(p.x, p.y, p.height, bend, currentBiome, p.style);
-        addDirty(b, p.x - 24, p.y - p.height - 8, 48, p.height + 10);
+        drawPlantTuft(sx, p.y, p.height, (int)p.angle, currentBiome, p.style);
     }
 
+    // 7. Spinning Saws
     for (int r = 0; r < ROWS; r++) {
-        for (int c = roomIdx * ROOM_COLS;
-             c < roomIdx * ROOM_COLS + ROOM_COLS && c < COLS;
-             c++) {
+        for (int c = c0; c < c1; c++) {
             if (level[r][c] == 'O') {
-                int cx = c * TILE + 30 - roomX;
-                int cy = r * TILE + 30;
-
-                drawSaw(cx, cy);
-                addDirty(b, cx - 27, cy - 27, 55, 55);
+                drawSaw(c * TILE + 30 - camI, r * TILE + 30);
             }
         }
     }
 
-    // ----- Boss Arena Objects -----
+    // 8. Active Enemies
+    for (int i = 0; i < enemyCount; i++) {
+        const Enemy &e = enemies[i];
+        if (!e.active)
+            continue;
+        int sx = (int)e.x - camI;
+        if (sx < -60 || sx > FRAME_WIDTH + 60)
+            continue;
+        drawEnemyChar(e, sx, (int)e.y);
+    }
+
+    // 9. Boss Arena Objects & Projectiles
     if (bossActive && bossHP > 0) {
-        int swX = 15 * TILE + 20;
+        int swX = 21 * TILE + 20 - camI;
         int swY = 7 * TILE - 18;
         Color swCol = (bossSwitchCooldown == 0) ?
                       ((tick & 8) ? mk(80, 255, 120) : mk(40, 200, 85)) :
                       mk(90, 80, 100);
         fillRect(swX, swY, 80, 18, swCol);
-        addDirty(b, swX - 2, swY - 2, 84, 22);
 
-        int bx = (int)bossX;
+        int bx = (int)bossX - camI;
         int by = (int)bossY;
 
         if (bossBeamTimer > 0) {
             int beamX = bx + bossW / 2 - 16;
             fillRect(beamX, 7 * TILE, 32, by - 7 * TILE + 20, mk(120, 255, 220));
-            addDirty(b, beamX - 4, 7 * TILE, 40, by - 7 * TILE + 24);
         }
 
         drawBossChar(bx, by, bossW, bossH, (bossHurt & 2) != 0);
-        addDirty(b, bx - 6, by - 12, bossW + 12, bossH + 16);
+    }
 
-        for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
-            BossShot &s = bossShots[i];
-            if (!s.active)
-                continue;
-            int sx = (int)s.x;
-            int sy = (int)s.y;
-            fillRect(sx - 14, sy - 14, 28, 28, mk(255, 95, 35));
-            fillRect(sx - 8, sy - 8, 16, 16, mk(255, 235, 90));
-            addDirty(b, sx - 16, sy - 16, 32, 32);
+    for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
+        BossShot &s = bossShots[i];
+        if (!s.active)
+            continue;
+        int sx = (int)s.x - camI;
+        int sy = (int)s.y;
+        fillRect(sx - 14, sy - 14, 28, 28, mk(255, 95, 35));
+        fillRect(sx - 8, sy - 8, 16, 16, mk(255, 235, 90));
+    }
+
+    // 10. Player Weapon Bullets
+    for (int i = 0; i < MAX_BULLETS; i++) {
+        const Bullet &bl = bullets[i];
+        if (!bl.active)
+            continue;
+        int sx = (int)bl.x - camI;
+        int sy = (int)bl.y;
+
+        if (bl.kind == W_BLASTER) {
+            fillRect(sx - 10, sy - 5, 20, 10, mk(80, 220, 255));
+            fillRect(sx - 6, sy - 3, 12, 6, mk(255, 255, 255));
+        } else if (bl.kind == W_SHOTGUN) {
+            fillRect(sx - 7, sy - 7, 14, 14, mk(255, 195, 55));
+            fillRect(sx - 4, sy - 4, 8, 8, mk(255, 255, 220));
+        } else if (bl.kind == W_SAW) {
+            fillRect(sx - 12, sy - 12, 24, 24, mk(210, 220, 235));
+            fillRect(sx - 6, sy - 6, 12, 12, mk(80, 245, 130));
+        } else {
+            fillRect(sx - 16, sy - 16, 32, 32, mk(235, 65, 215));
+            fillRect(sx - 10, sy - 10, 20, 20, mk(255, 220, 255));
         }
     }
 
+    // 11. Dust & Blood Particles
     for (int i = 0; i < MAX_PARTS; i++) {
         Part &p = parts[i];
-
         if (p.life <= 0)
             continue;
 
-        int sx = (int)p.x - roomX;
+        int sx = (int)p.x - camI;
         int sy = (int)p.y;
 
         if (sx < -20 || sx > FRAME_WIDTH + 20 ||
@@ -3219,7 +3053,6 @@ static void renderGame(int b) {
 
         if (p.kind == 0) {
             sz = 2 + ((int)p.size - 2) * p.life / p.maxLife;
-
             col = (p.life * 2 > p.maxLife) ?
                   mk(205, 195, 230) :
                   mk(150, 140, 185);
@@ -3229,11 +3062,11 @@ static void renderGame(int b) {
         }
 
         fillRect(sx, sy, sz, sz, col);
-        addDirty(b, sx - 1, sy - 1, sz + 2, sz + 2);
     }
 
+    // 12. Player & Equipped Weapon Barrel
     if (deadTimer == 0) {
-        int x = (int)px - roomX;
+        int x = (int)px - camI;
         int y = (int)py;
 
         int dw = (int)(PW * squashX);
@@ -3246,14 +3079,23 @@ static void renderGame(int b) {
         int dy = y + (PH - dh);
 
         fillRect(dx, dy, dw, dh, mk(140, 0, 15));
-
-        fillRect(dx + 3, dy + 3, dw - 6, dh - 6,
-                 mk(205, 25, 35));
-
+        fillRect(dx + 3, dy + 3, dw - 6, dh - 6, mk(205, 25, 35));
         drawPlayerFace(dx, dy, dw, dh, facing);
 
-        addDirty(b, x - 14, y - 18, PW + 28, PH + 20);
+        // Draw equipped weapon on Meat Cube's side
+        Color gunCol = mk(95, 215, 255);
+        if (curWeapon == W_SHOTGUN) gunCol = mk(255, 195, 70);
+        else if (curWeapon == W_SAW) gunCol = mk(140, 250, 160);
+        else if (curWeapon == W_PLASMA) gunCol = mk(255, 120, 235);
+
+        int gx = (facing > 0) ? (dx + dw - 4) : (dx - 14);
+        int gy = dy + dh / 2 - 4;
+        fillRect(gx, gy, 18, 10, mk(45, 45, 55));
+        fillRect(gx + (facing > 0 ? 6 : 2), gy + 2, 10, 6, gunCol);
     }
+
+    // 13. HUD Overlay
+    drawHUDFull(b);
 }
 
 // ---------- Cutscene art & Real-Time Animated Gameplay Tutorials ----------
@@ -3415,32 +3257,30 @@ static void drawStoryArt(int art) {
         fillRect(ax + 700, ay + 290, 240, 110, mk(82, 54, 38));
         fillRect(ax + 700, ay + 290, 240, 8, mk(65, 190, 75));
 
-        for (int j = 0; j < 34; j++) {
-            int half = (j * 22) / 33;
-            fillRect(ax + 370 - half, ay + 366 + j, 2 * half + 1, 1, mk(215, 215, 225));
-        }
-
         int cyc = t % 180;
         int cx = ax + 90 + (cyc * 4);
         if (cx > ax + 820) cx = ax + 820;
         int cy = ay + 356;
         int dw = 44, dh = 44;
         bool xOn = false;
-        const char *lbl = "WALK";
+        const char *lbl = "O: SHOOT";
 
-        if (cyc >= 45 && cyc < 85) {
-            int jt = cyc - 45;
-            cy = ay + 356 - (jt * (40 - jt)) / 4;
-            xOn = (jt < 12);
-            lbl = "TAP X";
-            if (jt < 6) { dw = 36; dh = 52; }
-        } else if (cyc >= 110 && cyc < 160) {
+        // Demo Enemy patrolling on the ground
+        if (cyc < 75) {
+            Enemy de = {0,0,0,0,0,0,0, E_WALKER, 2,2, (cyc > 55 ? 2 : 0), t, -1, true};
+            drawEnemyChar(de, ax + 480, ay + 356);
+        }
+        if (cyc >= 25 && cyc < 70) {
+            int bx = ax + 240 + (cyc - 25) * 6;
+            fillRect(bx, ay + 372, 20, 10, mk(80, 220, 255));
+        }
+
+        if (cyc >= 110 && cyc < 160) {
             int jt = cyc - 110;
             cy = ay + 356 - (jt * (55 - jt)) / 4;
             if (jt > 32 && cy > ay + 246) cy = ay + 246;
             xOn = (jt < 34);
             lbl = "HOLD X";
-            if (jt < 8) { dw = 34; dh = 54; }
         } else if (cyc >= 160) {
             cy = ay + 246;
             lbl = "GREAT!";
@@ -3448,14 +3288,12 @@ static void drawStoryArt(int art) {
 
         for (int i = 0; i < 7; i++) {
             int gx = ax + 110 + i * 80;
-            if (i == 3) continue;
             int bend = (iabs(cx + 22 - gx) < 42 && cy > ay + 320) ? 12 : (SN[(t / 5 + i) & 15] / 32);
             drawPlantTuft(gx, ay + 400, 22, bend, 0, i % 3);
         }
-        drawPlantTuft(ax + 760, ay + 290, 22, (iabs(cx + 22 - (ax + 760)) < 42) ? 11 : 2, 0, 1);
 
         drawMiniDemoCube(cx, cy + (44 - dh), dw, dh, 1);
-        drawPadPrompt(ax + 290, ay + 20, false, cyc < 165, false, xOn, lbl);
+        drawPadPrompt(ax + 290, ay + 20, false, cyc < 165, cyc < 70, xOn, lbl);
         return;
     }
 
@@ -3482,30 +3320,18 @@ static void drawStoryArt(int art) {
         int cy = ay + 356;
         bool sqOn = (cyc < 140);
         bool xOn = (cyc >= 50 && cyc < 85);
-        const char *lbl = "HOLD SQ";
+        const char *lbl = "SHOTGUN";
 
         if (cyc >= 50 && cyc < 102) {
             int jt = cyc - 50;
             cy = ay + 356 - (jt * (52 - jt)) / 5;
             lbl = "SPRINT+X";
-        } else if (cyc >= 102) {
-            lbl = "LONG JUMP";
         }
 
         for (int i = 0; i < 5; i++) {
             int wx = ax + 80 + i * 70;
             int bend = (cx > wx - 25 && cx < wx + 70) ? 14 : (SN[(t / 5 + i) & 15] / 28);
             drawPlantTuft(wx, ay + 400, 26, bend, 1, i % 2);
-        }
-        for (int i = 0; i < 3; i++) {
-            int wx = ax + 700 + i * 80;
-            int bend = (cx > wx - 25 && cx < wx + 70) ? 14 : 3;
-            drawPlantTuft(wx, ay + 400, 26, bend, 1, i % 2);
-        }
-
-        if (sqOn && cyc < 52) {
-            fillRect(cx - 18, cy + 32, 10, 10, mk(245, 225, 180));
-            fillRect(cx - 34, cy + 35, 7, 7, mk(215, 195, 150));
         }
 
         drawMiniDemoCube(cx, cy, 44, 44, 1);
@@ -3522,10 +3348,6 @@ static void drawStoryArt(int art) {
         fillRect(ax + 590, ay + 120, 55, 300, mk(150, 105, 58));
         fillRect(ax + 590, ay + 120, 220, 45, mk(165, 118, 68));
         fillRect(ax + 590, ay + 120, 220, 7, mk(240, 200, 115));
-
-        drawPlantTuft(ax + 160, ay + 420, 20, SN[(t / 5) & 15] / 32, 2, 0);
-        drawPlantTuft(ax + 250, ay + 420, 22, SN[(t / 5 + 3) & 15] / 32, 2, 1);
-        drawPlantTuft(ax + 720, ay + 120, 20, SN[(t / 5 + 6) & 15] / 32, 2, 0);
 
         int cyc = t % 190;
         int cx = ax + 220;
@@ -3544,7 +3366,6 @@ static void drawStoryArt(int art) {
             cy = ay + 236 + ((cyc - 35) * 60) / 40;
             dirR = true;
             lbl = "SLIDE";
-            fillRect(cx + 42, cy + 10, 8, 8, mk(240, 220, 180));
         } else if (cyc < 115) {
             int wt = cyc - 75;
             cx = ax + 546 - (wt * 151) / 40;
@@ -3587,20 +3408,13 @@ static void drawStoryArt(int art) {
         if (cx > ax + 820) cx = ax + 820;
         int cy = ay + 356;
         bool xOn = (cyc >= 50 && cyc < 80);
-        const char *lbl = "TIMING";
+        const char *lbl = "SAW GUN";
 
         if (cyc >= 50 && cyc < 106) {
             int jt = cyc - 50;
             cy = ay + 356 - (jt * (56 - jt)) / 4;
             lbl = "EDGE JUMP";
         }
-
-        for (int i = 0; i < 4; i++) {
-            int gx = ax + 100 + i * 85;
-            int bend = (iabs(cx + 22 - gx) < 42) ? 12 : 2;
-            drawPlantTuft(gx, ay + 400, 22, bend, 3, i % 2);
-        }
-        drawPlantTuft(ax + 680, ay + 400, 22, (iabs(cx + 22 - (ax + 680)) < 42) ? 12 : -2, 3, 1);
 
         drawMiniDemoCube(cx, cy, 44, 44, 1);
         drawPadPrompt(ax + 290, ay + 20, false, cyc < 140, false, xOn, lbl);
@@ -3633,7 +3447,7 @@ static void drawStoryArt(int art) {
         int jt = cyc - 25;
         cx = ax + 285 + (jt * 235) / 47;
         cy = ay + 366 - (jt * (47 - jt)) / 3 - (jt * 104) / 47;
-        lbl = "STOMP HEAD!";
+        lbl = "STOMP+O!";
     } else {
         int bt = cyc - 72;
         cx = ax + 520 + (bt * 240) / 88;
@@ -3765,6 +3579,12 @@ static void setState(int s) {
 
 static void startLevel() {
     currentLevel = levelSel;
+
+    // Unlock weapons matching the stage progression automatically
+    if (currentLevel >= 1 && unlockedWeapons < 2) unlockedWeapons = 2;
+    if (currentLevel >= 3 && unlockedWeapons < 3) unlockedWeapons = 3;
+    if (currentLevel >= 5 && unlockedWeapons < 4) unlockedWeapons = 4;
+
     buildLevel();
 
     roomIdx = 0;
@@ -3774,6 +3594,7 @@ static void startLevel() {
     splatCount = 0;
     winTimer = 0;
     deadTimer = 0;
+    justUnlockedWeapon = false;
 
     for (int i = 0; i < MAX_PARTS; i++)
         parts[i].life = 0;
@@ -4243,7 +4064,7 @@ int main(void) {
     respawn();
 
     setState(S_MENU);
-    snd(1); // Startup sound chime when Main Menu opens
+    snd(1);
 
     for (;;) {
         int b = frameID & 1;
