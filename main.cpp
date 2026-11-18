@@ -11,6 +11,128 @@
 #include "../../_common/log.h"
 #include "ar_data.h"
 
+// Safety fallback definitions in case gen_ar.py is updated in a separate commit
+#ifndef AR_TITLE
+#define AR_TITLE (-1)
+#endif
+#ifndef AR_B_SETTINGS
+#define AR_B_SETTINGS (-1)
+#endif
+#ifndef AR_B_CREDITS
+#define AR_B_CREDITS (-1)
+#endif
+#ifndef AR_START
+#define AR_START (-1)
+#endif
+#ifndef AR_SETTINGS
+#define AR_SETTINGS (-1)
+#endif
+#ifndef AR_CREDITS
+#define AR_CREDITS (-1)
+#endif
+#ifndef AR_EXIT
+#define AR_EXIT (-1)
+#endif
+#ifndef AR_BACK
+#define AR_BACK (-1)
+#endif
+#ifndef AR_CTRL_ANALOG
+#define AR_CTRL_ANALOG (-1)
+#endif
+#ifndef AR_CTRL_ARROWS
+#define AR_CTRL_ARROWS (-1)
+#endif
+#ifndef AR_LANG
+#define AR_LANG (-1)
+#endif
+#ifndef AR_SELECT
+#define AR_SELECT (-1)
+#endif
+#ifndef AR_BACK_HINT
+#define AR_BACK_HINT (-1)
+#endif
+#ifndef AR_CHANGE_TIP
+#define AR_CHANGE_TIP (-1)
+#endif
+#ifndef AR_STORY_HINT
+#define AR_STORY_HINT (-1)
+#endif
+#ifndef AR_DESIGNERS
+#define AR_DESIGNERS (-1)
+#endif
+#ifndef AR_KAREEM
+#define AR_KAREEM (-1)
+#endif
+#ifndef AR_CLAUDE
+#define AR_CLAUDE (-1)
+#endif
+#ifndef AR_GAME_NAME
+#define AR_GAME_NAME (-1)
+#endif
+#ifndef AR_BOOKS
+#define AR_BOOKS (-1)
+#endif
+#ifndef AR_FLOOR1
+#define AR_FLOOR1 (-1)
+#endif
+#ifndef AR_FLOOR2
+#define AR_FLOOR2 (-1)
+#endif
+#ifndef AR_STAIRS
+#define AR_STAIRS (-1)
+#endif
+#ifndef AR_FLASH_ON
+#define AR_FLASH_ON (-1)
+#endif
+#ifndef AR_FLASH_OFF
+#define AR_FLASH_OFF (-1)
+#endif
+#ifndef AR_NOISE_LOW
+#define AR_NOISE_LOW (-1)
+#endif
+#ifndef AR_NOISE_HIGH
+#define AR_NOISE_HIGH (-1)
+#endif
+#ifndef AR_STALKER_NEAR
+#define AR_STALKER_NEAR (-1)
+#endif
+#ifndef AR_SPEED_UP
+#define AR_SPEED_UP (-1)
+#endif
+#ifndef AR_PICK_BOOK
+#define AR_PICK_BOOK (-1)
+#endif
+#ifndef AR_DOOR_LOCKED
+#define AR_DOOR_LOCKED (-1)
+#endif
+#ifndef AR_DOOR_OPEN
+#define AR_DOOR_OPEN (-1)
+#endif
+#ifndef AR_ESCAPE_NOW
+#define AR_ESCAPE_NOW (-1)
+#endif
+#ifndef AR_INTRO_1
+#define AR_INTRO_1 (-1)
+#endif
+#ifndef AR_INTRO_2
+#define AR_INTRO_2 (-1)
+#endif
+#ifndef AR_INTRO_3
+#define AR_INTRO_3 (-1)
+#endif
+#ifndef AR_OUTRO_1
+#define AR_OUTRO_1 (-1)
+#endif
+#ifndef AR_OUTRO_2
+#define AR_OUTRO_2 (-1)
+#endif
+#ifndef AR_CAUGHT_1
+#define AR_CAUGHT_1 (-1)
+#endif
+#ifndef AR_CAUGHT_2
+#define AR_CAUGHT_2 (-1)
+#endif
+
 // Direct C-ABI bindings to PS4 libSceAudioOut
 #ifndef NO_AUDIO
 extern "C" {
@@ -33,8 +155,6 @@ extern "C" {
 #define FRAME_HEIGHT 1080
 #define FRAME_DEPTH 4
 
-// 3D Viewport internal grid (320x150 scaled 6x6 => 1920x900 3D View + 180px HUD bar)
-// With delta-color caching and CRT horror scanlines, this runs at a locked 60 FPS!
 #define VW 320
 #define VH 150
 #define VP_Y0 110
@@ -58,10 +178,8 @@ static int audioHandle = -1;
 #endif
 
 // ---------- 3D Two-Story House Map ----------
-// '#' = Old Wood Wall, 'W' = Brick/Window Wall, 'B' = Bookshelf Wall,
-// 'D' = Main Escape Door (Floor 0, x=7..8, y=14), 'S' = Stairs between Floor 0 & Floor 1
 static const char HOUSE_MAP[NUM_FLOORS][MAP_H][MAP_W + 1] = {
-    // FLOOR 0: Ground Floor (Main Foyer, Escape Door at South, Stairs at North-Center, 4 Rooms)
+    // FLOOR 0: Ground Floor
     {
         "################",
         "#B....#SS#....B#",
@@ -80,7 +198,7 @@ static const char HOUSE_MAP[NUM_FLOORS][MAP_H][MAP_W + 1] = {
         "######DDDD######",
         "################"
     },
-    // FLOOR 1: Second Floor (Upper Landing at Stairs, 4 Creepy Upstairs Rooms & Corridors)
+    // FLOOR 1: Second Floor
     {
         "################",
         "#W....#SS#....W#",
@@ -116,7 +234,7 @@ static int state = S_MENU;
 static int menuSel = 0;
 static int settingsSel = 0;
 static int controlMode = 1;
-static int lang = 1; // Default to Arabic (1) if available, fallback English
+static int lang = 1;
 
 static int tick = 0;
 static int frameID = 0;
@@ -125,13 +243,13 @@ static unsigned int rng = 12345;
 // Player 3D Transform
 static float plX = 7.5f;
 static float plY = 12.5f;
-static float plAngle = -1.570796f; // Facing North into the house
+static float plAngle = -1.570796f;
 static int plFloor = 0;
-static float plPitch = 0.0f;       // Look up/down offset
+static float plPitch = 0.0f;
 static float headBob = 0.0f;
 static float stepTimer = 0.0f;
 static bool flashlightOn = true;
-static float noiseLevel = 0.0f;    // 0.0 = silent, 1.0 = loud sprint
+static float noiseLevel = 0.0f;
 static int speedAlertTimer = 0;
 static int doorAlertTimer = 0;
 static int stairCooldown = 0;
@@ -147,12 +265,12 @@ static Book books[TOTAL_BOOKS];
 static int booksCollected = 0;
 
 static const float BOOK_INIT[TOTAL_BOOKS][3] = {
-    {0.0f, 2.5f,  2.5f},  // Floor 0: North-West Study
-    {0.0f, 13.5f, 2.5f},  // Floor 0: North-East Library
-    {0.0f, 2.5f,  11.5f}, // Floor 0: South-West Living Room
-    {1.0f, 2.5f,  2.5f},  // Floor 1: Upstairs Master Bedroom
-    {1.0f, 13.5f, 2.5f},  // Floor 1: Upstairs East Attic
-    {1.0f, 8.0f,  12.5f}  // Floor 1: Upstairs South Balcony Hall
+    {0.0f, 2.5f,  2.5f},
+    {0.0f, 13.5f, 2.5f},
+    {0.0f, 2.5f,  11.5f},
+    {1.0f, 2.5f,  2.5f},
+    {1.0f, 13.5f, 2.5f},
+    {1.0f, 8.0f,  12.5f}
 };
 
 // Smart Stalker Entity
@@ -179,10 +297,8 @@ static const float PATROL_PTS[6][2] = {
     {2.5f, 12.0f}, {13.5f, 12.0f}, {7.5f, 2.5f}
 };
 
-// Cutscene timer
 static int cutTick = 0;
 
-// 60-FPS Virtual Framebuffer Delta Cache & Depth Buffer
 static unsigned short vbuf[2][VH][VW];
 static float zBuffer[VW];
 static bool uiFull[2] = {true, true};
@@ -421,8 +537,6 @@ static void initAudio() {
 #endif
 }
 
-// 0=cursor, 1=select, 2=back, 3=footstep, 4=book_pickup, 5=speed_up_warn,
-// 6=door_slam, 7=stalker_roar, 8=jumpscare_scream, 9=escape_win, 10=flashlight_click
 static void snd(int k) {
     if (state == S_MENU || state == S_SETTINGS || state == S_CREDITS) {
         if (k == 0) playToneImmediate(760, 25, 15000);
@@ -435,7 +549,6 @@ static void snd(int k) {
         return;
     }
 
-    // Do not let quiet footsteps interrupt major horror alerts
     if (k == 3 && curSfx >= 4)
         return;
 
@@ -443,14 +556,14 @@ static void snd(int k) {
     sfxPos = 0;
     sfxPhase = 0;
 
-    if (k == 3)      sfxLen = 2200;   // Wooden floorboard footstep
-    else if (k == 4) sfxLen = 8500;   // Mystical book pickup
-    else if (k == 5) sfxLen = 12000;  // Monster speed up dread pulse
-    else if (k == 6) sfxLen = 9500;   // Heavy door slam / unlock
-    else if (k == 7) sfxLen = 11000;  // Stalker spotted you roar
-    else if (k == 8) sfxLen = 22000;  // Jumpscare scream
-    else if (k == 9) sfxLen = 16000;  // Escape victory
-    else             sfxLen = 1000;   // Flashlight click
+    if (k == 3)      sfxLen = 2200;
+    else if (k == 4) sfxLen = 8500;
+    else if (k == 5) sfxLen = 12000;
+    else if (k == 6) sfxLen = 9500;
+    else if (k == 7) sfxLen = 11000;
+    else if (k == 8) sfxLen = 22000;
+    else if (k == 9) sfxLen = 16000;
+    else             sfxLen = 1000;
 }
 
 static void updateHorrorAudio() {
@@ -462,9 +575,8 @@ static void updateHorrorAudio() {
 
     static short outBuf[256 * 2];
 
-    // Calculate heartbeat speed & loudness from Stalker 3D distance
     float effDist = stDistToPlayer + (stFloor != plFloor ? 6.0f : 0.0f);
-    int heartPeriod = 36000; // Calm heartbeat
+    int heartPeriod = 36000;
     int heartVol = 4500;
 
     if (effDist < 12.0f) {
@@ -481,14 +593,12 @@ static void updateHorrorAudio() {
             int mix = 0;
             windSample++;
 
-            // 1. Eerie Old House Wind & Creak Ambience
             noiseRng = noiseRng * 1664525u + 1013904223u;
             int rawNz = ((int)(noiseRng >> 21) & 511) - 256;
             static int lpWind = 0;
             lpWind = (lpWind * 31 + rawNz) >> 5;
             mix += lpWind * 6;
 
-            // 2. Dynamic 3D Positional Heartbeat ("Lub-Dub") when Stalker is near
             if (state == S_PLAY_3D) {
                 heartSample++;
                 if (heartSample >= heartPeriod)
@@ -496,9 +606,9 @@ static void updateHorrorAudio() {
 
                 int hEnv = 0;
                 if (heartSample < 2400) {
-                    hEnv = 2400 - heartSample; // First beat (Lub)
+                    hEnv = 2400 - heartSample;
                 } else if (heartSample >= 4200 && heartSample < 6200) {
-                    hEnv = 6200 - heartSample; // Second beat (Dub)
+                    hEnv = 6200 - heartSample;
                 }
 
                 if (hEnv > 0) {
@@ -510,7 +620,6 @@ static void updateHorrorAudio() {
                 }
             }
 
-            // 3. Active Horror Sound Effects
             if (curSfx >= 0) {
                 int rem = sfxLen - sfxPos;
                 if (rem <= 0) {
@@ -520,37 +629,29 @@ static void updateHorrorAudio() {
                     int vol = 14000;
 
                     if (curSfx == 3) {
-                        // Wooden floorboard step thud + creak
                         f = 95 - (sfxPos >> 6);
                         if (f < 48) f = 48;
                         vol = (noiseLevel > 0.6f) ? 14000 : 7500;
                     } else if (curSfx == 4) {
-                        // Book pickup chime
                         f = (sfxPos < 4000) ? 528 : 792;
                         vol = 15000;
                     } else if (curSfx == 5) {
-                        // Monster speed increased warning pulse
                         f = (sfxPos < 6000) ? 145 : 110;
                         vol = 17500;
                     } else if (curSfx == 6) {
-                        // Heavy main door slam / unlock
                         f = 82 - (sfxPos >> 8);
                         if (f < 40) f = 40;
                         vol = 19000;
                     } else if (curSfx == 7) {
-                        // Stalker roar
                         f = 135 + ((sfxPos >> 5) & 31);
                         vol = 18500;
                     } else if (curSfx == 8) {
-                        // Jumpscare scream
                         f = 380 + ((sfxPos >> 3) & 127);
                         vol = 22000;
                     } else if (curSfx == 9) {
-                        // Escape chord
                         f = (sfxPos < 5000) ? 440 : ((sfxPos < 10000) ? 554 : 660);
                         vol = 16500;
                     } else {
-                        // Flashlight click
                         f = 1200;
                         vol = 11000;
                     }
@@ -699,7 +800,7 @@ static void drawTextC(int cx, int y, const char *s, int scale, Color c) {
 
 static int arW(int id) {
 #if ARABIC_OK
-    return id >= 0 ? AR_IMGS[id].w : 0;
+    return (id >= 0 && id < AR_COUNT) ? AR_IMGS[id].w : 0;
 #else
     (void)id; return 0;
 #endif
@@ -707,7 +808,7 @@ static int arW(int id) {
 
 static int arH(int id) {
 #if ARABIC_OK
-    return id >= 0 ? AR_IMGS[id].h : 0;
+    return (id >= 0 && id < AR_COUNT) ? AR_IMGS[id].h : 0;
 #else
     (void)id; return 0;
 #endif
@@ -715,7 +816,7 @@ static int arH(int id) {
 
 static void drawArCols(int id, int x, int y, int c0, int c1, Color col) {
 #if ARABIC_OK
-    if (id < 0) return;
+    if (id < 0 || id >= AR_COUNT) return;
     const ArImg &im = AR_IMGS[id];
     int rb = (im.w + 7) / 8;
     if (c0 < 0) c0 = 0;
@@ -733,7 +834,7 @@ static void drawArCols(int id, int x, int y, int c0, int c1, Color col) {
 }
 
 static void drawLabel(int tid, int cx, int boxY, int boxH, int sc, Color c) {
-    if (useAr() && TXT_AR[tid] >= 0) {
+    if (useAr() && TXT_AR[tid] >= 0 && TXT_AR[tid] < AR_COUNT) {
         int id = TXT_AR[tid];
         int w = arW(id);
         int h = arH(id);
@@ -744,7 +845,7 @@ static void drawLabel(int tid, int cx, int boxY, int boxH, int sc, Color c) {
 }
 
 static int labelWidth(int tid, int sc) {
-    if (useAr() && TXT_AR[tid] >= 0)
+    if (useAr() && TXT_AR[tid] >= 0 && TXT_AR[tid] < AR_COUNT)
         return arW(TXT_AR[tid]);
     return textWidth(TXT_EN[tid], sc);
 }
@@ -815,7 +916,7 @@ static void resetGame() {
 
     stX = 7.5f;
     stY = 2.5f;
-    stFloor = 1; // Starts on the Second Floor!
+    stFloor = 1;
     stMode = AI_PATROL;
     stWaypoint = 0;
     stTargetX = PATROL_PTS[0][0];
@@ -830,8 +931,7 @@ static void resetGame() {
 
 // ---------- Smart Stalker AI & Player Update ----------
 static float getStalkerSpeed() {
-    // Monster speed increases every 2 books collected!
-    int tier = booksCollected / 2; // 0 (0-1 books), 1 (2-3 books), 2 (4-5 books), 3 (6 books!)
+    int tier = booksCollected / 2;
     return 0.025f + (float)tier * 0.0085f;
 }
 
@@ -843,7 +943,6 @@ static void updateStalkerAI() {
     float dyP = plY - stY;
     stDistToPlayer = sqrtf(dxP * dxP + dyP * dyP);
 
-    // 1. Direct Line of Sight Detection
     bool canSee = false;
     if (stFloor == plFloor) {
         float seeRange = flashlightOn ? 10.5f : 6.2f;
@@ -854,16 +953,14 @@ static void updateStalkerAI() {
 
     if (canSee) {
         if (stMode != AI_CHASE && stRoarCooldown == 0) {
-            snd(7); // Terrifying Stalker roar!
+            snd(7);
             stRoarCooldown = 180;
         }
         stMode = AI_CHASE;
         stTargetX = plX;
         stTargetY = plY;
         stTargetFloor = plFloor;
-    }
-    // 2. Smart Hearing Detection (Hears running or nearby walking!)
-    else {
+    } else {
         float hearRange = noiseLevel * 13.5f;
         float floorPenalty = (stFloor == plFloor) ? 0.0f : 3.5f;
         if (stDistToPlayer + floorPenalty < hearRange) {
@@ -878,7 +975,6 @@ static void updateStalkerAI() {
         }
     }
 
-    // 3. Determine movement goal (use stairs at (7.5, 2.0) if target is on the other floor!)
     float goalX = stTargetX;
     float goalY = stTargetY;
 
@@ -906,7 +1002,6 @@ static void updateStalkerAI() {
         float vx = (gdx / gdist) * spd;
         float vy = (gdy / gdist) * spd;
 
-        // Smooth wall sliding for AI navigation
         if (canWalk(stFloor, stX + vx, stY, 0.28f))
             stX += vx;
         else if (canWalk(stFloor, stX, stY + (vy > 0 ? spd : -spd), 0.28f))
@@ -917,7 +1012,6 @@ static void updateStalkerAI() {
         else if (canWalk(stFloor, stX + (vx > 0 ? spd : -spd), stY, 0.28f))
             stX += (vx > 0 ? spd : -spd);
     } else {
-        // Reached target / waypoint -> pick next patrol waypoint (occasionally switch floors to hunt player)
         stMode = AI_PATROL;
         stWaypoint = (stWaypoint + 1) % 6;
         stTargetX = PATROL_PTS[stWaypoint][0];
@@ -926,11 +1020,10 @@ static void updateStalkerAI() {
             stTargetFloor = plFloor;
     }
 
-    // 4. Check if Stalker caught the player!
     if (stFloor == plFloor && stDistToPlayer < 0.62f) {
         state = S_CAUGHT_3D;
         cutTick = 0;
-        snd(8); // Jumpscare scream!
+        snd(8);
         invalidate3DBuffers();
     }
 }
@@ -946,7 +1039,6 @@ static void updatePlay3D() {
         if (doorAlertTimer == 0) { hudFull[0] = true; hudFull[1] = true; }
     }
 
-    // Toggle Flashlight (Triangle or R1)
     if (in.triangleNew) {
         flashlightOn = !flashlightOn;
         snd(10);
@@ -954,7 +1046,6 @@ static void updatePlay3D() {
         hudFull[1] = true;
     }
 
-    // Camera Rotation (Right Stick or D-Pad Left/Right in Arrows mode)
     float rotSpd = 0.048f;
     if (in.rx != 0.0f)
         plAngle += in.rx * rotSpd;
@@ -968,7 +1059,6 @@ static void updatePlay3D() {
         plPitch *= 0.9f;
     }
 
-    // Player Movement (Forward/Back + Strafe)
     float fwd = 0.0f;
     float str = 0.0f;
 
@@ -1011,7 +1101,7 @@ static void updatePlay3D() {
         if (stepTimer >= 26.0f) {
             stepTimer = 0.0f;
             if (!sneaking)
-                snd(3); // Wooden floorboard footstep sound
+                snd(3);
         }
 
         float targetNoise = sprinting ? 1.0f : (sneaking ? 0.08f : 0.38f);
@@ -1029,7 +1119,6 @@ static void updatePlay3D() {
         headBob = 0.0f;
     }
 
-    // Check Staircase Transition between Ground Floor (0) and Second Floor (1)
     if (stairCooldown == 0 && mapCell(plFloor, (int)plX, (int)plY) == 'S') {
         plFloor = 1 - plFloor;
         plY = 2.4f;
@@ -1039,7 +1128,6 @@ static void updatePlay3D() {
         hudFull[1] = true;
     }
 
-    // Check Book Collection (Auto-collect on close touch OR press X nearby)
     for (int i = 0; i < TOTAL_BOOKS; i++) {
         if (books[i].collected || books[i].floor != plFloor)
             continue;
@@ -1055,12 +1143,10 @@ static void updatePlay3D() {
             hudFull[1] = true;
 
             if (booksCollected == TOTAL_BOOKS) {
-                // All 6 books collected -> Main Front Door unlocks immediately!
                 doorAlertTimer = 300;
                 speedAlertTimer = 180;
                 snd(6);
             } else if ((booksCollected % 2) == 0) {
-                // Every 2 books -> Monster speed increases!
                 speedAlertTimer = 200;
                 snd(5);
             } else {
@@ -1069,10 +1155,8 @@ static void updatePlay3D() {
         }
     }
 
-    // Check Main Front Door Escape (Ground Floor, x=7..8, y>=13.0)
     if (plFloor == 0 && plX >= 6.5f && plX <= 9.5f && plY >= 12.8f) {
         if (booksCollected >= TOTAL_BOOKS && (plY >= 13.4f || in.crossNew)) {
-            // Immediate Escape! Trigger 3D Ending Cutscene!
             state = S_OUTRO_3D;
             cutTick = 0;
             snd(9);
@@ -1089,7 +1173,6 @@ static void putVirtualPixel(int b, int vx, int vy, int r, int g, int bl) {
     if (vx < 0 || vx >= VW || vy < 0 || vy >= VH)
         return;
 
-    // Quantize to 12-bit RGB444 for delta-frame caching (cuts 75%+ of DrawPixel calls!)
     int qr = iclamp(r, 0, 255) & 0xF8;
     int qg = iclamp(g, 0, 255) & 0xF8;
     int qb = iclamp(bl, 0, 255) & 0xF8;
@@ -1104,7 +1187,6 @@ static void putVirtualPixel(int b, int vx, int vy, int r, int g, int bl) {
     int sx0 = vx * CELL_W;
     int sy0 = VP_Y0 + vy * CELL_H;
 
-    // 4 active rows per 6px cell (leaves 2px atmospheric horror scanline gap for 60 FPS speed!)
     for (int py = sy0; py < sy0 + 4; py++) {
         for (int px0 = sx0; px0 < sx0 + CELL_W; px0++) {
             scene->DrawPixel(px0, py, c);
@@ -1125,7 +1207,6 @@ static void render3DScene(
 
     int horizon = (VH / 2) + (int)pitchOff + (int)(sinf(headBob) * 2.5f);
 
-    // 1. Raycast 3D Walls, Doors, Stairs, Ceiling & Floor
     for (int x = 0; x < VW; x++) {
         float camScreenX = 2.0f * (float)x / (float)VW - 1.0f;
         float rayDirX = dirX + planeX * camScreenX;
@@ -1156,7 +1237,6 @@ static void render3DScene(
             sideDistY = ((float)mapY + 1.0f - camY0) * deltaDistY;
         }
 
-        int hit = 0;
         int side = 0;
         char hitTile = '#';
 
@@ -1173,7 +1253,6 @@ static void render3DScene(
 
             char c = mapCell(camFl, mapX, mapY);
             if (c == '#' || c == 'W' || c == 'B' || c == 'D') {
-                hit = 1;
                 hitTile = c;
                 break;
             }
@@ -1191,7 +1270,6 @@ static void render3DScene(
         wallX -= floorf(wallX);
         int texX = (int)(wallX * 16.0f) & 15;
 
-        // Medium Flashlight Cone Calculation (Wide, clear medium-bright beam!)
         float centerXDist = camScreenX * camScreenX;
         float wallLight = 0.24f / (1.0f + perpWallDist * 0.18f);
         if (flashActive) {
@@ -1204,7 +1282,6 @@ static void render3DScene(
         if (side == 1) wallLight *= 0.80f;
         if (wallLight > 1.35f) wallLight = 1.35f;
 
-        // Base wall colors by material & floor
         int baseR = (camFl == 0) ? 128 : 105;
         int baseG = (camFl == 0) ? 88  : 75;
         int baseB = (camFl == 0) ? 58  : 110;
@@ -1214,7 +1291,6 @@ static void render3DScene(
         } else if (hitTile == 'B') {
             baseR = 140; baseG = 72; baseB = 45;
         } else if (hitTile == 'D') {
-            // Main Front Escape Door (Glows emerald green when all 6 books are collected!)
             if (booksCollected >= TOTAL_BOOKS) {
                 baseR = 45; baseG = 220; baseB = 110;
             } else {
@@ -1222,7 +1298,6 @@ static void render3DScene(
             }
         }
 
-        // Vertical plank / frame detail
         if (texX == 0 || texX == 15) {
             baseR = (baseR * 3) / 4;
             baseG = (baseG * 3) / 4;
@@ -1231,7 +1306,6 @@ static void render3DScene(
 
         for (int y = 0; y < VH; y++) {
             if (y < drawStart) {
-                // 3D Ceiling with wooden beams
                 int dy = horizon - y;
                 if (dy < 1) dy = 1;
                 float cDist = (float)VH / (2.0f * (float)dy);
@@ -1248,17 +1322,14 @@ static void render3DScene(
                 putVirtualPixel(b, x, y, cr, cg, cb);
             }
             else if (y <= drawEnd) {
-                // 3D Wall with procedural brick/bookshelf/door texture
                 int texY = (((y - drawStart) * 16) / (lineH > 0 ? lineH : 1)) & 15;
                 int wr = baseR, wg = baseG, wb = baseB;
 
                 if (hitTile == 'B' && (texY & 3) == 2 && texX > 1 && texX < 14) {
-                    // Colorful old book spines on bookshelf walls
                     wr = ((texX * 37) & 64) ? 180 : 70;
                     wg = ((texY * 23) & 64) ? 150 : 60;
                     wb = 130;
                 } else if (hitTile == 'D' && texX >= 5 && texX <= 10 && texY >= 4 && texY <= 11) {
-                    // Glowing seal emblem on the Main Front Door
                     wr = (booksCollected >= TOTAL_BOOKS) ? 180 : 255;
                     wg = (booksCollected >= TOTAL_BOOKS) ? 255 : 185;
                     wb = 90;
@@ -1274,7 +1345,6 @@ static void render3DScene(
                                 (int)(wb * wallLight));
             }
             else {
-                // 3D Floor & Wooden Staircase
                 int dy = y - horizon;
                 if (dy < 1) dy = 1;
                 float fDist = (float)VH / (2.0f * (float)dy);
@@ -1294,7 +1364,6 @@ static void render3DScene(
                 int fr, fg, fb;
 
                 if (fTile == 'S') {
-                    // Golden highlighted wooden staircase steps!
                     int stepStripe = ((int)(fy * 8.0f)) & 1;
                     fr = stepStripe ? 210 : 145;
                     fg = stepStripe ? 165 : 105;
@@ -1317,7 +1386,6 @@ static void render3DScene(
         }
     }
 
-    // 2. Render 3D Glowing Cursed Books on current floor
     float invDet = 1.0f / (planeX * dirY - dirX * planeY);
 
     for (int i = 0; i < TOTAL_BOOKS; i++) {
@@ -1365,7 +1433,6 @@ static void render3DScene(
         }
     }
 
-    // 3. Render 3D Smart Stalker Entity
     if (drawStalker && stalkerFl == camFl) {
         float sx = stalkerX - camX0;
         float sy = stalkerY - camY0;
@@ -1395,10 +1462,8 @@ static void render3DScene(
                 for (int yy = y0; yy <= y1; yy++) {
                     int relY = ((yy - (horizon - spH / 2)) * 24) / (spH > 0 ? spH : 1);
 
-                    // Sculpted 3D humanoid horror silhouette (Head, Glowing Eyes, Ribs, Arms)
                     if (relY < 6) {
                         if (relX < 4 || relX > 11) continue;
-                        // Glowing red/yellow Stalker eyes!
                         if (relY == 3 && (relX == 5 || relX == 6 || relX == 9 || relX == 10)) {
                             putVirtualPixel(b, xx, yy, 255, 45, 35);
                         } else {
@@ -1423,13 +1488,10 @@ static void render3DScene(
 
 // ---------- HUD & 3D Cutscene Overlays ----------
 static void draw3DHUD(int b) {
-    // Draw static top & bottom HUD bars when state or status changes
     if (hudFull[b]) {
-        // Top HUD Bar (y: 0..108)
         fillRect(0, 0, FRAME_WIDTH, VP_Y0 - 2, mk(16, 12, 24));
         fillRect(0, VP_Y0 - 4, FRAME_WIDTH, 4, mk(65, 35, 55));
 
-        // 1. Books Counter (Left)
         drawLabel(T_BOOKS, 140, 18, 42, 4, mk(240, 215, 120));
         for (int i = 0; i < TOTAL_BOOKS; i++) {
             int bx = 250 + i * 44;
@@ -1438,27 +1500,23 @@ static void draw3DHUD(int b) {
             fillRect(bx + 4, 24, 24, 30, got ? mk(210, 35, 50) : mk(28, 22, 38));
         }
 
-        // 2. Current Floor Indicator (Center-Left)
         int flTid = (plFloor == 0) ? T_FLOOR1 : T_FLOOR2;
         if (mapCell(plFloor, (int)plX, (int)plY) == 'S')
             flTid = T_STAIRS;
         fillRect(560, 18, 280, 44, mk(32, 24, 48));
         drawLabel(flTid, 700, 18, 44, 3, mk(185, 220, 255));
 
-        // 3. Flashlight Status (Center-Right)
         fillRect(880, 18, 380, 44, mk(32, 24, 48));
         drawLabel(flashlightOn ? T_FLASH_ON : T_FLASH_OFF,
                   1070, 18, 44, 2,
                   flashlightOn ? mk(255, 235, 130) : mk(140, 130, 160));
 
-        // 4. Sound / Stealth Status (Right)
         bool loud = (noiseLevel >= 0.6f);
         fillRect(1290, 18, 580, 44, loud ? mk(145, 25, 35) : mk(32, 24, 48));
         drawLabel(loud ? T_NOISE_HIGH : T_NOISE_LOW,
                   1580, 18, 44, 2,
                   loud ? mk(255, 230, 210) : mk(165, 230, 185));
 
-        // Bottom HUD Bar (y: 1010..1080)
         int botY = VP_Y0 + VH * CELL_H;
         fillRect(0, botY, FRAME_WIDTH, FRAME_HEIGHT - botY, mk(16, 12, 24));
         fillRect(0, botY, FRAME_WIDTH, 4, mk(65, 35, 55));
@@ -1501,7 +1559,6 @@ static void draw3DHUD(int b) {
     }
 }
 
-// 3D Intro Cutscene: Entering the Old Two-Story House, Door Slams, Stalker Appears Upstairs!
 static void renderIntro3D(int b) {
     float t = (float)cutTick;
     float camX0 = 7.5f;
@@ -1511,19 +1568,16 @@ static void renderIntro3D(int b) {
     int subTid = T_INTRO_1;
 
     if (cutTick < 130) {
-        // Phase 1: Walk forward into the grand foyer of the two-story house
         camY0 = 13.0f - (t / 130.0f) * 2.2f;
         headBob = t * 0.14f;
         subTid = T_INTRO_1;
     } else if (cutTick < 260) {
-        // Phase 2: Turn around 180 degrees as the Main Escape Door slams shut!
         camY0 = 10.8f;
         float p = (t - 130.0f) / 60.0f;
         if (p > 1.0f) p = 1.0f;
         camAng = -1.570796f + p * 3.14159f;
         subTid = T_INTRO_2;
     } else {
-        // Phase 3: Turn back North toward the stairs as the Stalker crosses the hall!
         camY0 = 10.8f;
         float p = (t - 260.0f) / 50.0f;
         if (p > 1.0f) p = 1.0f;
@@ -1538,7 +1592,6 @@ static void renderIntro3D(int b) {
     render3DScene(b, camX0, camY0, camAng, 0, pitch, true,
                   (cutTick >= 270), stalkX, stalkY, 0);
 
-    // Draw Cutscene Subtitle Banner
     if (cutTick == 1 || cutTick == 2 || cutTick == 130 || cutTick == 131 || cutTick == 260 || cutTick == 261) {
         fillRect(0, 0, FRAME_WIDTH, VP_Y0 - 2, mk(12, 8, 18));
         drawLabel(T_TITLE, 960, 15, 80, 6, mk(215, 35, 55));
@@ -1550,10 +1603,8 @@ static void renderIntro3D(int b) {
     }
 }
 
-// 3D Ending Escape Cutscene: Bursting out of the Main Front Door & Looking Back at the House!
 static void renderOutro3D(int b) {
     float t = (float)cutTick;
-    // Camera pulls away from the Main Door while looking back at the Stalker trapped inside
     float camX0 = 7.5f;
     float camY0 = 10.5f + (t / 320.0f) * 3.0f;
     if (camY0 > 13.4f) camY0 = 13.4f;
@@ -1572,7 +1623,6 @@ static void renderOutro3D(int b) {
     }
 }
 
-// 3D Jumpscare Cutscene when the Stalker catches you!
 static void renderCaught3D(int b) {
     float shakeX = ((cutTick & 2) ? 0.08f : -0.08f);
     float stalkX = plX + cosf(plAngle) * 0.65f + shakeX;
@@ -1789,8 +1839,8 @@ int main(void) {
 
         if (state == S_INTRO_3D) {
             cutTick++;
-            if (cutTick == 135) snd(6); // Door slam sound in 3D intro!
-            if (cutTick == 275) snd(7); // Stalker sound in 3D intro!
+            if (cutTick == 135) snd(6);
+            if (cutTick == 275) snd(7);
 
             renderIntro3D(b);
 
