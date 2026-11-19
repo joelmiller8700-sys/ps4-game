@@ -468,11 +468,13 @@ static void refreshSecondPad() {
     if (padHandle2 >= 0)
         return;
 
-    int uids[4] = { -1, -1, -1, -1 };
-    if (sceUserServiceGetLoginUserIdList(uids) == 0) {
-        for (int i = 0; i < 4; i++) {
-            if (uids[i] > 0 && uids[i] != padUserID) {
-                padUserID2 = uids[i];
+    OrbisUserServiceLoginUserIdList loginList;
+    memset(&loginList, 0, sizeof(loginList));
+    if (sceUserServiceGetLoginUserIdList(&loginList) == 0) {
+        for (int i = 0; i < ORBIS_USER_SERVICE_MAX_LOGIN_USERS; i++) {
+            int uid = loginList.userId[i];
+            if (uid > 0 && uid != padUserID) {
+                padUserID2 = uid;
                 padHandle2 = scePadOpen(padUserID2, 0, 0, NULL);
                 if (padHandle2 >= 0)
                     return;
@@ -480,7 +482,6 @@ static void refreshSecondPad() {
         }
     }
 
-    // Fallback: open second controller slot on initial user or next slot
     if (padHandle2 < 0)
         padHandle2 = scePadOpen(padUserID, 1, 0, NULL);
     if (padHandle2 < 0)
@@ -2309,7 +2310,6 @@ static void stepPlayerPhysics(
     if (!jumpHeld && svy < -6.0f)
         svy = -6.0f;
 
-    // Horizontal collision
     x += svx;
     if (rectSolid((int)x, (int)y, PW, PH)) {
         if (svx > 0)
@@ -2319,7 +2319,6 @@ static void stepPlayerPhysics(
         svx = 0;
     }
 
-    // Vertical collision
     y += svy;
     grounded = false;
     if (rectSolid((int)x, (int)y, PW, PH)) {
@@ -2341,15 +2340,15 @@ static void stepPlayerPhysics(
     }
 }
 
-// ---------- Main Simulation Update ----------
 static void update() {
     updateParts();
     updateSplatsAging();
 
-    // Player 2 joins with OPTIONS button (or if P2 controller presses OPTIONS)
     if (!p2Joined && (in2.optionsNew || (padHandle2 >= 0 && in2.crossNew))) {
         p2Joined = true;
         p2Weapon = curWeapon;
+        hudNeed[0] = true;
+        hudNeed[1] = true;
         respawnP2Only();
         snd(1);
     }
@@ -2420,7 +2419,6 @@ static void update() {
         snd(8);
     }
 
-    // Room transition when reaching the edge of the screen
     int nr = ((int)px + PW / 2) / FRAME_WIDTH;
     if (nr < 0) nr = 0;
     if (nr > LAST_ROOM) nr = LAST_ROOM;
@@ -3284,7 +3282,6 @@ static void renderGame(int b) {
             drawRoomPlants(b);
         }
 
-        // Update splats that are newly drawn or changed fade stage (1.5 min fade)
         for (int i = 0; i < splatCount; i++) {
             Splat &s = splats[i];
             if (s.room != bufRoom[b])
@@ -3300,7 +3297,6 @@ static void renderGame(int b) {
             }
         }
 
-        // Update grass tufts that moved/bent
         for (int i = 0; i < plantCount; i++) {
             Plant &p = plants[i];
             if (p.room != bufRoom[b])
