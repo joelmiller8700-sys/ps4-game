@@ -69,17 +69,19 @@ static Scene2D *scene;
 static char level[ROWS][COLS + 1];
 
 static int padHandle = -1;
+static int padHandle2 = -1;
 static int padUserID = 0;
+static int padUserID2 = -1;
 static OrbisPadData padData;
+static OrbisPadData padData2;
 
 #ifndef NO_AUDIO
 static int audioHandle = -1;
 #endif
 
-// ---------- Game & Smooth Camera state ----------
+// ---------- Game & Fixed Room Camera state ----------
 static float px, py, vx, vy;
-static float camX = 0.0f;
-static int prevCamI = -9999;
+static int roomIdx = 0;
 static int levelCols = COLS;
 static int levelPixelWidth = WORLD_WIDTH;
 
@@ -90,7 +92,6 @@ static int checkRows[MAX_CHECKPOINTS];
 static bool checkActive[MAX_CHECKPOINTS];
 static int checkCount = 0;
 
-static int roomIdx = 0;
 static int currentLevel = 0;
 static int currentBiome = 0;
 
@@ -101,6 +102,18 @@ static bool onGround = false;
 static int coyote = 0;
 static int wallLock = 0;
 static int facing = 1;
+
+// ---------- Player 2 Co-op state ----------
+static bool p2Joined = false;
+static float p2x, p2y, p2vx, p2vy;
+static float p2SquashX = 1.0f;
+static float p2SquashY = 1.0f;
+static bool p2OnGround = false;
+static int p2Coyote = 0;
+static int p2WallLock = 0;
+static int p2Facing = 1;
+static int p2DeadTimer = 0;
+static int p2ShootCooldown = 0;
 
 static int deaths = 0;
 static int winTimer = 0;
@@ -121,6 +134,7 @@ enum {
 
 static int unlockedWeapons = 1;
 static int curWeapon = 0;
+static int p2Weapon = 0;
 static int shootCooldown = 0;
 static bool justUnlockedWeapon = false;
 
@@ -175,9 +189,12 @@ static BossShot bossShots[MAX_BOSS_SHOTS];
 
 // Blood stains that gradually fade and vanish after 1.5 minutes (5400 frames)
 struct Splat {
-    short wx, y, w, h;
+    short room;
+    short x, y, w, h;
     int bornTick;
-    unsigned char stage;       // 0=100%, 1=75%, 2=50%, 3=25%, 4=vanished
+    unsigned char stage;
+    unsigned char drawnStage[2];
+    bool drawn[2];
 };
 
 static Splat splats[MAX_SPLATS];
@@ -191,14 +208,17 @@ struct Part {
 
 static Part parts[MAX_PARTS];
 
-// Semi-dense interactive world grass across the entire ground of the world
+// Semi-dense interactive world grass
 struct Plant {
-    short wx, y;
+    short room;
+    short x, y;
     float angle;
     float vel;
     unsigned char height;
     unsigned char style;
     unsigned char seed;
+    signed char drawnBend[2];
+    bool drawn[2];
 };
 
 static Plant plants[MAX_PLANTS];
@@ -221,6 +241,10 @@ static int dirtyCount[2] = {0, 0};
 
 static bool needFull[2] = {true, true};
 static bool needWin[2] = {false, false};
+static int bufRoom[2] = {0, 0};
+static char bufGrid[2][ROWS][ROOM_COLS];
+static bool bufHi[2][ROWS][ROOM_COLS];
+static int bufStar[2] = {0, 0};
 static int hudSq[2] = {0, 0};
 static int hudProg[2] = {0, 0};
 static int hudWeap[2] = {-1, -1};
@@ -258,7 +282,7 @@ static int settingsSel = 0;
 
 static int controlMode = 1;
 static int lang = 0;            // 0 = English, 1 = Arabic
-static int unlockedLevels = 1;  // Locked progression: starts at Level 1, unlocks next level on completion!
+static int unlockedLevels = 1;
 static bool introSeen = false;
 
 static bool uiFull[2] = {true, true};
@@ -347,7 +371,6 @@ static const Page PAGES[11] = {
     {1, 1, {"TO BE CONTINUED.", "", ""},
      {AR(P4L0), -1, -1}},
 
-    // Animated Gameplay & Boss Tutorial Cutscenes (Pages 5..10)
     {10, 3, {"STAGE 1: LIVING FOREST - JUMP AND SHOOT",
              "PRESS X TO JUMP, PRESS O OR R1 TO SHOOT ENEMIES.",
              "BEAT STAGES TO UNLOCK WEAPONS AND SWITCH WITH TRIANGLE!"},
@@ -394,12 +417,19 @@ struct Input {
 };
 
 static Input in;
+static Input in2;
 
 static bool prevCross = false;
 static bool prevCircle = false;
 static bool prevOptions = false;
 static bool prevShoot = false;
 static bool prevSwitch = false;
+
+static bool prevCross2 = false;
+static bool prevCircle2 = false;
+static bool prevOptions2 = false;
+static bool prevShoot2 = false;
+static bool prevSwitch2 = false;
 
 static int holdCnt[4] = {0, 0, 0, 0};
 
@@ -433,7 +463,30 @@ static bool isBossStage(int lvl) {
     return ((lvl + 1) % 5) == 0;
 }
 
-// ---------- Controller ----------
+// ---------- Controller & Multi-Account Support ----------
+static void refreshSecondPad() {
+    if (padHandle2 >= 0)
+        return;
+
+    int uids[4] = { -1, -1, -1, -1 };
+    if (sceUserServiceGetLoginUserIdList(uids) == 0) {
+        for (int i = 0; i < 4; i++) {
+            if (uids[i] > 0 && uids[i] != padUserID) {
+                padUserID2 = uids[i];
+                padHandle2 = scePadOpen(padUserID2, 0, 0, NULL);
+                if (padHandle2 >= 0)
+                    return;
+            }
+        }
+    }
+
+    // Fallback: open second controller slot on initial user or next slot
+    if (padHandle2 < 0)
+        padHandle2 = scePadOpen(padUserID, 1, 0, NULL);
+    if (padHandle2 < 0)
+        padHandle2 = scePadOpen(padUserID + 1, 0, 0, NULL);
+}
+
 static bool initPad() {
     if (scePadInit() != 0)
         return false;
@@ -448,67 +501,78 @@ static bool initPad() {
     padUserID = userID;
 
     padHandle = scePadOpen(userID, 0, 0, NULL);
+    refreshSecondPad();
 
     return padHandle >= 0;
 }
 
-static void readInput() {
-    scePadReadState(padHandle, &padData);
+static void parsePadData(const OrbisPadData &pd, Input &dst,
+                         bool &pCross, bool &pCircle, bool &pOptions,
+                         bool &pShoot, bool &pSwitch) {
+    unsigned int btn = pd.buttons;
 
-    unsigned int btn = padData.buttons;
+    int lx = (int)pd.leftStick.x - 128;
+    int ly = (int)pd.leftStick.y - 128;
 
-    int lx = (int)padData.leftStick.x - 128;
-    int ly = (int)padData.leftStick.y - 128;
+    int rx = (int)pd.rightStick.x - 128;
+    int ry = (int)pd.rightStick.y - 128;
 
-    int rx = (int)padData.rightStick.x - 128;
-    int ry = (int)padData.rightStick.y - 128;
-
-    in.dleft = (btn & ORBIS_PAD_BUTTON_LEFT) != 0;
-    in.dright = (btn & ORBIS_PAD_BUTTON_RIGHT) != 0;
+    dst.dleft = (btn & ORBIS_PAD_BUTTON_LEFT) != 0;
+    dst.dright = (btn & ORBIS_PAD_BUTTON_RIGHT) != 0;
 
     bool dup = (btn & ORBIS_PAD_BUTTON_UP) != 0;
     bool ddown = (btn & ORBIS_PAD_BUTTON_DOWN) != 0;
 
-    in.up = dup || ly < -60 || ry < -60;
-    in.down = ddown || ly > 60 || ry > 60;
+    dst.up = dup || ly < -60 || ry < -60;
+    dst.down = ddown || ly > 60 || ry > 60;
 
-    in.left = in.dleft || lx < -60 || rx < -60;
-    in.right = in.dright || lx > 60 || rx > 60;
+    dst.left = dst.dleft || lx < -60 || rx < -60;
+    dst.right = dst.dright || lx > 60 || rx > 60;
 
     int ax = iabs(rx) > iabs(lx) ? rx : lx;
-
     float a = ax / 110.0f;
-
     if (a > 1.0f) a = 1.0f;
     if (a < -1.0f) a = -1.0f;
-
     if (a > -0.2f && a < 0.2f)
         a = 0.0f;
+    dst.ana = a;
 
-    in.ana = a;
+    dst.cross = (btn & ORBIS_PAD_BUTTON_CROSS) != 0;
+    dst.circle = (btn & ORBIS_PAD_BUTTON_CIRCLE) != 0;
+    dst.options = (btn & ORBIS_PAD_BUTTON_OPTIONS) != 0;
+    dst.square = (btn & ORBIS_PAD_BUTTON_SQUARE) != 0;
+    dst.triangle = (btn & ORBIS_PAD_BUTTON_TRIANGLE) != 0;
+    dst.r1 = (btn & ORBIS_PAD_BUTTON_R1) != 0;
+    dst.l1 = (btn & ORBIS_PAD_BUTTON_L1) != 0;
 
-    in.cross = (btn & ORBIS_PAD_BUTTON_CROSS) != 0;
-    in.circle = (btn & ORBIS_PAD_BUTTON_CIRCLE) != 0;
-    in.options = (btn & ORBIS_PAD_BUTTON_OPTIONS) != 0;
-    in.square = (btn & ORBIS_PAD_BUTTON_SQUARE) != 0;
-    in.triangle = (btn & ORBIS_PAD_BUTTON_TRIANGLE) != 0;
-    in.r1 = (btn & ORBIS_PAD_BUTTON_R1) != 0;
-    in.l1 = (btn & ORBIS_PAD_BUTTON_L1) != 0;
+    bool shootBtn = dst.circle || dst.r1;
+    bool switchBtn = dst.triangle || dst.l1;
 
-    bool shootBtn = in.circle || in.r1;
-    bool switchBtn = in.triangle || in.l1;
+    dst.crossNew = dst.cross && !pCross;
+    dst.circleNew = dst.circle && !pCircle;
+    dst.optionsNew = dst.options && !pOptions;
+    dst.shootNew = shootBtn && !pShoot;
+    dst.switchNew = switchBtn && !pSwitch;
 
-    in.crossNew = in.cross && !prevCross;
-    in.circleNew = in.circle && !prevCircle;
-    in.optionsNew = in.options && !prevOptions;
-    in.shootNew = shootBtn && !prevShoot;
-    in.switchNew = switchBtn && !prevSwitch;
+    pCross = dst.cross;
+    pCircle = dst.circle;
+    pOptions = dst.options;
+    pShoot = shootBtn;
+    pSwitch = switchBtn;
+}
 
-    prevCross = in.cross;
-    prevCircle = in.circle;
-    prevOptions = in.options;
-    prevShoot = shootBtn;
-    prevSwitch = switchBtn;
+static void readInput() {
+    scePadReadState(padHandle, &padData);
+    parsePadData(padData, in, prevCross, prevCircle, prevOptions, prevShoot, prevSwitch);
+
+    if (padHandle2 < 0 && (tick % 30) == 0)
+        refreshSecondPad();
+
+    memset(&in2, 0, sizeof(in2));
+    if (padHandle2 >= 0) {
+        scePadReadState(padHandle2, &padData2);
+        parsePadData(padData2, in2, prevCross2, prevCircle2, prevOptions2, prevShoot2, prevSwitch2);
+    }
 }
 
 static bool navEvent(int i, bool pressed) {
@@ -529,7 +593,7 @@ static bool navEvent(int i, bool pressed) {
     return false;
 }
 
-// ---------- PS4 Halal Audio Engine (Menu SFX + Gameplay Percussion & Vocal Hum) ----------
+// ---------- PS4 Halal Audio Engine ----------
 static int curSfx = -1;
 static int sfxPos = 0;
 static int sfxLen = 0;
@@ -1132,14 +1196,22 @@ static void populateLevelPlants() {
                 if (plantCount >= MAX_PLANTS)
                     break;
 
+                int rm = c / ROOM_COLS;
+                int lc = c % ROOM_COLS;
+
                 Plant &p = plants[plantCount++];
-                p.wx = (short)(c * TILE + 15 + sub * 28 + ((c * 5 + r * 3 + sub * 7) % 7));
-                p.y  = (short)(r * TILE);
+                p.room = (short)rm;
+                p.x = (short)(lc * TILE + 15 + sub * 28 + ((c * 5 + r * 3 + sub * 7) % 7));
+                p.y = (short)(r * TILE);
                 p.angle = 0.0f;
                 p.vel   = 0.0f;
                 p.height = (unsigned char)(11 + ((c * 3 + r * 7 + sub * 5) % 6));
                 p.style  = (unsigned char)((c + r + sub) % 3);
                 p.seed   = (unsigned char)((c * 5 + r * 9 + sub * 11) & 15);
+                p.drawn[0] = false;
+                p.drawn[1] = false;
+                p.drawnBend[0] = 99;
+                p.drawnBend[1] = 99;
             }
         }
     }
@@ -1174,7 +1246,6 @@ static void buildScrollingActionStage(int stageIdx) {
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
-    // Zone 1 (Cols 1..31): Opening platforms + First Enemy Patrols
     plat(14, 7, 13);
     addEnemy(E_WALKER, 10, 14, 7, 13);
 
@@ -1188,7 +1259,6 @@ static void buildScrollingActionStage(int stageIdx) {
 
     addCheckpoint(31, 17);
 
-    // Zone 2 (Cols 32..63): Elevated Bridges, Flying Enemies & Sprinting Chasms
     spk(16, 35, 58);
     plat(14, 34, 41);
     addEnemy(E_WALKER, 37, 14, 34, 41);
@@ -1202,7 +1272,6 @@ static void buildScrollingActionStage(int stageIdx) {
 
     addCheckpoint(63, 17);
 
-    // Zone 3 (Cols 64..95): Twin-Wall Jump Chimneys & Elevated Fortresses
     wall(70, 6, 14);
     wall(73, 6, 16);
     plat(6, 73, 82);
@@ -1216,7 +1285,6 @@ static void buildScrollingActionStage(int stageIdx) {
 
     addCheckpoint(95, 17);
 
-    // Zone 4 (Cols 96..127): Saw Gauntlet + Turret Guards + Mid-air Flyers
     spk(16, 99, 123);
     plat(15, 98, 104);
     sawAt(14, 106);
@@ -1229,7 +1297,6 @@ static void buildScrollingActionStage(int stageIdx) {
 
     addCheckpoint(127, 17);
 
-    // Zone 5 (Cols 128..159): Double Wall Tower & High Altitude Combat
     plat(14, 131, 136);
     addEnemy(E_JUMPER, 134, 14, 131, 136);
 
@@ -1245,7 +1312,6 @@ static void buildScrollingActionStage(int stageIdx) {
 
     addCheckpoint(160, 17);
 
-    // Zone 6 (Cols 160..190): Final Citadel Climb to Bandage Girl
     spk(16, 163, 185);
     plat(14, 162, 168);
     addEnemy(E_WALKER, 165, 14, 162, 168);
@@ -1261,28 +1327,26 @@ static void buildScrollingActionStage(int stageIdx) {
 
 static void buildBossArena(int tier) {
     baseCol = 0;
-    int arenaCols = 44;
-    levelCols = arenaCols;
-    levelPixelWidth = arenaCols * TILE;
+    levelCols = ROOM_COLS;
+    levelPixelWidth = FRAME_WIDTH;
 
     for (int r = 0; r < ROWS; r++)
-        level[r][arenaCols - 1] = '#';
+        level[r][ROOM_COLS - 1] = '#';
 
     wall(3, 6, 13);
-    wall(arenaCols - 4, 6, 13);
+    wall(28, 6, 13);
 
-    plat(12, 7, 12);
-    plat(12, 19, 24);
-    plat(12, 31, 36);
+    plat(12, 6, 10);
+    plat(12, 21, 25);
 
-    plat(7, 18, 25);
+    plat(7, 13, 18);
 
     bossActive = true;
     bossW = 104;
     bossH = 104;
-    bossX = (float)(28 * TILE);
+    bossX = (float)(22 * TILE);
     bossY = (float)((ROWS - 1) * TILE - bossH);
-    bossVX = (tier >= 2) ? -5.5f : -4.4f;
+    bossVX = (tier >= 2) ? -5.2f : -4.2f;
     bossVY = 0.0f;
     bossMaxHP = (tier >= 2) ? 14 : 10;
     bossHP = bossMaxHP;
@@ -1408,7 +1472,7 @@ static void addSplat(int wx, int wy, int w, int h) {
         idx = splatCount++;
     } else {
         for (int i = 0; i < MAX_SPLATS; i++) {
-            if (splats[i].stage >= 4) {
+            if (splats[i].stage >= 4 && !splats[i].drawn[0] && !splats[i].drawn[1]) {
                 idx = i;
                 break;
             }
@@ -1417,13 +1481,21 @@ static void addSplat(int wx, int wy, int w, int h) {
             return;
     }
 
+    int rm = wx / FRAME_WIDTH;
+    if (rm > LAST_ROOM) rm = LAST_ROOM;
+
     Splat &s = splats[idx];
-    s.wx = (short)(wx - w / 2);
-    s.y  = (short)(wy - h / 2);
-    s.w  = (short)w;
-    s.h  = (short)h;
+    s.room = (short)rm;
+    s.x = (short)(wx - rm * FRAME_WIDTH - w / 2);
+    s.y = (short)(wy - h / 2);
+    s.w = (short)w;
+    s.h = (short)h;
     s.bornTick = tick;
     s.stage = 0;
+    s.drawn[0] = false;
+    s.drawn[1] = false;
+    s.drawnStage[0] = 99;
+    s.drawnStage[1] = 99;
 }
 
 static void updateSplatsAging() {
@@ -1434,10 +1506,10 @@ static void updateSplatsAging() {
 
         int age = tick - s.bornTick;
         unsigned char ns = 0;
-        if (age >= SPLAT_MAX_AGE)          ns = 4; // 90s (1.5 min): Completely vanished
-        else if (age >= SPLAT_MAX_AGE - 300) ns = 3; // 85s..90s: 25% size
-        else if (age >= SPLAT_MAX_AGE - 600) ns = 2; // 80s..85s: 50% size
-        else if (age >= SPLAT_MAX_AGE - 900) ns = 1; // 75s..80s: 75% size
+        if (age >= SPLAT_MAX_AGE)          ns = 4;
+        else if (age >= SPLAT_MAX_AGE - 300) ns = 3;
+        else if (age >= SPLAT_MAX_AGE - 600) ns = 2;
+        else if (age >= SPLAT_MAX_AGE - 900) ns = 1;
 
         s.stage = ns;
     }
@@ -1529,36 +1601,35 @@ static void updateParts() {
     }
 }
 
-static void updatePlantsAndAmbient(bool landedOrJumped) {
-    float pcx = px + PW * 0.5f;
-    float pby = py + PH;
-    int viewX0 = (int)camX - 60;
-    int viewX1 = (int)camX + FRAME_WIDTH + 60;
-
+static void applyPlantForce(float cx, float by, float pvx, bool burst) {
     for (int i = 0; i < plantCount; i++) {
         Plant &p = plants[i];
-        if (p.wx < viewX0 || p.wx > viewX1)
+        if (p.room != roomIdx)
             continue;
 
-        int wIdx = ((tick / 12) + (p.wx / 60) + p.seed) & 15;
-        float wind = (float)SN[wIdx] / 256.0f * 1.8f;
+        float dx = cx - (float)p.x;
+        float dy = by - (float)p.y;
+        float adx = dx < 0 ? -dx : dx;
 
-        if (deadTimer == 0) {
-            float dx = pcx - (float)p.wx;
-            float dy = pby - (float)p.y;
-            float adx = dx < 0 ? -dx : dx;
-
-            if (adx < 46.0f && dy > -22.0f && dy < 32.0f) {
-                float prox = 1.0f - (adx / 46.0f);
-                p.vel += vx * 0.40f * prox;
-
-                float push = (dx < 0.0f ? 7.0f : -7.0f) * prox;
-                wind += push;
-
-                if (landedOrJumped)
-                    p.vel += (dx < 0.0f ? 5.0f : -5.0f) * prox;
-            }
+        if (adx < 46.0f && dy > -22.0f && dy < 32.0f) {
+            float prox = 1.0f - (adx / 46.0f);
+            p.vel += pvx * 0.40f * prox;
+            float push = (dx < 0.0f ? 7.0f : -7.0f) * prox;
+            p.angle += push * 0.22f;
+            if (burst)
+                p.vel += (dx < 0.0f ? 5.0f : -5.0f) * prox;
         }
+    }
+}
+
+static void updatePlantsAndAmbient(bool p1Burst, bool p2Burst) {
+    for (int i = 0; i < plantCount; i++) {
+        Plant &p = plants[i];
+        if (p.room != roomIdx)
+            continue;
+
+        int wIdx = ((tick / 12) + (p.x / 60) + p.seed) & 15;
+        float wind = (float)SN[wIdx] / 256.0f * 1.8f;
 
         float force = (wind - p.angle) * 0.18f;
         p.vel = (p.vel + force) * 0.78f;
@@ -1566,6 +1637,16 @@ static void updatePlantsAndAmbient(bool landedOrJumped) {
 
         if (p.angle > 12.0f) p.angle = 12.0f;
         if (p.angle < -12.0f) p.angle = -12.0f;
+    }
+
+    if (deadTimer == 0) {
+        float pcx = (px - (float)(roomIdx * FRAME_WIDTH)) + PW * 0.5f;
+        applyPlantForce(pcx, py + PH, vx, p1Burst);
+    }
+
+    if (p2Joined && p2DeadTimer == 0) {
+        float p2cx = (p2x - (float)(roomIdx * FRAME_WIDTH)) + PW * 0.5f;
+        applyPlantForce(p2cx, p2y + PH, p2vx, p2Burst);
     }
 
     for (int i = 0; i < MAX_AMB; i++) {
@@ -1584,29 +1665,10 @@ static void updatePlantsAndAmbient(bool landedOrJumped) {
     }
 }
 
-// ---------- Smooth Camera & Entities Logic ----------
-static void updateCamera(bool snap) {
-    float target = px + PW * 0.5f - FRAME_WIDTH * 0.36f;
-    float maxCam = (float)(levelPixelWidth - FRAME_WIDTH);
-    if (maxCam < 0.0f) maxCam = 0.0f;
-
-    if (target < 0.0f) target = 0.0f;
-    if (target > maxCam) target = maxCam;
-
-    if (snap) {
-        camX = target;
-        prevCamI = (int)camX;
-    } else {
-        // Smooth sub-pixel interpolation without column step jitter
-        camX += (target - camX) * 0.16f;
-        if (fabsf(target - camX) < 0.4f)
-            camX = target;
-    }
-}
-
+// ---------- Player & 2-Player Co-op Logic ----------
 static void respawn() {
-    px = checkpointX;
-    py = checkpointY;
+    px = (float)(roomIdx * FRAME_WIDTH + TILE + 8);
+    py = (float)((ROWS - 1) * TILE - PH);
 
     vx = 0;
     vy = 0;
@@ -1618,14 +1680,38 @@ static void respawn() {
     wallLock = 0;
     coyote = 0;
 
-    updateCamera(true);
+    if (p2Joined) {
+        p2x = px + 56.0f;
+        p2y = py;
+        p2vx = 0;
+        p2vy = 0;
+        p2SquashX = 1.0f;
+        p2SquashY = 1.0f;
+        p2OnGround = false;
+        p2WallLock = 0;
+        p2Coyote = 0;
+        p2DeadTimer = 0;
+    }
 
     if (bossActive && bossHP > 0) {
-        bossX = (float)(28 * TILE);
+        bossX = (float)(22 * TILE);
         bossY = (float)((ROWS - 1) * TILE - bossH);
         for (int i = 0; i < MAX_BOSS_SHOTS; i++)
             bossShots[i].active = false;
     }
+}
+
+static void respawnP2Only() {
+    p2x = px;
+    p2y = py;
+    p2vx = 0;
+    p2vy = 0;
+    p2SquashX = 1.0f;
+    p2SquashY = 1.0f;
+    p2OnGround = false;
+    p2WallLock = 0;
+    p2Coyote = 0;
+    p2DeadTimer = 0;
 }
 
 static void die() {
@@ -1665,6 +1751,31 @@ static void die() {
     deadTimer = 28;
 }
 
+static void dieP2() {
+    deaths++;
+    hudNeed[0] = true;
+    hudNeed[1] = true;
+    snd(6);
+
+    float cx = p2x + PW / 2.0f;
+    float cy = p2y + PH / 2.0f;
+
+    for (int i = 0; i < 22; i++) {
+        float bvx = (float)(rnd(180) - 90) / 10.0f;
+        float bvy = (float)(rnd(140) - 120) / 10.0f;
+        spawnPart(cx + (float)(rnd(20) - 10), cy + (float)(rnd(20) - 10),
+                  bvx, bvy, 80, 5 + rnd(4), 1);
+    }
+
+    for (int i = 0; i < 3; i++) {
+        addSplat((int)cx + rnd(36) - 18, (int)cy + rnd(36) - 18, 8 + rnd(8), 8 + rnd(8));
+    }
+
+    p2vx = 0;
+    p2vy = 0;
+    p2DeadTimer = 28;
+}
+
 static void spawnPlayerBullet(float bx, float by, float bvx, float bvy, int kind, int dmg, int pierce) {
     for (int i = 0; i < MAX_BULLETS; i++) {
         if (!bullets[i].active) {
@@ -1683,27 +1794,23 @@ static void spawnPlayerBullet(float bx, float by, float bvx, float bvy, int kind
     }
 }
 
-static void fireWeapon() {
-    float bx = facing > 0 ? (px + PW + 4.0f) : (px - 16.0f);
-    float by = py + PH * 0.45f;
-    float dir = (float)facing;
+static void fireWeaponFrom(float sx, float sy, int dirFace, int wpn) {
+    float bx = dirFace > 0 ? (sx + PW + 4.0f) : (sx - 16.0f);
+    float by = sy + PH * 0.45f;
+    float dir = (float)dirFace;
 
     snd(9);
 
-    if (curWeapon == W_BLASTER) {
+    if (wpn == W_BLASTER) {
         spawnPlayerBullet(bx, by, dir * 15.0f, 0.0f, W_BLASTER, 1, 0);
-        shootCooldown = 12;
-    } else if (curWeapon == W_SHOTGUN) {
+    } else if (wpn == W_SHOTGUN) {
         spawnPlayerBullet(bx, by, dir * 14.0f, -2.4f, W_SHOTGUN, 1, 0);
         spawnPlayerBullet(bx, by, dir * 15.0f,  0.0f, W_SHOTGUN, 1, 0);
         spawnPlayerBullet(bx, by, dir * 14.0f,  2.4f, W_SHOTGUN, 1, 0);
-        shootCooldown = 22;
-    } else if (curWeapon == W_SAW) {
+    } else if (wpn == W_SAW) {
         spawnPlayerBullet(bx, by, dir * 12.5f, 0.0f, W_SAW, 1, 2);
-        shootCooldown = 18;
     } else {
         spawnPlayerBullet(bx, by, dir * 11.5f, 0.0f, W_PLASMA, 2, 1);
-        shootCooldown = 24;
     }
 }
 
@@ -1776,14 +1883,14 @@ static void updateBulletsAndEnemies() {
         }
     }
 
-    int activeX0 = (int)camX - 300;
-    int activeX1 = (int)camX + FRAME_WIDTH + 300;
+    int rmX0 = roomIdx * FRAME_WIDTH - 240;
+    int rmX1 = roomIdx * FRAME_WIDTH + FRAME_WIDTH + 240;
 
     for (int i = 0; i < enemyCount; i++) {
         Enemy &e = enemies[i];
         if (!e.active)
             continue;
-        if ((int)e.x < activeX0 || (int)e.x > activeX1)
+        if ((int)e.x < rmX0 || (int)e.x > rmX1)
             continue;
 
         if (e.hurt > 0)
@@ -1833,6 +1940,20 @@ static void updateBulletsAndEnemies() {
                 return;
             }
         }
+
+        if (p2Joined && p2DeadTimer == 0 &&
+            rectOverlap((int)p2x + 4, (int)p2y + 4, PW - 8, PH - 8,
+                        (int)e.x + 4, (int)e.y + 4, 36, 36)) {
+            if (p2vy > 0.0f && (p2y + PH) < (e.y + 26.0f)) {
+                p2y = e.y - PH;
+                p2vy = -15.5f;
+                p2SquashX = 0.72f;
+                p2SquashY = 1.28f;
+                killEnemy(e);
+            } else {
+                dieP2();
+            }
+        }
     }
 }
 
@@ -1860,7 +1981,7 @@ static void damageBoss(int dmg) {
         for (int i = 0; i < MAX_BOSS_SHOTS; i++)
             bossShots[i].active = false;
 
-        level[16][21] = 'G';
+        level[16][15] = 'G';
         needFull[0] = true;
         needFull[1] = true;
     }
@@ -1901,6 +2022,13 @@ static void updateProjectiles() {
             die();
             return;
         }
+
+        if (p2Joined && p2DeadTimer == 0 &&
+            rectOverlap((int)p2x + 4, (int)p2y + 4, PW - 8, PH - 8,
+                        (int)s.x - 14, (int)s.y - 14, 28, 28)) {
+            s.active = false;
+            dieP2();
+        }
     }
 }
 
@@ -1924,10 +2052,10 @@ static void updateBoss() {
 
     if (bossX < (float)(5 * TILE)) {
         bossX = (float)(5 * TILE);
-        bossVX = 4.5f;
-    } else if (bossX > (float)(36 * TILE)) {
-        bossX = (float)(36 * TILE);
-        bossVX = -4.5f;
+        bossVX = 4.2f;
+    } else if (bossX > (float)(24 * TILE)) {
+        bossX = (float)(24 * TILE);
+        bossVX = -4.2f;
     }
 
     if (bossTimer % 105 == 50 && bossY >= floorY - 2.0f) {
@@ -1953,7 +2081,7 @@ static void updateBoss() {
     if (deadTimer > 0)
         return;
 
-    int swX = 20 * TILE;
+    int swX = 15 * TILE;
     int swY = 6 * TILE + 20;
     if (bossSwitchCooldown == 0 &&
         rectOverlap((int)px, (int)py, PW, PH, swX, swY, 120, 40)) {
@@ -1976,16 +2104,37 @@ static void updateBoss() {
             die();
         }
     }
+
+    if (p2Joined && p2DeadTimer == 0) {
+        if (bossSwitchCooldown == 0 &&
+            rectOverlap((int)p2x, (int)p2y, PW, PH, swX, swY, 120, 40)) {
+            bossSwitchCooldown = 130;
+            bossBeamTimer = 25;
+            p2vy = -12.0f;
+            damageBoss(2);
+        } else if (rectOverlap((int)p2x + 4, (int)p2y + 4, PW - 8, PH - 8,
+                               (int)bossX + 8, (int)bossY + 8, bossW - 16, bossH - 16)) {
+            if (p2vy > 0.0f && (p2y + PH) < (bossY + 46.0f)) {
+                p2y = bossY - PH;
+                p2vy = -16.5f;
+                p2SquashX = 0.70f;
+                p2SquashY = 1.32f;
+                damageBoss(2);
+            } else if (bossHurt == 0) {
+                dieP2();
+            }
+        }
+    }
 }
 
-static bool touchingHazard() {
-    int hx = (int)px + 4;
-    int hy = (int)py + 4;
+static bool touchingHazardAt(float xPos, float yPos) {
+    int hx = (int)xPos + 4;
+    int hy = (int)yPos + 4;
     int hw = PW - 8;
     int hh = PH - 8;
 
-    int c0 = ((int)px / TILE) - 2;
-    int c1 = ((int)px + PW) / TILE + 2;
+    int c0 = ((int)xPos / TILE) - 2;
+    int c1 = ((int)xPos + PW) / TILE + 2;
 
     if (c0 < 0) c0 = 0;
     if (c1 >= COLS) c1 = COLS - 1;
@@ -2017,9 +2166,9 @@ static bool touchingHazard() {
     return false;
 }
 
-static bool touchingGoal() {
-    int c0 = ((int)px / TILE) - 2;
-    int c1 = ((int)px + PW) / TILE + 2;
+static bool touchingGoalAt(float xPos, float yPos) {
+    int c0 = ((int)xPos / TILE) - 2;
+    int c1 = ((int)xPos + PW) / TILE + 2;
     if (c0 < 0) c0 = 0;
     if (c1 >= COLS) c1 = COLS - 1;
 
@@ -2027,7 +2176,7 @@ static bool touchingGoal() {
         for (int c = c0; c <= c1; c++) {
             if (level[r][c] == 'G') {
                 if (rectOverlap(
-                    (int)px, (int)py, PW, PH,
+                    (int)xPos, (int)yPos, PW, PH,
                     c * TILE + 8,
                     r * TILE + 16,
                     PW, PH
@@ -2039,238 +2188,218 @@ static bool touchingGoal() {
     return false;
 }
 
-// ---------- Physics ----------
-static void update() {
-    updateParts();
-    updateSplatsAging();
+static void stepPlayerPhysics(
+    const Input &src,
+    float &x, float &y, float &svx, float &svy,
+    float &sqX, float &sqY,
+    bool &grounded, int &coy, int &wLock, int &dirFace,
+    int &shootCd, int &wpnSel,
+    bool &burstOut
+) {
+    burstOut = false;
+    if (shootCd > 0)
+        shootCd--;
 
-    if (deadTimer > 0) {
-        updatePlantsAndAmbient(false);
-        deadTimer--;
-
-        if (deadTimer == 0)
-            respawn();
-
-        return;
-    }
-
-    if (shootCooldown > 0)
-        shootCooldown--;
-
-    if (in.switchNew && unlockedWeapons > 1) {
-        curWeapon = (curWeapon + 1) % unlockedWeapons;
+    if (src.switchNew && unlockedWeapons > 1) {
+        wpnSel = (wpnSel + 1) % unlockedWeapons;
         hudNeed[0] = true;
         hudNeed[1] = true;
         snd(0);
     }
 
-    if ((in.shootNew || ((in.circle || in.r1) && shootCooldown == 0)) && shootCooldown == 0) {
-        fireWeapon();
+    if ((src.shootNew || ((src.circle || src.r1) && shootCd == 0)) && shootCd == 0) {
+        fireWeaponFrom(x, y, dirFace, wpnSel);
+        shootCd = (wpnSel == W_BLASTER) ? 12 : ((wpnSel == W_SHOTGUN) ? 22 : ((wpnSel == W_SAW) ? 18 : 24));
     }
 
-    bool wasGround = onGround;
-    bool didJumpOrLand = false;
+    bool wasGround = grounded;
 
     {
         float k = 0.0f;
-
-        if (!onGround) {
-            k = iabs((int)vy) / 18.0f;
+        if (!grounded) {
+            k = iabs((int)svy) / 18.0f;
             if (k > 1.0f) k = 1.0f;
         }
-
         float tx = 1.0f - 0.22f * k;
         float ty = 1.0f + 0.30f * k;
-
-        squashX += (tx - squashX) * 0.3f;
-        squashY += (ty - squashY) * 0.3f;
+        sqX += (tx - sqX) * 0.3f;
+        sqY += (ty - sqY) * 0.3f;
     }
 
     int dir = 0;
     float scale = 1.0f;
 
     if (controlMode == 1) {
-        if (in.ana != 0.0f) {
-            dir = in.ana > 0 ? 1 : -1;
-            scale = in.ana > 0 ? in.ana : -in.ana;
-
+        if (src.ana != 0.0f) {
+            dir = src.ana > 0 ? 1 : -1;
+            scale = src.ana > 0 ? src.ana : -src.ana;
             if (scale < 0.5f)
                 scale = 0.5f;
         }
     } else {
-        dir = (in.dright ? 1 : 0) -
-              (in.dleft ? 1 : 0);
+        dir = (src.dright ? 1 : 0) - (src.dleft ? 1 : 0);
     }
 
     bool left = dir < 0;
     bool right = dir > 0;
+    bool run = src.square;
+    bool jumpHeld = src.cross;
+    bool jumpNew = src.crossNew;
 
-    bool run = in.square;
-    bool jumpHeld = in.cross;
-    bool jumpNew = in.crossNew;
-
-    bool wallL = rectSolid((int)px - 1, (int)py, 1, PH);
-    bool wallR = rectSolid((int)px + PW, (int)py, 1, PH);
+    bool wallL = rectSolid((int)x - 1, (int)y, 1, PH);
+    bool wallR = rectSolid((int)x + PW, (int)y, 1, PH);
 
     float maxSpeed = (run ? 8.2f : 5.6f) * scale;
 
     if (dir != 0)
-        facing = dir;
+        dirFace = dir;
 
-    if (wallLock > 0) {
-        wallLock--;
+    if (wLock > 0) {
+        wLock--;
     } else if (dir != 0) {
-        float acc = onGround ? 1.2f : 0.7f;
-
-        vx += dir * acc;
-
-        if (vx > maxSpeed) vx = maxSpeed;
-        if (vx < -maxSpeed) vx = -maxSpeed;
+        float acc = grounded ? 1.2f : 0.7f;
+        svx += dir * acc;
+        if (svx > maxSpeed) svx = maxSpeed;
+        if (svx < -maxSpeed) svx = -maxSpeed;
     } else {
-        float fr = onGround ? 1.0f : 0.3f;
-
-        if (vx > fr) vx -= fr;
-        else if (vx < -fr) vx += fr;
-        else vx = 0;
+        float fr = grounded ? 1.0f : 0.3f;
+        if (svx > fr) svx -= fr;
+        else if (svx < -fr) svx += fr;
+        else svx = 0;
     }
 
-    vy += 0.9f;
+    svy += 0.9f;
+    if (svy > 18.0f)
+        svy = 18.0f;
 
-    if (vy > 18.0f)
-        vy = 18.0f;
-
-    bool sliding =
-        !onGround &&
-        vy > 0 &&
-        ((wallL && left) || (wallR && right));
-
-    if (sliding && vy > 3.0f)
-        vy = 3.0f;
+    bool sliding = !grounded && svy > 0 && ((wallL && left) || (wallR && right));
+    if (sliding && svy > 3.0f)
+        svy = 3.0f;
 
     if (sliding && (tick & 3) == 0)
-        spawnDust(wallL ? px : px + PW, py + PH - 6.0f, 1, 1.0f);
+        spawnDust(wallL ? x : x + PW, y + PH - 6.0f, 1, 1.0f);
 
-    if (onGround)
-        coyote = 6;
-    else if (coyote > 0)
-        coyote--;
+    if (grounded)
+        coy = 6;
+    else if (coy > 0)
+        coy--;
 
     if (jumpNew) {
-        if (coyote > 0) {
-            vy = -17.0f;
-            coyote = 0;
-
-            squashX = 0.72f;
-            squashY = 1.30f;
-
-            spawnDust(px + PW / 2.0f, py + PH, 6, 3.0f);
-            didJumpOrLand = true;
+        if (coy > 0) {
+            svy = -17.0f;
+            coy = 0;
+            sqX = 0.72f;
+            sqY = 1.30f;
+            spawnDust(x + PW / 2.0f, y + PH, 6, 3.0f);
+            burstOut = true;
             snd(4);
         } else if (wallL || wallR) {
-            vy = -16.0f;
-            vx = wallL ? 8.0f : -8.0f;
-
-            wallLock = 9;
-            facing = wallL ? 1 : -1;
-
-            squashX = 0.72f;
-            squashY = 1.30f;
-
-            spawnDust(wallL ? px : px + PW, py + PH / 2.0f, 4, 2.0f);
-            didJumpOrLand = true;
+            svy = -16.0f;
+            svx = wallL ? 8.0f : -8.0f;
+            wLock = 9;
+            dirFace = wallL ? 1 : -1;
+            sqX = 0.72f;
+            sqY = 1.30f;
+            spawnDust(wallL ? x : x + PW, y + PH / 2.0f, 4, 2.0f);
+            burstOut = true;
             snd(5);
         }
     }
 
-    if (!jumpHeld && vy < -6.0f)
-        vy = -6.0f;
+    if (!jumpHeld && svy < -6.0f)
+        svy = -6.0f;
 
     // Horizontal collision
-    px += vx;
-
-    if (rectSolid((int)px, (int)py, PW, PH)) {
-        if (vx > 0) {
-            px = (float)(
-                (((int)px + PW - 1) / TILE) * TILE - PW
-            );
-        } else if (vx < 0) {
-            px = (float)(
-                (((int)px) / TILE + 1) * TILE
-            );
-        }
-
-        vx = 0;
+    x += svx;
+    if (rectSolid((int)x, (int)y, PW, PH)) {
+        if (svx > 0)
+            x = (float)((((int)x + PW - 1) / TILE) * TILE - PW);
+        else if (svx < 0)
+            x = (float)((((int)x) / TILE + 1) * TILE);
+        svx = 0;
     }
 
     // Vertical collision
-    py += vy;
-    onGround = false;
-
-    if (rectSolid((int)px, (int)py, PW, PH)) {
-        if (vy > 0) {
-            py = (float)(
-                (((int)py + PH - 1) / TILE) * TILE - PH
-            );
-
-            onGround = true;
-
-            if (!wasGround && vy > 5.0f) {
-                float k = vy / 18.0f;
-
-                if (k > 1.0f)
-                    k = 1.0f;
-
-                squashY = 1.0f - 0.35f * k;
-                squashX = 1.0f + 0.40f * k;
-
-                spawnDust(
-                    px + PW / 2.0f,
-                    py + PH,
-                    4 + (int)(k * 6.0f),
-                    4.0f
-                );
-                didJumpOrLand = true;
+    y += svy;
+    grounded = false;
+    if (rectSolid((int)x, (int)y, PW, PH)) {
+        if (svy > 0) {
+            y = (float)((((int)y + PH - 1) / TILE) * TILE - PH);
+            grounded = true;
+            if (!wasGround && svy > 5.0f) {
+                float k = svy / 18.0f;
+                if (k > 1.0f) k = 1.0f;
+                sqY = 1.0f - 0.35f * k;
+                sqX = 1.0f + 0.40f * k;
+                spawnDust(x + PW / 2.0f, y + PH, 4 + (int)(k * 6.0f), 4.0f);
+                burstOut = true;
             }
-        } else if (vy < 0) {
-            py = (float)(
-                (((int)py) / TILE + 1) * TILE
-            );
+        } else if (svy < 0) {
+            y = (float)((((int)y) / TILE + 1) * TILE);
         }
+        svy = 0;
+    }
+}
 
-        vy = 0;
+// ---------- Main Simulation Update ----------
+static void update() {
+    updateParts();
+    updateSplatsAging();
+
+    // Player 2 joins with OPTIONS button (or if P2 controller presses OPTIONS)
+    if (!p2Joined && (in2.optionsNew || (padHandle2 >= 0 && in2.crossNew))) {
+        p2Joined = true;
+        p2Weapon = curWeapon;
+        respawnP2Only();
+        snd(1);
     }
 
-    updateCamera(false);
+    bool p1Burst = false;
+    bool p2Burst = false;
 
-    for (int i = 0; i < checkCount; i++) {
-        if (!checkActive[i]) {
-            int cpx = checkCols[i] * TILE;
-            if ((int)px + PW >= cpx) {
-                checkActive[i] = true;
-                checkpointX = (float)cpx;
-                checkpointY = (float)(checkRows[i] * TILE - PH);
-                snd(1);
-                spawnDust((float)(cpx + 20), (float)(checkRows[i] * TILE - 40), 10, 3.5f);
-            }
+    if (deadTimer > 0) {
+        deadTimer--;
+        if (deadTimer == 0)
+            respawn();
+    } else {
+        stepPlayerPhysics(
+            in, px, py, vx, vy, squashX, squashY,
+            onGround, coyote, wallLock, facing,
+            shootCooldown, curWeapon, p1Burst
+        );
+    }
+
+    if (p2Joined) {
+        if (p2DeadTimer > 0) {
+            p2DeadTimer--;
+            if (p2DeadTimer == 0)
+                respawnP2Only();
+        } else {
+            stepPlayerPhysics(
+                in2, p2x, p2y, p2vx, p2vy, p2SquashX, p2SquashY,
+                p2OnGround, p2Coyote, p2WallLock, p2Facing,
+                p2ShootCooldown, p2Weapon, p2Burst
+            );
         }
     }
 
-    updatePlantsAndAmbient(didJumpOrLand);
+    updatePlantsAndAmbient(p1Burst, p2Burst);
     updateBulletsAndEnemies();
     updateProjectiles();
 
     if (bossActive)
         updateBoss();
 
-    if (deadTimer > 0)
-        return;
-
-    if (touchingHazard()) {
+    if (deadTimer == 0 && touchingHazardAt(px, py)) {
         die();
-        return;
     }
 
-    if (touchingGoal()) {
+    if (p2Joined && p2DeadTimer == 0 && touchingHazardAt(p2x, p2y)) {
+        dieP2();
+    }
+
+    if ((deadTimer == 0 && touchingGoalAt(px, py)) ||
+        (p2Joined && p2DeadTimer == 0 && touchingGoalAt(p2x, p2y))) {
         winTimer = 160;
         needWin[0] = true;
         needWin[1] = true;
@@ -2284,21 +2413,23 @@ static void update() {
         if (newWeapCount > unlockedWeapons) {
             unlockedWeapons = newWeapCount;
             curWeapon = unlockedWeapons - 1;
+            p2Weapon = curWeapon;
             justUnlockedWeapon = true;
         }
 
         snd(8);
     }
 
+    // Room transition when reaching the edge of the screen
     int nr = ((int)px + PW / 2) / FRAME_WIDTH;
     if (nr < 0) nr = 0;
     if (nr > LAST_ROOM) nr = LAST_ROOM;
     roomIdx = nr;
 }
 
-// ---------- Smooth 60-FPS Drawing & Biome Engine ----------
-static void drawSpikeAt(int screenX, int r) {
-    int center = screenX + TILE / 2;
+// ---------- Game drawing (Fixed Room Camera + 60 FPS Dirty Rects) ----------
+static void drawSpike(int cx, int r) {
+    int center = cx * TILE + TILE / 2;
     int top = r * TILE + 20;
 
     Color spCol = mk(205, 205, 215);
@@ -2323,9 +2454,6 @@ static void drawSpikeAt(int screenX, int r) {
 }
 
 static void drawSaw(int cx, int cy) {
-    if (cx < -30 || cx > FRAME_WIDTH + 30)
-        return;
-
     int a = (tick / 2) & 15;
 
     int cc = CS[a];
@@ -2338,25 +2466,20 @@ static void drawSaw(int cx, int cy) {
             if (d2 > 26 * 26)
                 continue;
 
-            int px0 = cx + dx;
-            int py0 = cy + dy;
-            if (px0 < 0 || px0 >= FRAME_WIDTH || py0 < 0 || py0 >= FRAME_HEIGHT)
-                continue;
-
             int u = (dx * cc + dy * ss) >> 8;
             int v = (-dx * ss + dy * cc) >> 8;
 
             if (d2 < 36) {
-                scene->DrawPixel(px0, py0, mk(50, 50, 55));
+                scene->DrawPixel(cx + dx, cy + dy, mk(50, 50, 55));
             } else if (d2 <= 20 * 20) {
-                scene->DrawPixel(px0, py0, mk(165, 165, 178));
+                scene->DrawPixel(cx + dx, cy + dy, mk(165, 165, 178));
             } else if (
                 iabs(u) < 6 ||
                 iabs(v) < 6 ||
                 iabs(u - v) < 8 ||
                 iabs(u + v) < 8
             ) {
-                scene->DrawPixel(px0, py0, mk(215, 215, 225));
+                scene->DrawPixel(cx + dx, cy + dy, mk(215, 215, 225));
             }
         }
     }
@@ -2419,7 +2542,40 @@ static void drawPlayerFace(
     );
 }
 
-static void drawTileCellScreen(int r, int screenX, char ch, bool hi) {
+static void drawCubeBody(
+    int roomX, float xPos, float yPos, float sqX, float sqY,
+    int dirFace, int wpnSel,
+    Color borderCol, Color bodyCol, Color gunCol
+) {
+    int x = (int)xPos - roomX;
+    int y = (int)yPos;
+
+    int dw = (int)(PW * sqX);
+    int dh = (int)(PH * sqY);
+
+    if (dw < 20) dw = 20;
+    if (dh < 20) dh = 20;
+
+    int dx = x + (PW - dw) / 2;
+    int dy = y + (PH - dh);
+
+    fillRect(dx, dy, dw, dh, borderCol);
+    fillRect(dx + 3, dy + 3, dw - 6, dh - 6, bodyCol);
+    drawPlayerFace(dx, dy, dw, dh, dirFace);
+
+    Color mCol = gunCol;
+    if (wpnSel == W_SHOTGUN) mCol = mk(255, 195, 70);
+    else if (wpnSel == W_SAW) mCol = mk(140, 250, 160);
+    else if (wpnSel == W_PLASMA) mCol = mk(255, 120, 235);
+
+    int gx = (dirFace > 0) ? (dx + dw - 4) : (dx - 14);
+    int gy = dy + dh / 2 - 4;
+    fillRect(gx, gy, 18, 10, mk(45, 45, 55));
+    fillRect(gx + (dirFace > 0 ? 6 : 2), gy + 2, 10, 6, mCol);
+}
+
+static void drawTileCell(int r, int cx, char ch, bool hi) {
+    int x = cx * TILE;
     int y = r * TILE;
 
     if (ch == '#') {
@@ -2449,20 +2605,20 @@ static void drawTileCellScreen(int r, int screenX, char ch, bool hi) {
             botC  = mk(34, 20, 28);
         }
 
-        fillRect(screenX, y, TILE, TILE, mainC);
+        fillRect(x, y, TILE, TILE, mainC);
 
         if (hi)
-            fillRect(screenX, y, TILE, 7, topC);
+            fillRect(x, y, TILE, 7, topC);
 
-        fillRect(screenX, y + TILE - 5, TILE, 5, botC);
+        fillRect(x, y + TILE - 5, TILE, 5, botC);
     }
 
     else if (ch == '^') {
-        drawSpikeAt(screenX, r);
+        drawSpike(cx, r);
     }
 
     else if (ch == 'G') {
-        int gx = screenX + 8;
+        int gx = x + 8;
         int gy = y + 16;
 
         fillRect(gx, gy, PW, PH, mk(255, 140, 170));
@@ -2472,7 +2628,6 @@ static void drawTileCellScreen(int r, int screenX, char ch, bool hi) {
     }
 }
 
-// Biome-Specific Small Semi-Dense Grass Shapes & Colors!
 static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style) {
     if (biome == 0) {
         Color dark = mk(36, 140, 52);
@@ -2546,7 +2701,7 @@ static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style)
     }
 }
 
-static void drawSplatAt(const Splat &s, int sx) {
+static void drawSplat(const Splat &s) {
     if (s.stage >= 4)
         return;
 
@@ -2556,7 +2711,7 @@ static void drawSplatAt(const Splat &s, int sx) {
     if (dw < 2) dw = 2;
     if (dh < 2) dh = 2;
 
-    int ox = sx + (s.w - dw) / 2;
+    int ox = s.x + (s.w - dw) / 2;
     int oy = s.y + (s.h - dh) / 2;
 
     Color c1 = mk(140 / div + 20, 10, 20);
@@ -2781,6 +2936,66 @@ static void paintBackground() {
     }
 }
 
+static void drawSplatsClipped(int b) {
+    for (int i = 0; i < splatCount; i++) {
+        if (splats[i].drawn[b] && splats[i].stage < 4)
+            drawSplat(splats[i]);
+    }
+}
+
+static void drawPlantsClipped(int b) {
+    for (int i = 0; i < plantCount; i++) {
+        Plant &p = plants[i];
+        if (p.room != bufRoom[b])
+            continue;
+        if (p.x + 16 < clipX0 || p.x - 16 > clipX1)
+            continue;
+        if (p.y < clipY0 || p.y - p.height - 6 > clipY1)
+            continue;
+        drawPlantTuft(p.x, p.y, p.height, (int)p.angle, currentBiome, p.style);
+        p.drawn[b] = true;
+        p.drawnBend[b] = (signed char)((int)p.angle);
+    }
+}
+
+static void restoreRect(
+    int b, int x, int y, int w, int h, bool withDetails
+) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+
+    if (x + w > FRAME_WIDTH) w = FRAME_WIDTH - x;
+    if (y + h > FRAME_HEIGHT) h = FRAME_HEIGHT - y;
+
+    if (w <= 0 || h <= 0)
+        return;
+
+    setClip(x, y, w, h);
+
+    paintBackground();
+
+    int c0 = x / TILE;
+    int c1 = (x + w - 1) / TILE;
+    int r0 = y / TILE;
+    int r1 = (y + h - 1) / TILE;
+
+    for (int r = r0; r <= r1; r++) {
+        for (int c = c0; c <= c1; c++) {
+            char ch = bufGrid[b][r][c];
+
+            if (ch != '.')
+                drawTileCell(r, c, ch, bufHi[b][r][c]);
+        }
+    }
+
+    if (withDetails) {
+        drawSplatsClipped(b);
+        drawPlantsClipped(b);
+    }
+
+    resetClip();
+}
+
 static void addDirty(int b, int x, int y, int w, int h) {
     if (dirtyCount[b] < MAX_DIRTY) {
         Rect &d = dirty[b][dirtyCount[b]++];
@@ -2848,10 +3063,39 @@ static void drawHUDFull(int b) {
     fillRect(1303, 25, 554, 40, mk(44, 32, 72));
     drawLabel(wTid, 1580, 25, 40, 2, wCol);
 
+    if (p2Joined) {
+        fillRect(1300, 74, 240, 32, mk(20, 45, 75));
+        drawTextC(1420, 82, "P2 JOINED", 2, mk(110, 225, 255));
+    }
+
     hudSq[b] = hudN;
     hudProg[b] = prog;
     hudWeap[b] = curWeapon;
     hudNeed[b] = false;
+}
+
+static void drawRoomSplats(int b) {
+    for (int i = 0; i < splatCount; i++) {
+        if (splats[i].room == bufRoom[b] && splats[i].stage < 4) {
+            drawSplat(splats[i]);
+            splats[i].drawn[b] = true;
+            splats[i].drawnStage[b] = splats[i].stage;
+        }
+    }
+}
+
+static void drawRoomPlants(int b) {
+    for (int i = 0; i < plantCount; i++) {
+        Plant &p = plants[i];
+        if (p.room == bufRoom[b]) {
+            int bend = (int)p.angle;
+            drawPlantTuft(p.x, p.y, p.height, bend, currentBiome, p.style);
+            p.drawn[b] = true;
+            p.drawnBend[b] = (signed char)bend;
+        } else {
+            p.drawn[b] = false;
+        }
+    }
 }
 
 static void drawEnemyChar(const Enemy &e, int sx, int sy) {
@@ -2911,45 +3155,6 @@ static void drawBossChar(int bx, int by, int bw, int bh, bool hurt) {
         fillRect(bx + 28 + k * 14, by + 70, 6, 16, coreCol);
 }
 
-static void drawWorldSlice(int x0, int x1, int camBaseX) {
-    if (x0 < 0) x0 = 0;
-    if (x1 > FRAME_WIDTH) x1 = FRAME_WIDTH;
-    if (x0 >= x1) return;
-
-    setClip(x0, 0, x1 - x0, FRAME_HEIGHT);
-    paintBackground();
-
-    int c0 = (camBaseX + x0) / TILE;
-    int c1 = (camBaseX + x1 - 1) / TILE;
-    if (c0 < 0) c0 = 0;
-    if (c1 >= COLS) c1 = COLS - 1;
-
-    for (int r = 0; r < ROWS; r++) {
-        for (int c = c0; c <= c1; c++) {
-            char ch = staticChar(r, c);
-            if (ch != '.')
-                drawTileCellScreen(r, c * TILE - camBaseX, ch, hiAt(r, c));
-        }
-    }
-
-    for (int i = 0; i < splatCount; i++) {
-        const Splat &s = splats[i];
-        if (s.stage >= 4) continue;
-        int sx = s.wx - camBaseX;
-        if (sx + s.w < x0 || sx > x1) continue;
-        drawSplatAt(s, sx);
-    }
-
-    for (int i = 0; i < plantCount; i++) {
-        const Plant &p = plants[i];
-        int sx = p.wx - camBaseX;
-        if (sx + 16 < x0 || sx - 16 > x1) continue;
-        drawPlantTuft(sx, p.y, p.height, (int)p.angle, currentBiome, p.style);
-    }
-
-    resetClip();
-}
-
 static void renderGame(int b) {
     resetClip();
 
@@ -2976,48 +3181,195 @@ static void renderGame(int b) {
         return;
     }
 
-    int camBaseX = (int)camX;
-
     if (needFull[b]) {
-        drawWorldSlice(0, FRAME_WIDTH, camBaseX);
-        drawHUDFull(b);
+        paintBackground();
+
+        for (int r = 0; r < ROWS; r++) {
+            for (int c = 0; c < ROOM_COLS; c++) {
+                int wc = roomIdx * ROOM_COLS + c;
+
+                char ch = staticChar(r, wc);
+                bool hi = hiAt(r, wc);
+
+                bufGrid[b][r][c] = ch;
+                bufHi[b][r][c] = hi;
+
+                if (ch != '.')
+                    drawTileCell(r, c, ch, hi);
+            }
+        }
+
+        bufRoom[b] = roomIdx;
+
+        for (int i = 0; i < MAX_SPLATS; i++)
+            splats[i].drawn[b] = false;
+
+        drawRoomSplats(b);
+        drawRoomPlants(b);
+
+        bufStar[b] = tick / 20;
         dirtyCount[b] = 0;
+
+        drawHUDFull(b);
+
         needFull[b] = false;
-    } else {
-        // 1. Restore moving-object dirty rectangles from previous frame
+    }
+
+    else {
+        bool trans = (bufRoom[b] != roomIdx);
+
         for (int i = 0; i < dirtyCount[b]; i++) {
             Rect d = dirty[b][i];
-            if (d.y < 85)
+
+            if (d.y < 110)
                 hudNeed[b] = true;
-            drawWorldSlice(d.x, d.x + d.w, camBaseX);
+
+            restoreRect(b, d.x, d.y, d.w, d.h, !trans);
         }
+
         dirtyCount[b] = 0;
 
-        // 2. If camera moved smoothly since last draw, update only the newly revealed strip!
-        int deltaCam = camBaseX - prevCamI;
-        if (deltaCam > 0) {
-            int stripW = deltaCam + 32;
-            if (stripW > FRAME_WIDTH) stripW = FRAME_WIDTH;
-            drawWorldSlice(FRAME_WIDTH - stripW, FRAME_WIDTH, camBaseX);
-        } else if (deltaCam < 0) {
-            int stripW = (-deltaCam) + 32;
-            if (stripW > FRAME_WIDTH) stripW = FRAME_WIDTH;
-            drawWorldSlice(0, stripW, camBaseX);
+        if (trans) {
+            for (int i = 0; i < splatCount; i++) {
+                if (splats[i].drawn[b]) {
+                    Splat &s = splats[i];
+                    restoreRect(b, s.x - 1, s.y - 1, s.w + 2, s.h + 2, false);
+                    splats[i].drawn[b] = false;
+                }
+            }
+
+            for (int i = 0; i < plantCount; i++) {
+                if (plants[i].drawn[b]) {
+                    Plant &p = plants[i];
+                    restoreRect(b, p.x - 12, p.y - p.height - 5, 24, p.height + 5, false);
+                    p.drawn[b] = false;
+                }
+            }
+
+            for (int r = 0; r < ROWS; r++) {
+                for (int c = 0; c < ROOM_COLS; c++) {
+                    int wc = roomIdx * ROOM_COLS + c;
+
+                    char nc = staticChar(r, wc);
+                    bool nh = hiAt(r, wc);
+
+                    char oc = bufGrid[b][r][c];
+                    bool oh = bufHi[b][r][c];
+
+                    if (nc == oc && nh == oh)
+                        continue;
+
+                    bool needBg = (oc != '.') && (nc != '#');
+
+                    if (needBg) {
+                        setClip(c * TILE, r * TILE, TILE, TILE);
+                        paintBackground();
+                        resetClip();
+                    }
+
+                    bufGrid[b][r][c] = nc;
+                    bufHi[b][r][c] = nh;
+
+                    if (nc != '.')
+                        drawTileCell(r, c, nc, nh);
+
+                    if (r <= 1)
+                        hudNeed[b] = true;
+                }
+            }
+
+            bufRoom[b] = roomIdx;
+
+            drawRoomSplats(b);
+            drawRoomPlants(b);
         }
 
-        // 3. Refresh grass & splats in the active interaction band around player
-        int pScrX = (int)px - camBaseX;
-        drawWorldSlice(pScrX - 70, pScrX + PW + 70, camBaseX);
+        // Update splats that are newly drawn or changed fade stage (1.5 min fade)
+        for (int i = 0; i < splatCount; i++) {
+            Splat &s = splats[i];
+            if (s.room != bufRoom[b])
+                continue;
+            if (s.drawn[b] && (s.stage >= 4 || s.drawnStage[b] != s.stage)) {
+                restoreRect(b, s.x - 1, s.y - 1, s.w + 2, s.h + 2, false);
+                s.drawn[b] = false;
+            }
+            if (!s.drawn[b] && s.stage < 4) {
+                drawSplat(s);
+                s.drawn[b] = true;
+                s.drawnStage[b] = s.stage;
+            }
+        }
 
-        if (hudNeed[b] || hudWeap[b] != curWeapon || hudProg[b] != progressNow()) {
+        // Update grass tufts that moved/bent
+        for (int i = 0; i < plantCount; i++) {
+            Plant &p = plants[i];
+            if (p.room != bufRoom[b])
+                continue;
+            int bend = (int)p.angle;
+            if (p.drawn[b] && p.drawnBend[b] != bend) {
+                restoreRect(b, p.x - 12, p.y - p.height - 5, 24, p.height + 5, false);
+                p.drawn[b] = false;
+            }
+            if (!p.drawn[b]) {
+                drawPlantTuft(p.x, p.y, p.height, bend, currentBiome, p.style);
+                p.drawn[b] = true;
+                p.drawnBend[b] = (signed char)bend;
+            }
+        }
+
+        int ph = tick / 20;
+
+        if (currentBiome == 5 && bufStar[b] != ph) {
+            for (int i = 0; i < NUM_STARS; i++) {
+                if (starDim(i, bufStar[b]) != starDim(i, ph)) {
+                    int sx, sy;
+                    starPos(i, sx, sy);
+
+                    restoreRect(b, sx - 3, sy - 3, 9, 9, true);
+                }
+            }
+
+            bufStar[b] = ph;
+        }
+
+        int hudN = deaths < 30 ? deaths : 30;
+        int prog = progressNow();
+
+        if (hudNeed[b] || hudWeap[b] != curWeapon) {
             drawHUDFull(b);
+        } else {
+            for (int i = hudSq[b]; i < hudN; i++) {
+                fillRect(
+                    70 + i * 20, 60,
+                    13, 13,
+                    mk(205, 25, 35)
+                );
+            }
+
+            hudSq[b] = hudN;
+
+            if (prog > hudProg[b]) {
+                fillRect(
+                    700 + hudProg[b], 43,
+                    prog - hudProg[b], 14,
+                    bossActive ? mk(245, 55, 40) : mk(205, 40, 100)
+                );
+            } else if (prog < hudProg[b]) {
+                fillRect(
+                    700 + prog, 43,
+                    hudProg[b] - prog, 14,
+                    bossActive ? mk(65, 25, 35) : mk(45, 35, 70)
+                );
+            }
+
+            hudProg[b] = prog;
         }
     }
 
-    prevCamI = camBaseX;
-
-    // ----- Moving Objects (Tracked via addDirty for smooth 60 FPS!) -----
+    // ----- Moving Objects (Tracked via addDirty for locked 60 FPS!) -----
     resetClip();
+
+    int roomX = roomIdx * FRAME_WIDTH;
 
     if (currentBiome <= 2) {
         Color birdCol = (currentBiome == 0) ? mk(26, 75, 52) : mk(95, 42, 30);
@@ -3050,25 +3402,23 @@ static void renderGame(int b) {
     }
 
     for (int i = 0; i < checkCount; i++) {
-        int fx = checkCols[i] * TILE + 24 - camBaseX;
-        int fy = checkRows[i] * TILE - 64;
-        if (fx < -40 || fx > FRAME_WIDTH + 40)
+        int cRoom = checkCols[i] / ROOM_COLS;
+        if (cRoom != roomIdx)
             continue;
+        int fx = (checkCols[i] % ROOM_COLS) * TILE + 24;
+        int fy = checkRows[i] * TILE - 64;
         fillRect(fx, fy, 6, 64, mk(220, 220, 235));
         Color flagCol = checkActive[i] ? mk(65, 235, 110) : mk(235, 190, 55);
         fillRect(fx + 6, fy + 4, 28, 20, flagCol);
         addDirty(b, fx - 2, fy - 2, 38, 66);
     }
 
-    int c0 = camBaseX / TILE;
-    int c1 = (camBaseX + FRAME_WIDTH) / TILE + 1;
-    if (c0 < 0) c0 = 0;
-    if (c1 > COLS) c1 = COLS;
-
     for (int r = 0; r < ROWS; r++) {
-        for (int c = c0; c < c1; c++) {
+        for (int c = roomIdx * ROOM_COLS;
+             c < roomIdx * ROOM_COLS + ROOM_COLS && c < COLS;
+             c++) {
             if (level[r][c] == 'O') {
-                int cx = c * TILE + 30 - camBaseX;
+                int cx = c * TILE + 30 - roomX;
                 int cy = r * TILE + 30;
                 drawSaw(cx, cy);
                 addDirty(b, cx - 27, cy - 27, 55, 55);
@@ -3080,7 +3430,7 @@ static void renderGame(int b) {
         const Enemy &e = enemies[i];
         if (!e.active)
             continue;
-        int sx = (int)e.x - camBaseX;
+        int sx = (int)e.x - roomX;
         int sy = (int)e.y;
         if (sx < -60 || sx > FRAME_WIDTH + 60)
             continue;
@@ -3089,7 +3439,7 @@ static void renderGame(int b) {
     }
 
     if (bossActive && bossHP > 0) {
-        int swX = 20 * TILE + 20 - camBaseX;
+        int swX = 15 * TILE + 20;
         int swY = 7 * TILE - 18;
         Color swCol = (bossSwitchCooldown == 0) ?
                       ((tick & 8) ? mk(80, 255, 120) : mk(40, 200, 85)) :
@@ -3097,7 +3447,7 @@ static void renderGame(int b) {
         fillRect(swX, swY, 80, 18, swCol);
         addDirty(b, swX - 2, swY - 2, 84, 22);
 
-        int bx = (int)bossX - camBaseX;
+        int bx = (int)bossX;
         int by = (int)bossY;
 
         if (bossBeamTimer > 0) {
@@ -3114,7 +3464,7 @@ static void renderGame(int b) {
         BossShot &s = bossShots[i];
         if (!s.active)
             continue;
-        int sx = (int)s.x - camBaseX;
+        int sx = (int)s.x - roomX;
         int sy = (int)s.y;
         if (sx < -30 || sx > FRAME_WIDTH + 30)
             continue;
@@ -3127,7 +3477,7 @@ static void renderGame(int b) {
         const Bullet &bl = bullets[i];
         if (!bl.active)
             continue;
-        int sx = (int)bl.x - camBaseX;
+        int sx = (int)bl.x - roomX;
         int sy = (int)bl.y;
         if (sx < -30 || sx > FRAME_WIDTH + 30)
             continue;
@@ -3156,7 +3506,7 @@ static void renderGame(int b) {
         if (p.life <= 0)
             continue;
 
-        int sx = (int)p.x - camBaseX;
+        int sx = (int)p.x - roomX;
         int sy = (int)p.y;
 
         if (sx < -20 || sx > FRAME_WIDTH + 20 ||
@@ -3180,34 +3530,26 @@ static void renderGame(int b) {
         addDirty(b, sx - 1, sy - 1, sz + 2, sz + 2);
     }
 
+    // Player 1 (Classic Red Meat Cube)
     if (deadTimer == 0) {
-        int x = (int)px - camBaseX;
-        int y = (int)py;
+        drawCubeBody(
+            roomX, px, py, squashX, squashY, facing, curWeapon,
+            mk(140, 0, 15), mk(205, 25, 35), mk(95, 215, 255)
+        );
+        int x1 = (int)px - roomX;
+        int y1 = (int)py;
+        addDirty(b, x1 - 20, y1 - 18, PW + 40, PH + 22);
+    }
 
-        int dw = (int)(PW * squashX);
-        int dh = (int)(PH * squashY);
-
-        if (dw < 20) dw = 20;
-        if (dh < 20) dh = 20;
-
-        int dx = x + (PW - dw) / 2;
-        int dy = y + (PH - dh);
-
-        fillRect(dx, dy, dw, dh, mk(140, 0, 15));
-        fillRect(dx + 3, dy + 3, dw - 6, dh - 6, mk(205, 25, 35));
-        drawPlayerFace(dx, dy, dw, dh, facing);
-
-        Color gunCol = mk(95, 215, 255);
-        if (curWeapon == W_SHOTGUN) gunCol = mk(255, 195, 70);
-        else if (curWeapon == W_SAW) gunCol = mk(140, 250, 160);
-        else if (curWeapon == W_PLASMA) gunCol = mk(255, 120, 235);
-
-        int gx = (facing > 0) ? (dx + dw - 4) : (dx - 14);
-        int gy = dy + dh / 2 - 4;
-        fillRect(gx, gy, 18, 10, mk(45, 45, 55));
-        fillRect(gx + (facing > 0 ? 6 : 2), gy + 2, 10, 6, gunCol);
-
-        addDirty(b, x - 20, y - 18, PW + 40, PH + 22);
+    // Player 2 Co-op (Distinct Cyan/Blue Meat Cube)
+    if (p2Joined && p2DeadTimer == 0) {
+        drawCubeBody(
+            roomX, p2x, p2y, p2SquashX, p2SquashY, p2Facing, p2Weapon,
+            mk(15, 65, 145), mk(35, 155, 245), mk(255, 220, 75)
+        );
+        int x2 = (int)p2x - roomX;
+        int y2 = (int)p2y;
+        addDirty(b, x2 - 20, y2 - 18, PW + 40, PH + 22);
     }
 }
 
@@ -3697,6 +4039,8 @@ static void startLevel() {
     buildLevel();
 
     roomIdx = 0;
+    p2Joined = false;
+    p2DeadTimer = 0;
     respawn();
 
     deaths = 0;
@@ -3709,6 +4053,9 @@ static void startLevel() {
         parts[i].life = 0;
 
     for (int b = 0; b < 2; b++) {
+        for (int i = 0; i < MAX_SPLATS; i++)
+            splats[i].drawn[b] = false;
+
         needFull[b] = true;
         needWin[b] = false;
         hudNeed[b] = false;
