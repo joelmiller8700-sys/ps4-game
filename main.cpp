@@ -56,14 +56,11 @@ extern "C" {
 #define MAX_BIRDS 5
 #define MAX_BOSS_SHOTS 14
 #define MAX_ENEMIES 56
-#define MAX_BULLETS 28
 #define MAX_CHECKPOINTS 6
 #define MAX_DIRTY 440
 
 // 1.5 Minutes at 60 FPS = 90 * 60 = 5400 frames
 #define SPLAT_MAX_AGE 5400
-// 30 Seconds ability cooldown at 60 FPS = 30 * 60 = 1800 frames
-#define ABILITY_COOLDOWN_FRAMES 1800
 
 std::stringstream debugLogStream;
 
@@ -71,11 +68,8 @@ static Scene2D *scene;
 static char level[ROWS][COLS + 1];
 
 static int padHandle = -1;
-static int padHandle2 = -1;
 static int padUserID = 0;
-static int padUserID2 = -1;
 static OrbisPadData padData;
-static OrbisPadData padData2;
 
 #ifndef NO_AUDIO
 static int audioHandle = -1;
@@ -105,36 +99,6 @@ static int coyote = 0;
 static int wallLock = 0;
 static int facing = 1;
 
-// ---------- Characters & Secret Naruto Roster ----------
-enum {
-    CHAR_CUBE_RED = 0,
-    CHAR_CUBE_CRIMSON = 1,
-    CHAR_NARUTO_KAKASHI = 2,
-    CHAR_NARUTO_MADARA = 3,
-    CHAR_NARUTO_ITACHI = 4,
-    CHAR_NARUTO_PAIN = 5,
-    CHAR_NARUTO_OBITO = 6,
-    CHAR_COUNT = 7
-};
-
-static int selectedChar = CHAR_CUBE_RED;
-static int secretSel = 0; // 0..4 inside secret Naruto menu
-static int abilityCooldown = 0;
-static int abilityEffectTimer = 0;
-static int swordSwingTimer = 0;
-
-// ---------- Player 2 Co-op state ----------
-static bool p2Joined = false;
-static float p2x, p2y, p2vx, p2vy;
-static float p2SquashX = 1.0f;
-static float p2SquashY = 1.0f;
-static bool p2OnGround = false;
-static int p2Coyote = 0;
-static int p2WallLock = 0;
-static int p2Facing = 1;
-static int p2DeadTimer = 0;
-static int p2ShootCooldown = 0;
-
 static int deaths = 0;
 static int winTimer = 0;
 static int deadTimer = 0;
@@ -143,30 +107,7 @@ static int frameID = 0;
 
 static unsigned int rng = 12345;
 
-// ---------- Sword Weapons System ----------
-enum {
-    W_BLASTER = 0, // Dawn Sword
-    W_SHOTGUN = 1, // Gale Twin-Slash Sword
-    W_SAW     = 2, // Saw-Edge Cleaver
-    W_PLASMA  = 3, // Crimson Thunder Sword
-    W_TOTAL   = 4
-};
-
-static int unlockedWeapons = 1;
-static int curWeapon = 0;
-static int p2Weapon = 0;
-static int shootCooldown = 0;
-static bool justUnlockedWeapon = false;
-
-struct Bullet {
-    float x, y, vx, vy;
-    int kind, life, dmg, pierce;
-    bool active;
-};
-
-static Bullet bullets[MAX_BULLETS];
-
-// ---------- Smart Ground & Aerial Enemies System ----------
+// ---------- Ground & Aerial Enemies System (Defeated ONLY by Stomping from Above!) ----------
 enum {
     E_WALKER = 0,
     E_FLYER  = 1,
@@ -267,8 +208,6 @@ static bool bufHi[2][ROWS][ROOM_COLS];
 static int bufStar[2] = {0, 0};
 static int hudSq[2] = {0, 0};
 static int hudProg[2] = {0, 0};
-static int hudWeap[2] = {-1, -1};
-static int hudAbility[2] = {-1, -1};
 static bool hudNeed[2] = {false, false};
 
 static int clipX0 = 0;
@@ -293,8 +232,7 @@ enum {
     S_SETTINGS = 2,
     S_CREDITS = 3,
     S_PLAY = 4,
-    S_STORY = 5,
-    S_SECRET_NARUTO = 6
+    S_STORY = 5
 };
 
 static int state = S_MENU;
@@ -346,11 +284,6 @@ static int storyShown[2] = {0, 0};
     X(T_GAME, "MEAT CUBE", AR(GAME_NAME)) \
     X(T_DEATHS, "DEATHS", AR(DEATHS)) \
     X(T_BOSS_HP, "BOSS HP", AR(BOSS_HP)) \
-    X(T_W0, "SWORD: DAWN BLADE  -  O: SLASH  TRIANGLE: SWITCH", AR(W_BLASTER)) \
-    X(T_W1, "SWORD: GALE TWIN  -  O: SLASH  TRIANGLE: SWITCH", AR(W_SHOTGUN)) \
-    X(T_W2, "SWORD: SAW CLEAVER  -  O: SLASH  TRIANGLE: SWITCH", AR(W_SAW)) \
-    X(T_W3, "SWORD: CRIMSON THUNDER  -  O: SLASH  TRIANGLE: SWITCH", AR(W_PLASMA)) \
-    X(T_NEW_WEAPON, "NEW SWORD UNLOCKED! PRESS TRIANGLE TO SWITCH", AR(NEW_WEAPON)) \
     X(T_COMPLETE, "LEVEL COMPLETE", AR(COMPLETE)) \
     X(T_GREAT, "GREAT JOB", AR(GREAT))
 
@@ -393,29 +326,29 @@ static const Page PAGES[11] = {
     {1, 1, {"TO BE CONTINUED.", "", ""},
      {AR(P4L0), -1, -1}},
 
-    {10, 3, {"STAGE 1: LIVING FOREST - SWORD & ABILITY",
-             "PRESS X TO JUMP, PRESS O TO SLASH WITH YOUR SWORD.",
-             "PRESS SQUARE FOR SPECIAL ABILITY (30S COOLDOWN)!"},
+    {10, 3, {"STAGE 1: LIVING FOREST - STOMP ENEMIES",
+             "TAP X FOR SHORT JUMP, HOLD X FOR HIGH JUMP.",
+             "JUMP ON TOP OF ENEMIES TO DEFEAT THEM!"},
      {AR(T1L0), AR(T1L1), AR(T1L2)}},
-    {11, 3, {"STAGE 2: COUNTRYSIDE - GALE TWIN SWORD",
-             "HOLD SQUARE TO SPRINT AND SLASH WITH GALE BLADES.",
-             "STOMP ENEMIES OR SLASH THEM ACROSS BRIDGES!"},
+    {11, 3, {"STAGE 2: COUNTRYSIDE - SPRINT & STOMP",
+             "HOLD SQUARE TO SPRINT ACROSS WIDE BRIDGES.",
+             "STOMP ENEMIES FROM ABOVE TO CLEAR THE PATH!"},
      {AR(T2L0), AR(T2L1), AR(T2L2)}},
     {12, 3, {"STAGE 3: GOLDEN DESERT - TWO-WALL JUMP",
              "ENTER BETWEEN TWO WALLS AND SLIDE SLOWLY.",
-             "PRESS X TO CLIMB AND SLASH DESERT TURRETS!"},
+             "PRESS X TO CLIMB AND STOMP DESERT FOES!"},
      {AR(T3L0), AR(T3L1), AR(T3L2)}},
-    {13, 3, {"STAGE 4: SNOWY PEAKS - SAW CLEAVER",
-             "FIRE PIERCING SAW BLADES AT FLYING ENEMIES.",
-             "DODGE SPINNING SAWS ACROSS FROZEN BRIDGES!"},
+    {13, 3, {"STAGE 4: SNOWY PEAKS - LEDGE TIMING",
+             "WATCH SPINNING SAWS AND TIME YOUR JUMPS.",
+             "STOMP ENEMIES AND CROSS FROZEN LEDGES!"},
      {AR(T4L0), AR(T4L1), AR(T4L2)}},
     {14, 3, {"STAGE 5: BOSS FIGHT - MAGMA CRUSHER!",
-             "SLASH WITH O, STOMP ITS HEAD, OR HIT THE TOP SWITCH.",
-             "DEFEAT IT TO UNLOCK THE CRIMSON THUNDER SWORD!"},
+             "STOMP ON THE BOSS HEAD OR HIT THE TOP SWITCH.",
+             "DODGE FIREBALLS AND DEFEAT THE BOSS!"},
      {AR(T5L0), AR(T5L1), AR(T5L2)}},
     {15, 3, {"STAGE 10: BOSS FIGHT - SAW OVERLORD!",
-             "USE YOUR SWORDS AND SIDE WALLS TO FIGHT.",
-             "DODGE DOUBLE SAWS AND SAVE THE FOREST!"},
+             "BOUNCE ON THE BOSS HEAD USING SIDE WALLS.",
+             "DODGE DOUBLE SHOTS AND SAVE THE FOREST!"},
      {AR(T10L0), AR(T10L1), AR(T10L2)}}
 };
 
@@ -427,34 +360,20 @@ struct Input {
     bool up, down, left, right;
     bool dleft, dright;
 
-    bool cross, circle, options, square, triangle, r1, l1, l2, r2;
+    bool cross, circle, options, square;
 
     bool crossNew;
     bool circleNew;
     bool optionsNew;
-    bool squareNew;
-    bool shootNew;
-    bool switchNew;
 
     float ana;
 };
 
 static Input in;
-static Input in2;
 
 static bool prevCross = false;
 static bool prevCircle = false;
 static bool prevOptions = false;
-static bool prevSquare = false;
-static bool prevShoot = false;
-static bool prevSwitch = false;
-
-static bool prevCross2 = false;
-static bool prevCircle2 = false;
-static bool prevOptions2 = false;
-static bool prevSquare2 = false;
-static bool prevShoot2 = false;
-static bool prevSwitch2 = false;
 
 static int holdCnt[4] = {0, 0, 0, 0};
 
@@ -488,45 +407,7 @@ static bool isBossStage(int lvl) {
     return ((lvl + 1) % 5) == 0;
 }
 
-// ---------- Controller & Multi-Account Co-op Support ----------
-static void tryOpenPad2Slot(int uid, int slot) {
-    if (padHandle2 >= 0 || uid < 0)
-        return;
-    int h = scePadOpen(uid, slot, 0, NULL);
-    if (h >= 0 && h != padHandle) {
-        padUserID2 = uid;
-        padHandle2 = h;
-    }
-}
-
-static void refreshSecondPad() {
-    if (padHandle2 >= 0)
-        return;
-
-    OrbisUserServiceLoginUserIdList loginList;
-    memset(&loginList, 0, sizeof(loginList));
-    if (sceUserServiceGetLoginUserIdList(&loginList) == 0) {
-        for (int i = 0; i < ORBIS_USER_SERVICE_MAX_LOGIN_USERS; i++) {
-            int uid = loginList.userId[i];
-            if (uid > 0 && uid != padUserID) {
-                tryOpenPad2Slot(uid, 0);
-                tryOpenPad2Slot(uid, 1);
-                if (padHandle2 >= 0)
-                    return;
-            }
-        }
-    }
-
-    for (int uid = 1; uid <= 8 && padHandle2 < 0; uid++) {
-        if (uid != padUserID)
-            tryOpenPad2Slot(uid, 0);
-    }
-    if (padHandle2 < 0)
-        tryOpenPad2Slot(padUserID, 1);
-    if (padHandle2 < 0)
-        tryOpenPad2Slot(0xFF, 0);
-}
-
+// ---------- Controller ----------
 static bool initPad() {
     if (scePadInit() != 0)
         return false;
@@ -541,86 +422,57 @@ static bool initPad() {
     padUserID = userID;
 
     padHandle = scePadOpen(userID, 0, 0, NULL);
-    refreshSecondPad();
 
     return padHandle >= 0;
 }
 
-static void parsePadData(const OrbisPadData &pd, Input &dst,
-                         bool &pCross, bool &pCircle, bool &pOptions,
-                         bool &pSquare, bool &pShoot, bool &pSwitch) {
-    unsigned int btn = pd.buttons;
+static void readInput() {
+    scePadReadState(padHandle, &padData);
 
-    int lx = (int)pd.leftStick.x - 128;
-    int ly = (int)pd.leftStick.y - 128;
+    unsigned int btn = padData.buttons;
 
-    int rx = (int)pd.rightStick.x - 128;
-    int ry = (int)pd.rightStick.y - 128;
+    int lx = (int)padData.leftStick.x - 128;
+    int ly = (int)padData.leftStick.y - 128;
 
-    dst.dleft = (btn & ORBIS_PAD_BUTTON_LEFT) != 0;
-    dst.dright = (btn & ORBIS_PAD_BUTTON_RIGHT) != 0;
+    int rx = (int)padData.rightStick.x - 128;
+    int ry = (int)padData.rightStick.y - 128;
+
+    in.dleft = (btn & ORBIS_PAD_BUTTON_LEFT) != 0;
+    in.dright = (btn & ORBIS_PAD_BUTTON_RIGHT) != 0;
 
     bool dup = (btn & ORBIS_PAD_BUTTON_UP) != 0;
     bool ddown = (btn & ORBIS_PAD_BUTTON_DOWN) != 0;
 
-    dst.up = dup || ly < -60 || ry < -60;
-    dst.down = ddown || ly > 60 || ry > 60;
+    in.up = dup || ly < -60 || ry < -60;
+    in.down = ddown || ly > 60 || ry > 60;
 
-    dst.left = dst.dleft || lx < -60 || rx < -60;
-    dst.right = dst.dright || lx > 60 || rx > 60;
+    in.left = in.dleft || lx < -60 || rx < -60;
+    in.right = in.dright || lx > 60 || rx > 60;
 
     int ax = iabs(rx) > iabs(lx) ? rx : lx;
+
     float a = ax / 110.0f;
+
     if (a > 1.0f) a = 1.0f;
     if (a < -1.0f) a = -1.0f;
+
     if (a > -0.2f && a < 0.2f)
         a = 0.0f;
-    dst.ana = a;
 
-    dst.cross = (btn & ORBIS_PAD_BUTTON_CROSS) != 0;
-    dst.circle = (btn & ORBIS_PAD_BUTTON_CIRCLE) != 0;
-    dst.options = (btn & ORBIS_PAD_BUTTON_OPTIONS) != 0;
-    dst.square = (btn & ORBIS_PAD_BUTTON_SQUARE) != 0;
-    dst.triangle = (btn & ORBIS_PAD_BUTTON_TRIANGLE) != 0;
-    dst.r1 = (btn & ORBIS_PAD_BUTTON_R1) != 0;
-    dst.l1 = (btn & ORBIS_PAD_BUTTON_L1) != 0;
-    dst.l2 = ((btn & ORBIS_PAD_BUTTON_L2) != 0) || (pd.analogButtons.l2 > 40);
-    dst.r2 = ((btn & ORBIS_PAD_BUTTON_R2) != 0) || (pd.analogButtons.r2 > 40);
+    in.ana = a;
 
-    bool shootBtn = dst.circle || dst.r1;
-    bool switchBtn = dst.triangle || dst.l1;
+    in.cross = (btn & ORBIS_PAD_BUTTON_CROSS) != 0;
+    in.circle = (btn & ORBIS_PAD_BUTTON_CIRCLE) != 0;
+    in.options = (btn & ORBIS_PAD_BUTTON_OPTIONS) != 0;
+    in.square = (btn & ORBIS_PAD_BUTTON_SQUARE) != 0;
 
-    dst.crossNew = dst.cross && !pCross;
-    dst.circleNew = dst.circle && !pCircle;
-    dst.optionsNew = dst.options && !pOptions;
-    dst.squareNew = dst.square && !pSquare;
-    dst.shootNew = shootBtn && !pShoot;
-    dst.switchNew = switchBtn && !pSwitch;
+    in.crossNew = in.cross && !prevCross;
+    in.circleNew = in.circle && !prevCircle;
+    in.optionsNew = in.options && !prevOptions;
 
-    pCross = dst.cross;
-    pCircle = dst.circle;
-    pOptions = dst.options;
-    pSquare = dst.square;
-    pShoot = shootBtn;
-    pSwitch = switchBtn;
-}
-
-static void readInput() {
-    scePadReadState(padHandle, &padData);
-    parsePadData(padData, in, prevCross, prevCircle, prevOptions, prevSquare, prevShoot, prevSwitch);
-
-    if (padHandle2 < 0 && (tick % 15) == 0)
-        refreshSecondPad();
-
-    memset(&in2, 0, sizeof(in2));
-    if (padHandle2 >= 0) {
-        int st = scePadReadState(padHandle2, &padData2);
-        if (st == 0) {
-            parsePadData(padData2, in2, prevCross2, prevCircle2, prevOptions2, prevSquare2, prevShoot2, prevSwitch2);
-        } else {
-            padHandle2 = -1;
-        }
-    }
+    prevCross = in.cross;
+    prevCircle = in.circle;
+    prevOptions = in.options;
 }
 
 static bool navEvent(int i, bool pressed) {
@@ -742,9 +594,7 @@ static void snd(int k) {
     else if (k == 5) sfxLen = 3400;
     else if (k == 6) sfxLen = 6500;
     else if (k == 7) sfxLen = 7200;
-    else if (k == 8) sfxLen = 13000;
-    else if (k == 9) sfxLen = 2200;
-    else             sfxLen = 3800;
+    else             sfxLen = 13000;
 }
 
 static void updateGameplayAudio() {
@@ -852,16 +702,9 @@ static void updateGameplayAudio() {
                         f = 220 - (sfxPos >> 6);
                         if (f < 65) f = 65;
                         vol = 17500;
-                    } else if (curSfx == 8) {
+                    } else {
                         f = (sfxPos < 4200) ? 440 : ((sfxPos < 8400) ? 550 : 660);
                         vol = 16000;
-                    } else if (curSfx == 9) {
-                        f = 620 - (sfxPos >> 2);
-                        if (f < 180) f = 180;
-                        vol = 14500;
-                    } else if (curSfx == 10) {
-                        f = 300 + (sfxPos >> 3);
-                        vol = 15500;
                     }
 
                     sfxPhase += f;
@@ -870,7 +713,7 @@ static void updateGameplayAudio() {
                     int tri = sfxPhase < 24000 ? sfxPhase : 48000 - sfxPhase;
                     int s = ((tri - 12000) * vol) / 12000;
 
-                    if (curSfx == 6 || curSfx == 7 || curSfx == 9) {
+                    if (curSfx == 6 || curSfx == 7) {
                         noiseRng = noiseRng * 1664525u + 1013904223u;
                         int nz = ((int)(noiseRng >> 19) & 1023) - 512;
                         s += nz * 6;
@@ -1120,156 +963,6 @@ static int labelWidth(int tid, int sc) {
     return textWidth(TXT_EN[tid], sc);
 }
 
-// ---------- Pixel-Art Naruto Secret Roster Renderer ----------
-static void drawPixelSpriteGrid(
-    int x, int y, int ps, int dirFace,
-    const char *rows[16]
-) {
-    for (int r = 0; r < 16; r++) {
-        const char *line = rows[r];
-        if (!line) continue;
-        for (int c = 0; c < 14; c++) {
-            char ch = line[c];
-            if (ch == '.') continue;
-            int dc = (dirFace >= 0) ? c : (13 - c);
-            Color col = mk(255, 255, 255);
-            if (ch == 'K') col = mk(14, 14, 18);        // Black outline
-            else if (ch == 'S') col = mk(238, 186, 148); // Skin tone
-            else if (ch == 'W') col = mk(224, 228, 240); // Silver/white hair
-            else if (ch == 'G') col = mk(92, 112, 74);   // Olive vest
-            else if (ch == 'N') col = mk(28, 34, 52);    // Dark navy/akatsuki cloak
-            else if (ch == 'R') col = mk(210, 38, 42);   // Crimson / Akatsuki cloud / Sharingan
-            else if (ch == 'O') col = mk(245, 118, 32);  // Orange hair / Obito mask
-            else if (ch == 'P') col = mk(168, 125, 225); // Rinnegan violet
-            else if (ch == 'M') col = mk(158, 32, 38);   // Madara red armor
-            else if (ch == 'B') col = mk(165, 174, 190); // Headband metal
-            fillRect(x + dc * ps, y + r * ps, ps, ps, col);
-        }
-    }
-}
-
-static void drawNarutoCharSprite(int charId, int x, int y, int ps, int dirFace) {
-    static const char *KAKASHI[16] = {
-        "..KKKKKKKKKK..",
-        ".KWWWWWWWWWWK.",
-        "KWWWWWWWWWWWWK",
-        "KWWBBBBBBBBWWK",
-        "K..BSSSKSS..K.",
-        "K..KSSKSSK..K.",
-        ".KKNNNNNNNNKK.",
-        "KNGGGGGGGGGGNK",
-        "KNGGKGGGGKGGNK",
-        "KNGGGGGGGGGGNK",
-        ".KNNNNNNNNNNK.",
-        "..KNNK..KNNK..",
-        "..KNNK..KNNK..",
-        "..KWWK..KWWK..",
-        ".KSSSK..KSSSK.",
-        ".KKKKK..KKKKK."
-    };
-
-    static const char *MADARA[16] = {
-        ".KKKKKKKKKKKK.",
-        "KNNNNNNNNNNNNK",
-        "KNNNNNNNNNNNNK",
-        "KNNKKSSSSKKNNK",
-        "KNNKSRSSRSKNNK",
-        "KNNKSSSSSSKNNK",
-        "KNNKMMMMMMMMNK",
-        "KMNKMMMMMMMMNK",
-        "KMNKMMKMMKMMNK",
-        "KMNKMMMMMMMMNK",
-        "KNNKMMMMMMMMNK",
-        "KNNKNNK..KNNNK",
-        "KNNKNNK..KNNNK",
-        "KNNKWWK..KWWKK",
-        "KNNKSSK..KSSSK",
-        "KKKKKKK..KKKKK"
-    };
-
-    static const char *ITACHI[16] = {
-        "...KKKKKKKK...",
-        "..KNNNNNNNNK..",
-        ".KNNBBBBBBNNK.",
-        ".KNNKSSSSKNNK.",
-        ".KNNSRSSRSNNK.",
-        "..KNNSSSSNNK..",
-        ".KNNNRRRNNNNK.",
-        "KNNNNRRRNRNNNK",
-        "KNNNNNNNNNNNNK",
-        "KNNNRRRNNNNNNK",
-        ".KNNNRRRNNNNK.",
-        ".KNNK....KNNK.",
-        ".KNNK....KNNK.",
-        "..KWWK..KWWK..",
-        ".KSSSK..KSSSK.",
-        ".KKKKK..KKKKK."
-    };
-
-    static const char *PAIN[16] = {
-        "...KKKKKKKK...",
-        "..KOOOOOOOOK..",
-        ".KOBBBBBBBOK..",
-        ".KOKSPPPPSKOK.",
-        ".KOKSSSSSSKOK.",
-        "..KOKSSSSKOK..",
-        ".KNNNRRRNNNNK.",
-        "KNNNNRRRNRNNNK",
-        "KNNNNNNNNNNNNK",
-        "KNNNRRRNNNNNNK",
-        ".KNNNRRRNNNNK.",
-        ".KNNK....KNNK.",
-        ".KNNK....KNNK.",
-        "..KWWK..KWWK..",
-        ".KSSSK..KSSSK.",
-        ".KKKKK..KKKKK."
-    };
-
-    static const char *OBITO[16] = {
-        "...KKKKKKKK...",
-        "..KNNNNNNNNK..",
-        ".KNNKOOOOOKNK.",
-        ".KNNKOOOKOKNK.",
-        ".KNNKOOOOOKNK.",
-        "..KNNKOOOKNK..",
-        ".KNNNRRRNNNNK.",
-        "KNNNNRRRNRNNNK",
-        "KNNNNNNNNNNNNK",
-        "KNNNRRRNNNNNNK",
-        ".KNNNRRRNNNNK.",
-        ".KNNK....KNNK.",
-        ".KNNK....KNNK.",
-        "..KWWK..KWWK..",
-        ".KSSSK..KSSSK.",
-        ".KKKKK..KKKKK."
-    };
-
-    if (charId == CHAR_NARUTO_KAKASHI) drawPixelSpriteGrid(x, y, ps, dirFace, KAKASHI);
-    else if (charId == CHAR_NARUTO_MADARA) drawPixelSpriteGrid(x, y, ps, dirFace, MADARA);
-    else if (charId == CHAR_NARUTO_ITACHI) drawPixelSpriteGrid(x, y, ps, dirFace, ITACHI);
-    else if (charId == CHAR_NARUTO_PAIN) drawPixelSpriteGrid(x, y, ps, dirFace, PAIN);
-    else drawPixelSpriteGrid(x, y, ps, dirFace, OBITO);
-}
-
-static void getCharacterName(int charId, char *out) {
-    if (charId == CHAR_CUBE_RED) strcpy(out, "MEAT CUBE");
-    else if (charId == CHAR_CUBE_CRIMSON) strcpy(out, "CRIMSON CUBE");
-    else if (charId == CHAR_NARUTO_KAKASHI) strcpy(out, "KAKASHI");
-    else if (charId == CHAR_NARUTO_MADARA) strcpy(out, "MADARA");
-    else if (charId == CHAR_NARUTO_ITACHI) strcpy(out, "ITACHI");
-    else if (charId == CHAR_NARUTO_PAIN) strcpy(out, "PAIN");
-    else strcpy(out, "OBITO");
-}
-
-static void getCharacterSkillName(int charId, char *out) {
-    if (charId == CHAR_CUBE_RED || charId == CHAR_CUBE_CRIMSON) strcpy(out, "SKILL: MEAT SLAM");
-    else if (charId == CHAR_NARUTO_KAKASHI) strcpy(out, "SKILL: LIGHTNING BLADE");
-    else if (charId == CHAR_NARUTO_MADARA) strcpy(out, "SKILL: UCHIHA WAVE");
-    else if (charId == CHAR_NARUTO_ITACHI) strcpy(out, "SKILL: CROW FLAME");
-    else if (charId == CHAR_NARUTO_PAIN) strcpy(out, "SKILL: SHINRA PULSE");
-    else strcpy(out, "SKILL: KAMUI STRIKE");
-}
-
 // ---------- Level, Smart Ground Enemy & Checkpoint Construction ----------
 static int baseCol = 0;
 
@@ -1311,10 +1004,10 @@ static void addEnemy(int kind, int col, int row, int minC, int maxC) {
     e.minX = (float)((baseCol + minC) * TILE + 4);
     e.maxX = (float)((baseCol + maxC) * TILE + 12);
     e.dir = 1;
-    e.vx = (kind == E_WALKER) ? 2.8f : ((kind == E_FLYER) ? 3.0f : 2.3f);
+    e.vx = (kind == E_WALKER) ? 2.7f : ((kind == E_FLYER) ? 2.9f : 2.2f);
     e.vy = 0.0f;
-    e.maxHp = (kind == E_TURRET) ? 3 : 2;
-    e.hp = e.maxHp;
+    e.maxHp = 1;
+    e.hp = 1;
     e.hurt = 0;
     e.timer = (col * 17) & 63;
     e.active = true;
@@ -1435,11 +1128,8 @@ static void clearLevelGrid() {
 
     enemyCount = 0;
     checkCount = 0;
-    for (int i = 0; i < MAX_BULLETS; i++)
-        bullets[i].active = false;
 }
 
-// Stage 0: Lively Forest with Ground Enemies, Close Platforms & Clear Path
 static void buildForestStage() {
     baseCol = 0;
     levelCols = COLS;
@@ -1688,7 +1378,7 @@ static void buildBossArena(int tier) {
     bossY = (float)((ROWS - 1) * TILE - bossH);
     bossVX = (tier >= 2) ? -5.0f : -3.8f;
     bossVY = 0.0f;
-    bossMaxHP = (tier >= 2) ? 12 : 8;
+    bossMaxHP = (tier >= 2) ? 10 : 6;
     bossHP = bossMaxHP;
     bossHurt = 0;
     bossState = 0;
@@ -1957,7 +1647,7 @@ static void updateParts() {
             float ox = p.x;
             float oy = p.y;
 
-            p.vy += 0.60f;
+            p.vy += 0.62f;
 
             if (p.vy > 16.0f)
                 p.vy = 16.0f;
@@ -1980,28 +1670,10 @@ static void updateParts() {
     }
 }
 
-static void applyPlantForce(float cx, float by, float pvx, bool burst) {
-    for (int i = 0; i < plantCount; i++) {
-        Plant &p = plants[i];
-        if (p.room != roomIdx)
-            continue;
+static void updatePlantsAndAmbient(bool landedOrJumped) {
+    float pcx = (px - (float)(roomIdx * FRAME_WIDTH)) + PW * 0.5f;
+    float pby = py + PH;
 
-        float dx = cx - (float)p.x;
-        float dy = by - (float)p.y;
-        float adx = dx < 0 ? -dx : dx;
-
-        if (adx < 46.0f && dy > -22.0f && dy < 32.0f) {
-            float prox = 1.0f - (adx / 46.0f);
-            p.vel += pvx * 0.40f * prox;
-            float push = (dx < 0.0f ? 7.0f : -7.0f) * prox;
-            p.angle += push * 0.22f;
-            if (burst)
-                p.vel += (dx < 0.0f ? 5.0f : -5.0f) * prox;
-        }
-    }
-}
-
-static void updatePlantsAndAmbient(bool p1Burst, bool p2Burst) {
     for (int i = 0; i < plantCount; i++) {
         Plant &p = plants[i];
         if (p.room != roomIdx)
@@ -2010,22 +1682,29 @@ static void updatePlantsAndAmbient(bool p1Burst, bool p2Burst) {
         int wIdx = ((tick / 12) + (p.x / 60) + p.seed) & 15;
         float wind = (float)SN[wIdx] / 256.0f * 1.8f;
 
+        if (deadTimer == 0) {
+            float dx = pcx - (float)p.x;
+            float dy = pby - (float)p.y;
+            float adx = dx < 0 ? -dx : dx;
+
+            if (adx < 46.0f && dy > -22.0f && dy < 32.0f) {
+                float prox = 1.0f - (adx / 46.0f);
+                p.vel += vx * 0.40f * prox;
+
+                float push = (dx < 0.0f ? 7.0f : -7.0f) * prox;
+                wind += push;
+
+                if (landedOrJumped)
+                    p.vel += (dx < 0.0f ? 5.0f : -5.0f) * prox;
+            }
+        }
+
         float force = (wind - p.angle) * 0.18f;
         p.vel = (p.vel + force) * 0.78f;
         p.angle += p.vel;
 
         if (p.angle > 12.0f) p.angle = 12.0f;
         if (p.angle < -12.0f) p.angle = -12.0f;
-    }
-
-    if (deadTimer == 0) {
-        float pcx = (px - (float)(roomIdx * FRAME_WIDTH)) + PW * 0.5f;
-        applyPlantForce(pcx, py + PH, vx, p1Burst);
-    }
-
-    if (p2Joined && p2DeadTimer == 0) {
-        float p2cx = (p2x - (float)(roomIdx * FRAME_WIDTH)) + PW * 0.5f;
-        applyPlantForce(p2cx, p2y + PH, p2vx, p2Burst);
     }
 
     for (int i = 0; i < MAX_AMB; i++) {
@@ -2044,7 +1723,7 @@ static void updatePlantsAndAmbient(bool p1Burst, bool p2Burst) {
     }
 }
 
-// ---------- Player, Swords, 30s Character Skill & 2-Player Co-op ----------
+// ---------- Player & Stomp-Only Enemy Combat ----------
 static void respawn() {
     px = (float)(roomIdx * FRAME_WIDTH + TILE + 8);
     py = (float)((ROWS - 1) * TILE - PH);
@@ -2058,20 +1737,6 @@ static void respawn() {
     onGround = false;
     wallLock = 0;
     coyote = 0;
-    swordSwingTimer = 0;
-
-    if (p2Joined) {
-        p2x = px + 56.0f;
-        p2y = py;
-        p2vx = 0;
-        p2vy = 0;
-        p2SquashX = 1.0f;
-        p2SquashY = 1.0f;
-        p2OnGround = false;
-        p2WallLock = 0;
-        p2Coyote = 0;
-        p2DeadTimer = 0;
-    }
 
     if (bossActive && bossHP > 0) {
         bossX = (float)(21 * TILE);
@@ -2079,19 +1744,6 @@ static void respawn() {
         for (int i = 0; i < MAX_BOSS_SHOTS; i++)
             bossShots[i].active = false;
     }
-}
-
-static void respawnP2Only() {
-    p2x = px;
-    p2y = py;
-    p2vx = 0;
-    p2vy = 0;
-    p2SquashX = 1.0f;
-    p2SquashY = 1.0f;
-    p2OnGround = false;
-    p2WallLock = 0;
-    p2Coyote = 0;
-    p2DeadTimer = 0;
 }
 
 static void die() {
@@ -2131,205 +1783,64 @@ static void die() {
     deadTimer = 28;
 }
 
-static void dieP2() {
-    deaths++;
+static void damageBoss(int dmg) {
+    if (bossHurt > 0 || bossHP <= 0)
+        return;
+
+    bossHP -= dmg;
+    if (bossHP < 0) bossHP = 0;
+    bossHurt = 24;
     hudNeed[0] = true;
     hudNeed[1] = true;
-    snd(6);
+    snd(7);
 
-    float cx = p2x + PW / 2.0f;
-    float cy = p2y + PH / 2.0f;
+    float bcx = bossX + bossW * 0.5f;
+    float bcy = bossY + bossH * 0.5f;
 
     for (int i = 0; i < 22; i++) {
-        float bvx = (float)(rnd(180) - 90) / 10.0f;
-        float bvy = (float)(rnd(140) - 120) / 10.0f;
-        spawnPart(cx + (float)(rnd(20) - 10), cy + (float)(rnd(20) - 10),
-                  bvx, bvy, 80, 5 + rnd(4), 1);
+        float pvx = (float)(rnd(200) - 100) / 10.0f;
+        float pvy = -((float)(40 + rnd(100))) / 10.0f;
+        spawnPart(bcx, bcy, pvx, pvy, 90, 6 + rnd(5), 1);
     }
 
-    for (int i = 0; i < 3; i++) {
-        addSplat((int)cx + rnd(36) - 18, (int)cy + rnd(36) - 18, 8 + rnd(8), 8 + rnd(8));
-    }
+    if (bossHP <= 0) {
+        for (int i = 0; i < MAX_BOSS_SHOTS; i++)
+            bossShots[i].active = false;
 
-    p2vx = 0;
-    p2vy = 0;
-    p2DeadTimer = 28;
+        level[16][15] = 'G';
+        needFull[0] = true;
+        needFull[1] = true;
+    }
 }
 
-static void spawnSwordWave(float bx, float by, float bvx, float bvy, int kind, int dmg, int pierce) {
-    for (int i = 0; i < MAX_BULLETS; i++) {
-        if (!bullets[i].active) {
-            Bullet &b = bullets[i];
-            b.x = bx;
-            b.y = by;
-            b.vx = bvx;
-            b.vy = bvy;
-            b.kind = kind;
-            b.dmg = dmg;
-            b.pierce = pierce;
-            b.life = (kind == W_SHOTGUN) ? 28 : 56;
-            b.active = true;
+static void spawnBossShot(float sx, float sy, float svx, float svy) {
+    for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
+        if (!bossShots[i].active) {
+            bossShots[i].x = sx;
+            bossShots[i].y = sy;
+            bossShots[i].vx = svx;
+            bossShots[i].vy = svy;
+            bossShots[i].active = true;
             return;
         }
     }
 }
 
-static void damageBoss(int dmg);
-static void spawnBossShot(float sx, float sy, float svx, float svy);
-
 static void killEnemy(Enemy &e) {
     e.active = false;
-    snd(10);
+    snd(7);
 
     float ecx = e.x + 22.0f;
     float ecy = e.y + 22.0f;
     // Flying blood droplets that arc through the air and settle on the ground
-    for (int i = 0; i < 22; i++) {
+    for (int i = 0; i < 24; i++) {
         float pvx = (float)(rnd(180) - 90) / 10.0f;
         float pvy = -((float)(45 + rnd(95))) / 10.0f;
         spawnPart(ecx, ecy, pvx, pvy, 110, 6 + rnd(4), 1);
     }
 }
 
-static void swingSwordFrom(float sx, float sy, int dirFace, int wpn, bool isP1) {
-    float bx = dirFace > 0 ? (sx + PW + 6.0f) : (sx - 20.0f);
-    float by = sy + PH * 0.42f;
-    float dir = (float)dirFace;
-
-    if (isP1)
-        swordSwingTimer = 12;
-
-    snd(9);
-
-    // Direct melee sword slash arc right in front of the character
-    int slashX = dirFace > 0 ? ((int)sx + PW) : ((int)sx - 44);
-    int slashY = (int)sy - 8;
-    for (int j = 0; j < enemyCount; j++) {
-        Enemy &e = enemies[j];
-        if (!e.active)
-            continue;
-        if (rectOverlap(slashX, slashY, 44, 56, (int)e.x, (int)e.y, 44, 44)) {
-            int mDmg = (wpn == W_PLASMA) ? 3 : 2;
-            e.hp -= mDmg;
-            e.hurt = 10;
-            if (e.hp <= 0)
-                killEnemy(e);
-        }
-    }
-    if (bossActive && bossHP > 0) {
-        if (rectOverlap(slashX, slashY, 44, 56, (int)bossX, (int)bossY, bossW, bossH)) {
-            damageBoss((wpn == W_PLASMA) ? 3 : 2);
-        }
-    }
-
-    // Sword ability projectile wave
-    if (wpn == W_BLASTER) {
-        // Dawn Blade: fast crescent slash wave
-        spawnSwordWave(bx, by, dir * 13.5f, 0.0f, W_BLASTER, 2, 0);
-    } else if (wpn == W_SHOTGUN) {
-        // Gale Twin Sword: triple wide wind-slash spread
-        spawnSwordWave(bx, by, dir * 12.5f, -2.2f, W_SHOTGUN, 1, 0);
-        spawnSwordWave(bx, by, dir * 13.5f,  0.0f, W_SHOTGUN, 1, 0);
-        spawnSwordWave(bx, by, dir * 12.5f,  2.2f, W_SHOTGUN, 1, 0);
-    } else if (wpn == W_SAW) {
-        // Saw-Edge Cleaver: spinning piercing blade
-        spawnSwordWave(bx, by, dir * 12.0f, 0.0f, W_SAW, 2, 3);
-    } else {
-        // Crimson Thunder Sword: heavy high-damage shockwave
-        spawnSwordWave(bx, by, dir * 11.5f, 0.0f, W_PLASMA, 3, 1);
-    }
-}
-
-// Activates character special ability with a 30-second (1800-frame) cooldown
-static void triggerCharacterAbility() {
-    if (abilityCooldown > 0 || deadTimer > 0)
-        return;
-
-    abilityCooldown = ABILITY_COOLDOWN_FRAMES;
-    abilityEffectTimer = 24;
-    hudNeed[0] = true;
-    hudNeed[1] = true;
-    snd(1);
-
-    float dashDist = (float)(facing * 150);
-    float nx = px + dashDist;
-    if (!rectSolid((int)nx, (int)py, PW, PH))
-        px = nx;
-
-    spawnDust(px + PW / 2.0f, py + PH / 2.0f, 14, 5.0f);
-
-    // Character-unique signature attack radius
-    int radX = (selectedChar == CHAR_NARUTO_PAIN || selectedChar == CHAR_NARUTO_MADARA) ? 230 : 185;
-    for (int j = 0; j < enemyCount; j++) {
-        Enemy &e = enemies[j];
-        if (!e.active)
-            continue;
-        int dx = iabs((int)e.x - (int)px);
-        int dy = iabs((int)e.y - (int)py);
-        if (dx <= radX && dy <= 140) {
-            killEnemy(e);
-        }
-    }
-
-    if (bossActive && bossHP > 0) {
-        int dx = iabs((int)bossX - (int)px);
-        int dy = iabs((int)bossY - (int)py);
-        if (dx <= radX + 60 && dy <= 160) {
-            damageBoss(3);
-        }
-    }
-}
-
-static void updateBulletsAndEnemies() {
-    for (int i = 0; i < MAX_BULLETS; i++) {
-        Bullet &b = bullets[i];
-        if (!b.active)
-            continue;
-
-        b.x += b.vx;
-        b.y += b.vy;
-        b.life--;
-
-        if (b.life <= 0 || solidAt((int)b.x, (int)b.y)) {
-            spawnDust(b.x, b.y, 3, 1.8f);
-            b.active = false;
-            continue;
-        }
-
-        for (int j = 0; j < enemyCount; j++) {
-            Enemy &e = enemies[j];
-            if (!e.active)
-                continue;
-
-            if (rectOverlap((int)b.x - 10, (int)b.y - 10, 20, 20,
-                            (int)e.x, (int)e.y, 44, 44)) {
-                e.hp -= b.dmg;
-                e.hurt = 10;
-                spawnDust(b.x, b.y, 4, 2.2f);
-
-                if (e.hp <= 0)
-                    killEnemy(e);
-                else
-                    snd(0);
-
-                if (b.pierce > 0) {
-                    b.pierce--;
-                } else {
-                    b.active = false;
-                    break;
-                }
-            }
-        }
-
-        if (b.active && bossActive && bossHP > 0) {
-            if (rectOverlap((int)b.x - 10, (int)b.y - 10, 20, 20,
-                            (int)bossX + 6, (int)bossY + 6, bossW - 12, bossH - 12)) {
-                damageBoss(b.dmg);
-                b.active = false;
-            }
-        }
-    }
-
+static void updateEnemies() {
     int rmX0 = roomIdx * FRAME_WIDTH - 240;
     int rmX1 = roomIdx * FRAME_WIDTH + FRAME_WIDTH + 240;
 
@@ -2345,7 +1856,6 @@ static void updateBulletsAndEnemies() {
         e.timer++;
 
         if (e.kind == E_WALKER) {
-            // Smarter ground enemy: spots player nearby, chases smartly, and jumps over obstacles
             float distX = px - e.x;
             float adx = distX < 0.0f ? -distX : distX;
             float ady = py - e.y;
@@ -2366,7 +1876,6 @@ static void updateBulletsAndEnemies() {
                 e.dir = -1;
             }
 
-            // Smart obstacle check: if blocked ahead, jump over if possible
             int probeX = (e.dir > 0) ? ((int)nextX + 46) : ((int)nextX - 4);
             if (solidAt(probeX, (int)e.y + 20) && e.vy == 0.0f) {
                 e.vy = -11.5f;
@@ -2418,10 +1927,11 @@ static void updateBulletsAndEnemies() {
             }
         }
 
+        // Player vs Enemy: Stomp from above defeats enemy; touching sides/bottom hurts player
         if (deadTimer == 0 &&
             rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8,
                         (int)e.x + 4, (int)e.y + 4, 36, 36)) {
-            if (vy > 0.0f && (py + PH) < (e.y + 26.0f)) {
+            if (vy > 0.0f && (py + PH) < (e.y + 28.0f)) {
                 py = e.y - PH;
                 vy = -15.5f;
                 squashX = 0.72f;
@@ -2431,63 +1941,6 @@ static void updateBulletsAndEnemies() {
                 die();
                 return;
             }
-        }
-
-        if (p2Joined && p2DeadTimer == 0 &&
-            rectOverlap((int)p2x + 4, (int)p2y + 4, PW - 8, PH - 8,
-                        (int)e.x + 4, (int)e.y + 4, 36, 36)) {
-            if (p2vy > 0.0f && (p2y + PH) < (e.y + 26.0f)) {
-                p2y = e.y - PH;
-                p2vy = -15.5f;
-                p2SquashX = 0.72f;
-                p2SquashY = 1.28f;
-                killEnemy(e);
-            } else {
-                dieP2();
-            }
-        }
-    }
-}
-
-static void damageBoss(int dmg) {
-    if (bossHurt > 0 || bossHP <= 0)
-        return;
-
-    bossHP -= dmg;
-    if (bossHP < 0) bossHP = 0;
-    bossHurt = 24;
-    hudNeed[0] = true;
-    hudNeed[1] = true;
-    snd(7);
-
-    float bcx = bossX + bossW * 0.5f;
-    float bcy = bossY + bossH * 0.5f;
-
-    for (int i = 0; i < 18; i++) {
-        float pvx = (float)(rnd(200) - 100) / 10.0f;
-        float pvy = (float)(rnd(160) - 130) / 10.0f;
-        spawnPart(bcx, bcy, pvx, pvy, 50, 6 + rnd(5), 1);
-    }
-
-    if (bossHP <= 0) {
-        for (int i = 0; i < MAX_BOSS_SHOTS; i++)
-            bossShots[i].active = false;
-
-        level[16][15] = 'G';
-        needFull[0] = true;
-        needFull[1] = true;
-    }
-}
-
-static void spawnBossShot(float sx, float sy, float svx, float svy) {
-    for (int i = 0; i < MAX_BOSS_SHOTS; i++) {
-        if (!bossShots[i].active) {
-            bossShots[i].x = sx;
-            bossShots[i].y = sy;
-            bossShots[i].vx = svx;
-            bossShots[i].vy = svy;
-            bossShots[i].active = true;
-            return;
         }
     }
 }
@@ -2513,13 +1966,6 @@ static void updateProjectiles() {
             s.active = false;
             die();
             return;
-        }
-
-        if (p2Joined && p2DeadTimer == 0 &&
-            rectOverlap((int)p2x + 4, (int)p2y + 4, PW - 8, PH - 8,
-                        (int)s.x - 14, (int)s.y - 14, 28, 28)) {
-            s.active = false;
-            dieP2();
         }
     }
 }
@@ -2596,37 +2042,16 @@ static void updateBoss() {
             die();
         }
     }
-
-    if (p2Joined && p2DeadTimer == 0) {
-        if (bossSwitchCooldown == 0 &&
-            rectOverlap((int)p2x, (int)p2y, PW, PH, swX, swY, 120, 40)) {
-            bossSwitchCooldown = 130;
-            bossBeamTimer = 25;
-            p2vy = -12.0f;
-            damageBoss(2);
-        } else if (rectOverlap((int)p2x + 4, (int)p2y + 4, PW - 8, PH - 8,
-                               (int)bossX + 8, (int)bossY + 8, bossW - 16, bossH - 16)) {
-            if (p2vy > 0.0f && (p2y + PH) < (bossY + 46.0f)) {
-                p2y = bossY - PH;
-                p2vy = -16.5f;
-                p2SquashX = 0.70f;
-                p2SquashY = 1.32f;
-                damageBoss(2);
-            } else if (bossHurt == 0) {
-                dieP2();
-            }
-        }
-    }
 }
 
-static bool touchingHazardAt(float xPos, float yPos) {
-    int hx = (int)xPos + 4;
-    int hy = (int)yPos + 4;
+static bool touchingHazard() {
+    int hx = (int)px + 4;
+    int hy = (int)py + 4;
     int hw = PW - 8;
     int hh = PH - 8;
 
-    int c0 = ((int)xPos / TILE) - 2;
-    int c1 = ((int)xPos + PW) / TILE + 2;
+    int c0 = ((int)px / TILE) - 2;
+    int c1 = ((int)px + PW) / TILE + 2;
 
     if (c0 < 0) c0 = 0;
     if (c1 >= COLS) c1 = COLS - 1;
@@ -2658,17 +2083,12 @@ static bool touchingHazardAt(float xPos, float yPos) {
     return false;
 }
 
-static bool touchingGoalAt(float xPos, float yPos) {
-    int c0 = ((int)xPos / TILE) - 2;
-    int c1 = ((int)xPos + PW) / TILE + 2;
-    if (c0 < 0) c0 = 0;
-    if (c1 >= COLS) c1 = COLS - 1;
-
+static bool touchingGoal() {
     for (int r = 0; r < ROWS; r++) {
-        for (int c = c0; c <= c1; c++) {
+        for (int c = 0; c < COLS; c++) {
             if (level[r][c] == 'G') {
                 if (rectOverlap(
-                    (int)xPos, (int)yPos, PW, PH,
+                    (int)px, (int)py, PW, PH,
                     c * TILE + 8,
                     r * TILE + 16,
                     PW, PH
@@ -2680,252 +2100,225 @@ static bool touchingGoalAt(float xPos, float yPos) {
     return false;
 }
 
-static void stepPlayerPhysics(
-    const Input &src,
-    float &x, float &y, float &svx, float &svy,
-    float &sqX, float &sqY,
-    bool &grounded, int &coy, int &wLock, int &dirFace,
-    int &shootCd, int &wpnSel,
-    bool isP1, bool &burstOut
-) {
-    burstOut = false;
-    if (shootCd > 0)
-        shootCd--;
+// ---------- Physics ----------
+static void update() {
+    updateParts();
+    updateSplatsAging();
 
-    if (src.switchNew && unlockedWeapons > 1) {
-        wpnSel = (wpnSel + 1) % unlockedWeapons;
-        hudNeed[0] = true;
-        hudNeed[1] = true;
-        snd(0);
+    if (deadTimer > 0) {
+        updatePlantsAndAmbient(false);
+        deadTimer--;
+
+        if (deadTimer == 0)
+            respawn();
+
+        return;
     }
 
-    if ((src.shootNew || ((src.circle || src.r1) && shootCd == 0)) && shootCd == 0) {
-        swingSwordFrom(x, y, dirFace, wpnSel, isP1);
-        shootCd = (wpnSel == W_BLASTER) ? 14 : ((wpnSel == W_SHOTGUN) ? 22 : ((wpnSel == W_SAW) ? 18 : 24));
-    }
-
-    bool wasGround = grounded;
+    bool wasGround = onGround;
+    bool didJumpOrLand = false;
 
     {
         float k = 0.0f;
-        if (!grounded) {
-            k = iabs((int)svy) / 18.0f;
+
+        if (!onGround) {
+            k = iabs((int)vy) / 18.0f;
             if (k > 1.0f) k = 1.0f;
         }
+
         float tx = 1.0f - 0.22f * k;
         float ty = 1.0f + 0.30f * k;
-        sqX += (tx - sqX) * 0.3f;
-        sqY += (ty - sqY) * 0.3f;
+
+        squashX += (tx - squashX) * 0.3f;
+        squashY += (ty - squashY) * 0.3f;
     }
 
     int dir = 0;
     float scale = 1.0f;
 
     if (controlMode == 1) {
-        if (src.ana != 0.0f) {
-            dir = src.ana > 0 ? 1 : -1;
-            scale = src.ana > 0 ? src.ana : -src.ana;
+        if (in.ana != 0.0f) {
+            dir = in.ana > 0 ? 1 : -1;
+            scale = in.ana > 0 ? in.ana : -in.ana;
+
             if (scale < 0.5f)
                 scale = 0.5f;
         }
     } else {
-        dir = (src.dright ? 1 : 0) - (src.dleft ? 1 : 0);
+        dir = (in.dright ? 1 : 0) -
+              (in.dleft ? 1 : 0);
     }
 
     bool left = dir < 0;
     bool right = dir > 0;
-    // Square triggers special 30s-cooldown character ability for P1, or sprint for P2
-    bool run = !isP1 && src.square;
-    bool jumpHeld = src.cross;
-    bool jumpNew = src.crossNew;
 
-    bool wallL = rectSolid((int)x - 1, (int)y, 1, PH);
-    bool wallR = rectSolid((int)x + PW, (int)y, 1, PH);
+    bool run = in.square;
+    bool jumpHeld = in.cross;
+    bool jumpNew = in.crossNew;
 
-    float maxSpeed = (run ? 8.4f : 6.0f) * scale;
+    bool wallL = rectSolid((int)px - 1, (int)py, 1, PH);
+    bool wallR = rectSolid((int)px + PW, (int)py, 1, PH);
+
+    float maxSpeed = (run ? 8.2f : 5.8f) * scale;
 
     if (dir != 0)
-        dirFace = dir;
+        facing = dir;
 
-    if (wLock > 0) {
-        wLock--;
+    if (wallLock > 0) {
+        wallLock--;
     } else if (dir != 0) {
-        float acc = grounded ? 1.3f : 0.75f;
-        svx += dir * acc;
-        if (svx > maxSpeed) svx = maxSpeed;
-        if (svx < -maxSpeed) svx = -maxSpeed;
+        float acc = onGround ? 1.25f : 0.72f;
+
+        vx += dir * acc;
+
+        if (vx > maxSpeed) vx = maxSpeed;
+        if (vx < -maxSpeed) vx = -maxSpeed;
     } else {
-        float fr = grounded ? 1.0f : 0.3f;
-        if (svx > fr) svx -= fr;
-        else if (svx < -fr) svx += fr;
-        else svx = 0;
+        float fr = onGround ? 1.0f : 0.3f;
+
+        if (vx > fr) vx -= fr;
+        else if (vx < -fr) vx += fr;
+        else vx = 0;
     }
 
-    svy += 0.9f;
-    if (svy > 18.0f)
-        svy = 18.0f;
+    vy += 0.9f;
 
-    bool sliding = !grounded && svy > 0 && ((wallL && left) || (wallR && right));
-    if (sliding && svy > 3.0f)
-        svy = 3.0f;
+    if (vy > 18.0f)
+        vy = 18.0f;
+
+    bool sliding =
+        !onGround &&
+        vy > 0 &&
+        ((wallL && left) || (wallR && right));
+
+    if (sliding && vy > 3.0f)
+        vy = 3.0f;
 
     if (sliding && (tick & 3) == 0)
-        spawnDust(wallL ? x : x + PW, y + PH - 6.0f, 1, 1.0f);
+        spawnDust(wallL ? px : px + PW, py + PH - 6.0f, 1, 1.0f);
 
-    if (grounded)
-        coy = 6;
-    else if (coy > 0)
-        coy--;
+    if (onGround)
+        coyote = 6;
+    else if (coyote > 0)
+        coyote--;
 
     if (jumpNew) {
-        if (coy > 0) {
-            svy = -17.5f;
-            coy = 0;
-            sqX = 0.72f;
-            sqY = 1.30f;
-            spawnDust(x + PW / 2.0f, y + PH, 6, 3.0f);
-            burstOut = true;
+        if (coyote > 0) {
+            vy = -17.2f;
+            coyote = 0;
+
+            squashX = 0.72f;
+            squashY = 1.30f;
+
+            spawnDust(px + PW / 2.0f, py + PH, 6, 3.0f);
+            didJumpOrLand = true;
             snd(4);
         } else if (wallL || wallR) {
-            svy = -16.5f;
-            svx = wallL ? 8.2f : -8.2f;
-            wLock = 9;
-            dirFace = wallL ? 1 : -1;
-            sqX = 0.72f;
-            sqY = 1.30f;
-            spawnDust(wallL ? x : x + PW, y + PH / 2.0f, 4, 2.0f);
-            burstOut = true;
+            vy = -16.2f;
+            vx = wallL ? 8.0f : -8.0f;
+
+            wallLock = 9;
+            facing = wallL ? 1 : -1;
+
+            squashX = 0.72f;
+            squashY = 1.30f;
+
+            spawnDust(wallL ? px : px + PW, py + PH / 2.0f, 4, 2.0f);
+            didJumpOrLand = true;
             snd(5);
         }
     }
 
-    if (!jumpHeld && svy < -6.0f)
-        svy = -6.0f;
+    if (!jumpHeld && vy < -6.0f)
+        vy = -6.0f;
 
-    x += svx;
-    if (rectSolid((int)x, (int)y, PW, PH)) {
-        if (svx > 0)
-            x = (float)((((int)x + PW - 1) / TILE) * TILE - PW);
-        else if (svx < 0)
-            x = (float)((((int)x) / TILE + 1) * TILE);
-        svx = 0;
-    }
+    // Horizontal collision
+    px += vx;
 
-    y += svy;
-    grounded = false;
-    if (rectSolid((int)x, (int)y, PW, PH)) {
-        if (svy > 0) {
-            y = (float)((((int)y + PH - 1) / TILE) * TILE - PH);
-            grounded = true;
-            if (!wasGround && svy > 5.0f) {
-                float k = svy / 18.0f;
-                if (k > 1.0f) k = 1.0f;
-                sqY = 1.0f - 0.35f * k;
-                sqX = 1.0f + 0.40f * k;
-                spawnDust(x + PW / 2.0f, y + PH, 4 + (int)(k * 6.0f), 4.0f);
-                burstOut = true;
-            }
-        } else if (svy < 0) {
-            y = (float)((((int)y) / TILE + 1) * TILE);
-        }
-        svy = 0;
-    }
-}
-
-static void update() {
-    updateParts();
-    updateSplatsAging();
-
-    if (abilityCooldown > 0) {
-        abilityCooldown--;
-        if ((abilityCooldown % 60) == 0 || abilityCooldown == 0) {
-            hudNeed[0] = true;
-            hudNeed[1] = true;
-        }
-    }
-    if (abilityEffectTimer > 0)
-        abilityEffectTimer--;
-    if (swordSwingTimer > 0)
-        swordSwingTimer--;
-
-    if (in.squareNew) {
-        triggerCharacterAbility();
-    }
-
-    // Player 2 joins on OPTIONS or X from second pad (or if P2 pad button is pressed)
-    bool p2AnyBtn = padHandle2 >= 0 && (in2.optionsNew || in2.crossNew || in2.circleNew || in2.square || in2.triangle || in2.left || in2.right || in2.up || in2.down);
-    if (!p2Joined && p2AnyBtn) {
-        p2Joined = true;
-        p2Weapon = curWeapon;
-        hudNeed[0] = true;
-        hudNeed[1] = true;
-        respawnP2Only();
-        snd(1);
-    }
-
-    bool p1Burst = false;
-    bool p2Burst = false;
-
-    if (deadTimer > 0) {
-        deadTimer--;
-        if (deadTimer == 0)
-            respawn();
-    } else {
-        stepPlayerPhysics(
-            in, px, py, vx, vy, squashX, squashY,
-            onGround, coyote, wallLock, facing,
-            shootCooldown, curWeapon, true, p1Burst
-        );
-    }
-
-    if (p2Joined) {
-        if (p2DeadTimer > 0) {
-            p2DeadTimer--;
-            if (p2DeadTimer == 0)
-                respawnP2Only();
-        } else {
-            stepPlayerPhysics(
-                in2, p2x, p2y, p2vx, p2vy, p2SquashX, p2SquashY,
-                p2OnGround, p2Coyote, p2WallLock, p2Facing,
-                p2ShootCooldown, p2Weapon, false, p2Burst
+    if (rectSolid((int)px, (int)py, PW, PH)) {
+        if (vx > 0) {
+            px = (float)(
+                (((int)px + PW - 1) / TILE) * TILE - PW
+            );
+        } else if (vx < 0) {
+            px = (float)(
+                (((int)px) / TILE + 1) * TILE
             );
         }
+
+        vx = 0;
     }
 
-    updatePlantsAndAmbient(p1Burst, p2Burst);
-    updateBulletsAndEnemies();
+    // Vertical collision
+    py += vy;
+    onGround = false;
+
+    if (rectSolid((int)px, (int)py, PW, PH)) {
+        if (vy > 0) {
+            py = (float)(
+                (((int)py + PH - 1) / TILE) * TILE - PH
+            );
+
+            onGround = true;
+
+            if (!wasGround && vy > 5.0f) {
+                float k = vy / 18.0f;
+
+                if (k > 1.0f)
+                    k = 1.0f;
+
+                squashY = 1.0f - 0.35f * k;
+                squashX = 1.0f + 0.40f * k;
+
+                spawnDust(
+                    px + PW / 2.0f,
+                    py + PH,
+                    4 + (int)(k * 6.0f),
+                    4.0f
+                );
+                didJumpOrLand = true;
+            }
+        } else if (vy < 0) {
+            py = (float)(
+                (((int)py) / TILE + 1) * TILE
+            );
+        }
+
+        vy = 0;
+    }
+
+    for (int i = 0; i < checkCount; i++) {
+        if (!checkActive[i]) {
+            int cpx = checkCols[i] * TILE;
+            if ((int)px + PW >= cpx) {
+                checkActive[i] = true;
+                checkpointX = (float)cpx;
+                checkpointY = (float)(checkRows[i] * TILE - PH);
+                snd(1);
+                spawnDust((float)(cpx + 20), (float)(checkRows[i] * TILE - 40), 10, 3.5f);
+            }
+        }
+    }
+
+    updatePlantsAndAmbient(didJumpOrLand);
+    updateEnemies();
     updateProjectiles();
 
     if (bossActive)
         updateBoss();
 
-    if (deadTimer == 0 && touchingHazardAt(px, py)) {
+    if (deadTimer > 0)
+        return;
+
+    if (touchingHazard()) {
         die();
+        return;
     }
 
-    if (p2Joined && p2DeadTimer == 0 && touchingHazardAt(p2x, p2y)) {
-        dieP2();
-    }
-
-    if ((deadTimer == 0 && touchingGoalAt(px, py)) ||
-        (p2Joined && p2DeadTimer == 0 && touchingGoalAt(p2x, p2y))) {
-        winTimer = 160;
+    if (touchingGoal()) {
+        winTimer = 150;
         needWin[0] = true;
         needWin[1] = true;
-
-        justUnlockedWeapon = false;
-        int newWeapCount = unlockedWeapons;
-        if (currentLevel >= 0 && unlockedWeapons < 2) newWeapCount = 2;
-        if (currentLevel >= 2 && unlockedWeapons < 3) newWeapCount = 3;
-        if (currentLevel >= 4 && unlockedWeapons < 4) newWeapCount = 4;
-
-        if (newWeapCount > unlockedWeapons) {
-            unlockedWeapons = newWeapCount;
-            curWeapon = unlockedWeapons - 1;
-            p2Weapon = curWeapon;
-            justUnlockedWeapon = true;
-        }
-
         snd(8);
     }
 
@@ -2935,29 +2328,37 @@ static void update() {
     roomIdx = nr;
 }
 
-// ---------- Game drawing (Fixed Room Camera + Lively Biome Worlds + 60 FPS Dirty Rects) ----------
+// ---------- High-Detail Graphics & Shading Engine ----------
 static void drawSpike(int cx, int r) {
     int center = cx * TILE + TILE / 2;
-    int top = r * TILE + 20;
+    int top = r * TILE + 18;
 
-    Color spCol = mk(205, 205, 215);
-    if (currentBiome == 2)
-        spCol = mk(230, 195, 145);
-    else if (currentBiome == 3)
-        spCol = mk(195, 235, 255);
-    else if (currentBiome == 4)
-        spCol = mk(255, 130, 70);
+    Color hiCol   = mk(245, 248, 255);
+    Color midCol  = mk(195, 200, 215);
+    Color shdCol  = mk(125, 132, 152);
 
-    for (int j = 0; j < 40; j++) {
-        int half = (j * 26) / 39;
+    if (currentBiome == 2) {
+        hiCol  = mk(255, 232, 185);
+        midCol = mk(224, 184, 128);
+        shdCol = mk(162, 124, 78);
+    } else if (currentBiome == 3) {
+        hiCol  = mk(240, 252, 255);
+        midCol = mk(175, 224, 250);
+        shdCol = mk(105, 165, 205);
+    } else if (currentBiome == 4) {
+        hiCol  = mk(255, 195, 115);
+        midCol = mk(240, 112, 52);
+        shdCol = mk(165, 52, 26);
+    }
 
-        fillRect(
-            center - half,
-            top + j,
-            2 * half + 1,
-            1,
-            spCol
-        );
+    for (int j = 0; j < 42; j++) {
+        int half = (j * 26) / 41;
+        int py0 = top + j;
+        if (half > 0) {
+            fillRect(center - half, py0, half, 1, hiCol);
+            fillRect(center, py0, half + 1, 1, shdCol);
+        }
+        fillRect(center - 1, py0, 3, 1, midCol);
     }
 }
 
@@ -2978,16 +2379,17 @@ static void drawSaw(int cx, int cy) {
             int v = (-dx * ss + dy * cc) >> 8;
 
             if (d2 < 36) {
-                scene->DrawPixel(cx + dx, cy + dy, mk(50, 50, 55));
+                scene->DrawPixel(cx + dx, cy + dy, mk(45, 45, 52));
             } else if (d2 <= 20 * 20) {
-                scene->DrawPixel(cx + dx, cy + dy, mk(165, 165, 178));
+                Color rim = (dx + dy < 0) ? mk(195, 200, 215) : mk(135, 140, 155);
+                scene->DrawPixel(cx + dx, cy + dy, rim);
             } else if (
                 iabs(u) < 6 ||
                 iabs(v) < 6 ||
                 iabs(u - v) < 8 ||
                 iabs(u + v) < 8
             ) {
-                scene->DrawPixel(cx + dx, cy + dy, mk(215, 215, 225));
+                scene->DrawPixel(cx + dx, cy + dy, mk(235, 238, 248));
             }
         }
     }
@@ -3050,101 +2452,65 @@ static void drawPlayerFace(
     );
 }
 
-// Draws sword blade & hilt held by player
-static void drawSwordWeapon(int dx, int dy, int dw, int dh, int dirFace, int wpnSel, bool swinging) {
-    Color bladeCol = mk(210, 235, 255);
-    Color edgeCol  = mk(85, 215, 255);
-    if (wpnSel == W_SHOTGUN) { bladeCol = mk(215, 255, 225); edgeCol = mk(75, 235, 135); }
-    else if (wpnSel == W_SAW) { bladeCol = mk(230, 235, 245); edgeCol = mk(255, 195, 65); }
-    else if (wpnSel == W_PLASMA) { bladeCol = mk(255, 130, 150); edgeCol = mk(255, 45, 75); }
-
-    int hy = dy + dh / 2 - 2 + (swinging ? -10 : 0);
-    if (dirFace > 0) {
-        int hx = dx + dw - 2;
-        fillRect(hx, hy - 6, 5, 16, mk(225, 175, 55)); // Crossguard
-        fillRect(hx + 5, hy - 2, swinging ? 34 : 24, 6, bladeCol);
-        fillRect(hx + 5, hy + 2, swinging ? 34 : 24, 2, edgeCol);
-    } else {
-        int hx = dx - 3;
-        fillRect(hx, hy - 6, 5, 16, mk(225, 175, 55));
-        int len = swinging ? 34 : 24;
-        fillRect(hx - len, hy - 2, len, 6, bladeCol);
-        fillRect(hx - len, hy + 2, len, 2, edgeCol);
-    }
-}
-
-static void drawCubeBody(
-    int roomX, float xPos, float yPos, float sqX, float sqY,
-    int dirFace, int wpnSel, int charId,
-    Color borderCol, Color bodyCol, bool swinging
-) {
-    int x = (int)xPos - roomX;
-    int y = (int)yPos;
-
-    int dw = (int)(PW * sqX);
-    int dh = (int)(PH * sqY);
-
-    if (dw < 20) dw = 20;
-    if (dh < 20) dh = 20;
-
-    int dx = x + (PW - dw) / 2;
-    int dy = y + (PH - dh);
-
-    if (charId >= CHAR_NARUTO_KAKASHI) {
-        // Pixel-art Naruto character drawn in-game
-        drawNarutoCharSprite(charId, dx - 6, dy - 16, 3, dirFace);
-    } else {
-        Color bdr = (charId == CHAR_CUBE_CRIMSON) ? mk(95, 8, 28) : borderCol;
-        Color bdy = (charId == CHAR_CUBE_CRIMSON) ? mk(235, 35, 85) : bodyCol;
-        fillRect(dx, dy, dw, dh, bdr);
-        fillRect(dx + 3, dy + 3, dw - 6, dh - 6, bdy);
-        drawPlayerFace(dx, dy, dw, dh, dirFace);
-    }
-
-    drawSwordWeapon(dx, dy, dw, dh, dirFace, wpnSel, swinging);
-}
-
+// High-detail shaded tile rendering with depth highlights, bricks/strata & shadows
 static void drawTileCell(int r, int cx, char ch, bool hi) {
     int x = cx * TILE;
     int y = r * TILE;
 
     if (ch == '#') {
-        Color mainC = mk(58, 48, 82);
-        Color topC  = mk(145, 105, 180);
-        Color botC  = mk(38, 30, 58);
+        Color mainC = mk(64, 52, 92);
+        Color litC  = mk(84, 70, 118);
+        Color topC  = mk(165, 122, 205);
+        Color topHi = mk(205, 168, 238);
+        Color botC  = mk(36, 28, 56);
 
         if (currentBiome == 0) {
-            mainC = mk(118, 72, 42);
-            topC  = mk(78, 212, 68);
-            botC  = mk(76, 46, 26);
+            mainC = mk(124, 76, 44);
+            litC  = mk(148, 94, 56);
+            topC  = mk(76, 208, 68);
+            topHi = mk(135, 240, 115);
+            botC  = mk(74, 44, 24);
         } else if (currentBiome == 1) {
-            mainC = mk(116, 70, 42);
-            topC  = mk(235, 182, 56);
-            botC  = mk(78, 46, 26);
+            mainC = mk(122, 74, 44);
+            litC  = mk(146, 92, 56);
+            topC  = mk(236, 184, 56);
+            topHi = mk(255, 224, 115);
+            botC  = mk(76, 44, 24);
         } else if (currentBiome == 2) {
-            mainC = mk(178, 118, 62);
-            topC  = mk(248, 206, 95);
-            botC  = mk(124, 78, 40);
+            mainC = mk(184, 124, 66);
+            litC  = mk(208, 146, 84);
+            topC  = mk(248, 208, 98);
+            topHi = mk(255, 236, 155);
+            botC  = mk(122, 76, 38);
         } else if (currentBiome == 3) {
-            mainC = mk(68, 92, 126);
-            topC  = mk(235, 248, 255);
-            botC  = mk(44, 60, 88);
+            mainC = mk(72, 98, 134);
+            litC  = mk(94, 124, 165);
+            topC  = mk(232, 248, 255);
+            topHi = mk(255, 255, 255);
+            botC  = mk(42, 58, 86);
         } else if (currentBiome == 4) {
-            mainC = mk(58, 34, 42);
-            topC  = mk(242, 95, 35);
-            botC  = mk(36, 18, 24);
+            mainC = mk(62, 36, 44);
+            litC  = mk(86, 50, 60);
+            topC  = mk(245, 98, 36);
+            topHi = mk(255, 178, 85);
+            botC  = mk(34, 18, 24);
         }
 
         fillRect(x, y, TILE, TILE, mainC);
+        // Shaded stone/earth inner detail block
+        fillRect(x + 6, y + 14, TILE - 12, TILE - 22, litC);
+        fillRect(x + 10, y + 18, 14, 8, mainC);
+        fillRect(x + 32, y + 32, 16, 10, botC);
 
         if (hi) {
-            fillRect(x, y, TILE, 8, topC);
-            fillRect(x + 4, y + 8, 10, 4, topC);
-            fillRect(x + 22, y + 8, 12, 5, topC);
-            fillRect(x + 42, y + 8, 12, 4, topC);
+            fillRect(x, y, TILE, 9, topC);
+            fillRect(x, y, TILE, 3, topHi);
+            fillRect(x + 4, y + 9, 10, 4, topC);
+            fillRect(x + 22, y + 9, 12, 5, topC);
+            fillRect(x + 42, y + 9, 12, 4, topC);
         }
 
-        fillRect(x, y + TILE - 5, TILE, 5, botC);
+        fillRect(x, y + TILE - 6, TILE, 6, botC);
     }
 
     else if (ch == '^') {
@@ -3155,6 +2521,7 @@ static void drawTileCell(int r, int cx, char ch, bool hi) {
         int gx = x + 8;
         int gy = y + 16;
 
+        fillRect(gx - 2, gy - 2, PW + 4, PH + 4, mk(255, 225, 130));
         fillRect(gx, gy, PW, PH, mk(255, 140, 170));
         fillRect(gx, gy + 3, PW, 7, mk(240, 230, 200));
 
@@ -3595,10 +2962,6 @@ static int progressNow() {
     return p;
 }
 
-static int abilitySecLeft() {
-    return (abilityCooldown + 59) / 60;
-}
-
 static void drawHUDFull(int b) {
     int hudN = deaths < 30 ? deaths : 30;
 
@@ -3631,40 +2994,8 @@ static void drawHUDFull(int b) {
         fillRect(700, 43, prog, 14, mk(205, 40, 100));
     }
 
-    // 30s Character Ability Cooldown indicator
-    int secLeft = abilitySecLeft();
-    fillRect(700, 66, 260, 32, mk(26, 20, 44));
-    if (secLeft == 0) {
-        drawTextC(830, 74, "SQUARE: SKILL READY", 2, mk(95, 245, 135));
-    } else {
-        char abBuf[32];
-        char sNum[4];
-        intToStr(secLeft, sNum);
-        strcpy(abBuf, "SKILL CD: ");
-        strcat(abBuf, sNum);
-        strcat(abBuf, "S");
-        drawTextC(830, 74, abBuf, 2, mk(255, 185, 70));
-    }
-
-    int wTid = T_W0 + curWeapon;
-    Color wCol = mk(95, 215, 255);
-    if (curWeapon == W_SHOTGUN) wCol = mk(255, 195, 70);
-    else if (curWeapon == W_SAW) wCol = mk(140, 250, 160);
-    else if (curWeapon == W_PLASMA) wCol = mk(255, 120, 235);
-
-    fillRect(1300, 22, 560, 46, mk(28, 20, 48));
-    fillRect(1303, 25, 554, 40, mk(44, 32, 72));
-    drawLabel(wTid, 1580, 25, 40, 2, wCol);
-
-    if (p2Joined) {
-        fillRect(1300, 74, 240, 32, mk(20, 45, 75));
-        drawTextC(1420, 82, "P2 JOINED", 2, mk(110, 225, 255));
-    }
-
     hudSq[b] = hudN;
     hudProg[b] = prog;
-    hudWeap[b] = curWeapon;
-    hudAbility[b] = secLeft;
     hudNeed[b] = false;
 }
 
@@ -3696,30 +3027,35 @@ static void drawEnemyChar(const Enemy &e, int sx, int sy) {
     bool flash = (e.hurt & 2) != 0;
 
     if (e.kind == E_WALKER) {
-        Color body = flash ? mk(255, 255, 255) : mk(145, 35, 165);
-        Color trim = mk(85, 18, 105);
+        Color body = flash ? mk(255, 255, 255) : mk(158, 42, 182);
+        Color lit  = mk(198, 86, 224);
+        Color trim = mk(82, 16, 102);
         fillRect(sx, sy, 44, 44, trim);
         fillRect(sx + 4, sy + 4, 36, 36, body);
-        fillRect(sx + 10, sy - 6, 8, 6, mk(225, 225, 235));
-        fillRect(sx + 26, sy - 6, 8, 6, mk(225, 225, 235));
+        fillRect(sx + 6, sy + 6, 32, 10, lit);
+        fillRect(sx + 10, sy - 6, 8, 6, mk(235, 238, 248));
+        fillRect(sx + 26, sy - 6, 8, 6, mk(235, 238, 248));
         drawFace(sx, sy, e.dir, mk(255, 235, 90));
     } else if (e.kind == E_FLYER) {
-        Color body = flash ? mk(255, 255, 255) : mk(225, 85, 35);
+        Color body = flash ? mk(255, 255, 255) : mk(232, 92, 38);
         int wingY = ((tick / 4) & 1) ? -10 : 8;
         fillRect(sx - 12, sy + 14 + wingY, 14, 10, mk(175, 45, 25));
         fillRect(sx + 42, sy + 14 + wingY, 14, 10, mk(175, 45, 25));
         fillRect(sx + 4, sy + 4, 36, 36, body);
+        fillRect(sx + 6, sy + 6, 32, 8, mk(255, 155, 85));
         drawFace(sx, sy, e.dir, mk(255, 245, 120));
     } else if (e.kind == E_JUMPER) {
-        Color body = flash ? mk(255, 255, 255) : mk(45, 185, 135);
-        fillRect(sx, sy, 44, 44, mk(25, 115, 80));
+        Color body = flash ? mk(255, 255, 255) : mk(48, 195, 142);
+        fillRect(sx, sy, 44, 44, mk(24, 112, 78));
         fillRect(sx + 4, sy + 4, 36, 36, body);
-        fillRect(sx + 12, sy + 42, 20, 6, mk(210, 220, 230));
+        fillRect(sx + 6, sy + 6, 32, 8, mk(115, 235, 185));
+        fillRect(sx + 12, sy + 42, 20, 6, mk(215, 224, 236));
         drawFace(sx, sy, e.dir, mk(255, 255, 255));
     } else {
-        Color body = flash ? mk(255, 255, 255) : mk(95, 105, 125);
-        fillRect(sx, sy + 6, 44, 38, mk(50, 55, 70));
+        Color body = flash ? mk(255, 255, 255) : mk(102, 114, 136);
+        fillRect(sx, sy + 6, 44, 38, mk(48, 54, 68));
         fillRect(sx + 4, sy + 10, 36, 30, body);
+        fillRect(sx + 6, sy + 12, 32, 7, mk(152, 166, 192));
         int barrelX = (e.dir < 0) ? (sx - 14) : (sx + 38);
         fillRect(barrelX, sy + 18, 18, 12, mk(235, 75, 45));
         fillRect(sx + 14, sy + 16, 16, 12, mk(255, 215, 70));
@@ -3729,10 +3065,12 @@ static void drawEnemyChar(const Enemy &e, int sx, int sy) {
 static void drawBossChar(int bx, int by, int bw, int bh, bool hurt) {
     Color armorDark = hurt ? mk(255, 240, 180) : mk(85, 22, 32);
     Color armorMain = hurt ? mk(255, 255, 255) : mk(175, 35, 45);
+    Color armorHi   = mk(220, 68, 82);
     Color coreCol   = (tick & 4) ? mk(255, 215, 65) : mk(255, 110, 30);
 
     fillRect(bx, by, bw, bh, armorDark);
     fillRect(bx + 8, by + 8, bw - 16, bh - 16, armorMain);
+    fillRect(bx + 12, by + 12, bw - 24, 22, armorHi);
 
     fillRect(bx + 20, by - 8, bw - 40, 10, coreCol);
 
@@ -3757,17 +3095,11 @@ static void renderGame(int b) {
             fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT,
                      mk(20, 90, 60));
 
-            drawLabel(T_COMPLETE, 960, 330, 110, 10,
+            drawLabel(T_COMPLETE, 960, 370, 110, 10,
                       mk(255, 255, 255));
 
-            drawLabel(T_GREAT, 960, 470, 80, 6,
+            drawLabel(T_GREAT, 960, 520, 80, 6,
                       mk(255, 220, 180));
-
-            if (justUnlockedWeapon) {
-                fillRect(410, 600, 1100, 84, mk(35, 25, 60));
-                fillRect(414, 604, 1092, 76, mk(215, 145, 30));
-                drawLabel(T_NEW_WEAPON, 960, 604, 76, 4, mk(255, 255, 255));
-            }
 
             needWin[b] = false;
         }
@@ -3815,7 +3147,7 @@ static void renderGame(int b) {
         for (int i = 0; i < dirtyCount[b]; i++) {
             Rect d = dirty[b][i];
 
-            if (d.y < 110)
+            if (d.y < 100)
                 hudNeed[b] = true;
 
             restoreRect(b, d.x, d.y, d.w, d.h, !trans);
@@ -3926,9 +3258,8 @@ static void renderGame(int b) {
 
         int hudN = deaths < 30 ? deaths : 30;
         int prog = progressNow();
-        int abSec = abilitySecLeft();
 
-        if (hudNeed[b] || hudWeap[b] != curWeapon || hudAbility[b] != abSec) {
+        if (hudNeed[b]) {
             drawHUDFull(b);
         } else {
             for (int i = hudSq[b]; i < hudN; i++) {
@@ -4077,35 +3408,6 @@ static void renderGame(int b) {
         addDirty(b, sx - 16, sy - 16, 32, 32);
     }
 
-    // Sword projectile slash waves
-    for (int i = 0; i < MAX_BULLETS; i++) {
-        const Bullet &bl = bullets[i];
-        if (!bl.active)
-            continue;
-        int sx = (int)bl.x - roomX;
-        int sy = (int)bl.y;
-        if (sx < -40 || sx > FRAME_WIDTH + 40)
-            continue;
-
-        if (bl.kind == W_BLASTER) {
-            fillRect(sx - 12, sy - 14, 10, 28, mk(120, 235, 255));
-            fillRect(sx - 6, sy - 10, 6, 20, mk(255, 255, 255));
-            addDirty(b, sx - 14, sy - 16, 16, 32);
-        } else if (bl.kind == W_SHOTGUN) {
-            fillRect(sx - 9, sy - 9, 18, 18, mk(110, 245, 165));
-            fillRect(sx - 5, sy - 5, 10, 10, mk(255, 255, 230));
-            addDirty(b, sx - 11, sy - 11, 22, 22);
-        } else if (bl.kind == W_SAW) {
-            fillRect(sx - 14, sy - 14, 28, 28, mk(220, 225, 235));
-            fillRect(sx - 7, sy - 7, 14, 14, mk(255, 195, 65));
-            addDirty(b, sx - 16, sy - 16, 32, 32);
-        } else {
-            fillRect(sx - 18, sy - 20, 14, 40, mk(255, 65, 95));
-            fillRect(sx - 10, sy - 14, 8, 28, mk(255, 225, 120));
-            addDirty(b, sx - 20, sy - 22, 24, 44);
-        }
-    }
-
     for (int i = 0; i < MAX_PARTS; i++) {
         Part &p = parts[i];
         if (p.life <= 0)
@@ -4135,32 +3437,27 @@ static void renderGame(int b) {
         addDirty(b, sx - 1, sy - 1, sz + 2, sz + 2);
     }
 
-    // Player 1 (Selected Meat Cube or Secret Naruto Character + Special Effect Aura)
     if (deadTimer == 0) {
-        int x1 = (int)px - roomX;
-        int y1 = (int)py;
-        if (abilityEffectTimer > 0) {
-            Color aura = (selectedChar == CHAR_NARUTO_KAKASHI) ? mk(90, 215, 255) :
-                         ((selectedChar == CHAR_NARUTO_MADARA) ? mk(235, 65, 95) :
-                         ((selectedChar == CHAR_NARUTO_PAIN) ? mk(185, 130, 255) : mk(255, 140, 45)));
-            fillRect(x1 - 24, y1 - 20, PW + 48, PH + 26, aura);
-        }
-        drawCubeBody(
-            roomX, px, py, squashX, squashY, facing, curWeapon, selectedChar,
-            mk(140, 0, 15), mk(205, 25, 35), swordSwingTimer > 0
-        );
-        addDirty(b, x1 - 36, y1 - 24, PW + 72, PH + 32);
-    }
+        int x = (int)px - roomX;
+        int y = (int)py;
 
-    // Player 2 Co-op (Distinct Cyan/Blue Meat Cube)
-    if (p2Joined && p2DeadTimer == 0) {
-        drawCubeBody(
-            roomX, p2x, p2y, p2SquashX, p2SquashY, p2Facing, p2Weapon, CHAR_CUBE_RED,
-            mk(15, 65, 145), mk(35, 155, 245), false
-        );
-        int x2 = (int)p2x - roomX;
-        int y2 = (int)p2y;
-        addDirty(b, x2 - 26, y2 - 18, PW + 52, PH + 24);
+        int dw = (int)(PW * squashX);
+        int dh = (int)(PH * squashY);
+
+        if (dw < 20) dw = 20;
+        if (dh < 20) dh = 20;
+
+        int dx = x + (PW - dw) / 2;
+        int dy = y + (PH - dh);
+
+        // Shaded Meat Cube with top highlight & depth rim
+        fillRect(dx, dy, dw, dh, mk(125, 0, 14));
+        fillRect(dx + 3, dy + 3, dw - 6, dh - 6, mk(208, 26, 36));
+        fillRect(dx + 5, dy + 5, dw - 10, 7, mk(242, 85, 95));
+
+        drawPlayerFace(dx, dy, dw, dh, facing);
+
+        addDirty(b, x - 14, y - 18, PW + 28, PH + 20);
     }
 }
 
@@ -4328,18 +3625,14 @@ static void drawStoryArt(int art) {
         int cy = ay + 356;
         int dw = 44, dh = 44;
         bool xOn = false;
-        const char *lbl = "O: SLASH";
+        const char *lbl = "WALK";
 
-        if (cyc < 75) {
-            Enemy de = {0,0,0,0,0,0,0, E_WALKER, 2,2, (cyc > 55 ? 2 : 0), t, -1, true};
-            drawEnemyChar(de, ax + 480, ay + 356);
-        }
-        if (cyc >= 25 && cyc < 70) {
-            int bx = ax + 240 + (cyc - 25) * 6;
-            fillRect(bx, ay + 362, 12, 28, mk(120, 235, 255));
-        }
-
-        if (cyc >= 110 && cyc < 160) {
+        if (cyc >= 45 && cyc < 90) {
+            int jt = cyc - 45;
+            cy = ay + 356 - (jt * (45 - jt)) / 4;
+            xOn = (jt < 14);
+            lbl = "STOMP!";
+        } else if (cyc >= 110 && cyc < 160) {
             int jt = cyc - 110;
             cy = ay + 356 - (jt * (55 - jt)) / 4;
             if (jt > 32 && cy > ay + 246) cy = ay + 246;
@@ -4350,6 +3643,11 @@ static void drawStoryArt(int art) {
             lbl = "GREAT!";
         }
 
+        if (cyc < 72) {
+            Enemy de = {0,0,0,0,0,0,0, E_WALKER, 1,1, 0, t, -1, true};
+            drawEnemyChar(de, ax + 480, ay + 356);
+        }
+
         for (int i = 0; i < 14; i++) {
             int gx = ax + 60 + i * 45;
             int bend = (iabs(cx + 22 - gx) < 42 && cy > ay + 320) ? 12 : (SN[(t / 5 + i) & 15] / 32);
@@ -4357,7 +3655,7 @@ static void drawStoryArt(int art) {
         }
 
         drawMiniDemoCube(cx, cy + (44 - dh), dw, dh, 1);
-        drawPadPrompt(ax + 290, ay + 20, false, cyc < 165, cyc < 70, xOn, lbl);
+        drawPadPrompt(ax + 290, ay + 20, false, cyc < 165, false, xOn, lbl);
         return;
     }
 
@@ -4384,7 +3682,7 @@ static void drawStoryArt(int art) {
         int cy = ay + 356;
         bool sqOn = (cyc < 140);
         bool xOn = (cyc >= 50 && cyc < 85);
-        const char *lbl = "GALE SWD";
+        const char *lbl = "HOLD SQ";
 
         if (cyc >= 50 && cyc < 102) {
             int jt = cyc - 50;
@@ -4472,7 +3770,7 @@ static void drawStoryArt(int art) {
         if (cx > ax + 820) cx = ax + 820;
         int cy = ay + 356;
         bool xOn = (cyc >= 50 && cyc < 80);
-        const char *lbl = "SAW SWD";
+        const char *lbl = "TIMING";
 
         if (cyc >= 50 && cyc < 106) {
             int jt = cyc - 50;
@@ -4510,7 +3808,7 @@ static void drawStoryArt(int art) {
         int jt = cyc - 25;
         cx = ax + 285 + (jt * 235) / 47;
         cy = ay + 366 - (jt * (47 - jt)) / 3 - (jt * 104) / 47;
-        lbl = "STOMP+O!";
+        lbl = "STOMP HEAD!";
     } else {
         int bt = cyc - 72;
         cx = ax + 520 + (bt * 240) / 88;
@@ -4520,7 +3818,7 @@ static void drawStoryArt(int art) {
     }
 
     drawMiniDemoCube(cx, cy, 44, 44, 1);
-    drawPadPrompt(ax + 290, ay + 20, false, true, true, xOn, lbl);
+    drawPadPrompt(ax + 290, ay + 20, false, true, false, xOn, lbl);
 }
 
 // ---------- Cutscenes ----------
@@ -4642,25 +3940,15 @@ static void setState(int s) {
 
 static void startLevel() {
     currentLevel = levelSel;
-
-    if (currentLevel >= 1 && unlockedWeapons < 2) unlockedWeapons = 2;
-    if (currentLevel >= 3 && unlockedWeapons < 3) unlockedWeapons = 3;
-    if (currentLevel >= 5 && unlockedWeapons < 4) unlockedWeapons = 4;
-
     buildLevel();
 
     roomIdx = 0;
-    p2Joined = false;
-    p2DeadTimer = 0;
-    abilityCooldown = 0;
-    abilityEffectTimer = 0;
     respawn();
 
     deaths = 0;
     splatCount = 0;
     winTimer = 0;
     deadTimer = 0;
-    justUnlockedWeapon = false;
 
     for (int i = 0; i < MAX_PARTS; i++)
         parts[i].life = 0;
@@ -4716,7 +4004,7 @@ static void endStory() {
     }
 }
 
-// ---------- Menus & Secret Naruto Roster Screen ----------
+// ---------- Menus ----------
 static const int MENU_T[4] = { T_LEVELS, T_SETTINGS, T_CREDITS, T_EXIT };
 
 static int itemCount() {
@@ -4788,74 +4076,9 @@ static void drawLock(int cx, int cy) {
              mk(40,40,50));
 }
 
-static void drawCharacterSelectorBar() {
-    char cName[32];
-    char sName[48];
-    getCharacterName(selectedChar, cName);
-    getCharacterSkillName(selectedChar, sName);
-
-    fillRect(140, 270, 300, 175, mk(28, 20, 48));
-    fillRect(143, 273, 294, 169, mk(44, 32, 70));
-    drawTextC(290, 283, "< CHARACTER >", 2, mk(255, 215, 85));
-
-    if (selectedChar >= CHAR_NARUTO_KAKASHI) {
-        drawNarutoCharSprite(selectedChar, 260, 305, 4, 1);
-    } else if (selectedChar == CHAR_CUBE_CRIMSON) {
-        fillRect(268, 315, 44, 44, mk(95, 8, 28));
-        fillRect(271, 318, 38, 38, mk(235, 35, 85));
-        drawPlayerFace(268, 315, 44, 44, 1);
-    } else {
-        fillRect(268, 315, 44, 44, mk(140, 0, 15));
-        fillRect(271, 318, 38, 38, mk(205, 25, 35));
-        drawPlayerFace(268, 315, 44, 44, 1);
-    }
-
-    drawTextC(290, 382, cName, 2, mk(255, 255, 255));
-    drawTextC(290, 412, sName, 1, mk(125, 235, 255));
-}
-
-static void drawSecretNarutoMenu() {
-    fillRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT, mk(16, 12, 32));
-    fillRect(220, 70, 1480, 90, mk(36, 24, 62));
-    drawTextC(960, 100, "SECRET NARUTO PIXEL ROSTER", 5, mk(255, 195, 65));
-
-    for (int i = 0; i < 5; i++) {
-        int chId = CHAR_NARUTO_KAKASHI + i;
-        int bx = 180 + i * 320;
-        int by = 260;
-        bool sel = (i == secretSel);
-
-        if (sel)
-            fillRect(bx - 6, by - 6, 262, 392, mk(255, 215, 75));
-        fillRect(bx, by, 250, 380, sel ? mk(58, 32, 85) : mk(34, 24, 54));
-
-        drawNarutoCharSprite(chId, bx + 68, by + 28, 8, 1);
-
-        char nBuf[32];
-        char skBuf[48];
-        getCharacterName(chId, nBuf);
-        getCharacterSkillName(chId, skBuf);
-
-        drawTextC(bx + 125, by + 285, nBuf, 3, mk(255, 255, 255));
-        drawTextC(bx + 125, by + 328, skBuf, 1, mk(115, 235, 255));
-    }
-
-    fillRect(420, 740, 1080, 120, mk(28, 20, 48));
-    char curN[32];
-    char curSk[48];
-    getCharacterName(CHAR_NARUTO_KAKASHI + secretSel, curN);
-    getCharacterSkillName(CHAR_NARUTO_KAKASHI + secretSel, curSk);
-    drawTextC(960, 765, curN, 4, mk(255, 215, 75));
-    drawTextC(960, 815, curSk, 2, mk(225, 225, 245));
-
-    fillRect(460, 940, 1000, 60, mk(35, 25, 55));
-    drawTextC(960, 960, "LEFT/RIGHT: PICK   X: SELECT   O: BACK", 3, mk(200, 210, 235));
-}
-
 static void drawStatic() {
     if (state == S_MENU) {
         drawBanner(T_TITLE, 12, 140, 150, true);
-        drawCharacterSelectorBar();
         drawHint(T_H_SELECT);
     }
 
@@ -5030,14 +4253,6 @@ static void drawItem(int i) {
 static void drawUI(int b) {
     resetClip();
 
-    if (state == S_SECRET_NARUTO) {
-        if (uiFull[b]) {
-            drawSecretNarutoMenu();
-            uiFull[b] = false;
-        }
-        return;
-    }
-
     if (uiFull[b]) {
         paintMenuBackdrop();
 
@@ -5074,46 +4289,7 @@ static void updateUI() {
     bool ok = in.crossNew;
     bool back = in.circleNew;
 
-    if (state == S_SECRET_NARUTO) {
-        int oldS = secretSel;
-        if (nl) secretSel = (secretSel + 4) % 5;
-        if (nr) secretSel = (secretSel + 1) % 5;
-        if (secretSel != oldS) {
-            snd(0);
-            uiFull[0] = true;
-            uiFull[1] = true;
-        }
-        if (ok) {
-            selectedChar = CHAR_NARUTO_KAKASHI + secretSel;
-            snd(1);
-            setState(S_MENU);
-        } else if (back) {
-            snd(2);
-            setState(S_MENU);
-        }
-        return;
-    }
-
     if (state == S_MENU) {
-        // Secret Naruto Roster shortcut: L2 + R2 + X
-        if (in.l2 && in.r2 && in.crossNew) {
-            snd(1);
-            setState(S_SECRET_NARUTO);
-            return;
-        }
-
-        // Cycle Meat Cube character variants with Left/Right on main menu
-        if (nl || nr) {
-            if (selectedChar >= CHAR_NARUTO_KAKASHI) {
-                selectedChar = CHAR_CUBE_RED;
-            } else {
-                selectedChar = 1 - selectedChar;
-            }
-            snd(0);
-            uiFull[0] = true;
-            uiFull[1] = true;
-        }
-
         int old = menuSel;
 
         if (nu) menuSel = (menuSel + 3) % 4;
