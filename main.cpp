@@ -1242,13 +1242,12 @@ static void clearLevelGrid() {
         bullets[i].active = false;
 }
 
-// Redesigned Stage 0: Lush Forest Canopy & Ancient Bridges
+// Stage 0: Lush Forest Canopy & Ancient Bridges
 static void buildForestStage() {
     baseCol = 0;
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
-    // Room 1: Friendly opening + first patrol + spike hop
     baseCol = 0 * ROOM_COLS;
     plat(15, 6, 12);
     addEnemy(E_WALKER, 9, 15, 6, 12);
@@ -1257,7 +1256,6 @@ static void buildForestStage() {
     addEnemy(E_JUMPER, 20, 13, 17, 23);
     plat(15, 25, 30);
 
-    // Room 2: Tree-top platforms & flying forest drifters
     baseCol = 1 * ROOM_COLS;
     spk(16, 3, 28);
     plat(15, 2, 7);
@@ -1268,7 +1266,6 @@ static void buildForestStage() {
     addEnemy(E_WALKER, 27, 13, 25, 30);
     addCheckpoint(29, 13);
 
-    // Room 3: Twin-wall forest climb
     baseCol = 2 * ROOM_COLS;
     wall(9, 6, 14);
     wall(12, 6, 16);
@@ -1278,7 +1275,6 @@ static void buildForestStage() {
     plat(12, 22, 29);
     addEnemy(E_JUMPER, 25, 12, 22, 29);
 
-    // Room 4: Stepping stones over thorny undergrowth
     baseCol = 3 * ROOM_COLS;
     spk(16, 2, 29);
     plat(14, 3, 7);
@@ -1289,7 +1285,6 @@ static void buildForestStage() {
     addEnemy(E_TURRET, 28, 10, 24, 30);
     addCheckpoint(25, 10);
 
-    // Room 5: High canopy sprint & wall hop
     baseCol = 4 * ROOM_COLS;
     spk(16, 3, 28);
     plat(14, 3, 8);
@@ -1299,7 +1294,6 @@ static void buildForestStage() {
     addEnemy(E_WALKER, 22, 5, 19, 25);
     plat(12, 27, 30);
 
-    // Room 6: Ancient grove shrine & goal
     baseCol = 5 * ROOM_COLS;
     spk(16, 3, 28);
     plat(14, 3, 8);
@@ -1312,13 +1306,12 @@ static void buildForestStage() {
     baseCol = 0;
 }
 
-// Redesigned Stage 1: Golden Countryside Sprint & Harvest Bridges
+// Stage 1: Golden Countryside Sprint & Harvest Bridges
 static void buildCountryStage() {
     baseCol = 0;
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
-    // Room 1: Wide sprint gaps & wheat field patrols
     baseCol = 0 * ROOM_COLS;
     spk(16, 10, 13);
     plat(14, 15, 21);
@@ -1326,7 +1319,6 @@ static void buildCountryStage() {
     spk(16, 23, 26);
     plat(15, 27, 30);
 
-    // Room 2: Rolling barn bridges
     baseCol = 1 * ROOM_COLS;
     spk(16, 3, 28);
     plat(15, 2, 8);
@@ -1337,7 +1329,6 @@ static void buildCountryStage() {
     plat(14, 27, 30);
     addCheckpoint(28, 14);
 
-    // Room 3: Twin silo wall-jump shaft
     baseCol = 2 * ROOM_COLS;
     wall(8, 5, 14);
     wall(11, 5, 16);
@@ -1347,7 +1338,6 @@ static void buildCountryStage() {
     plat(12, 21, 29);
     addEnemy(E_WALKER, 24, 12, 21, 29);
 
-    // Room 4: Long sprint jump across hay pits
     baseCol = 3 * ROOM_COLS;
     spk(16, 2, 29);
     plat(14, 3, 9);
@@ -1357,7 +1347,6 @@ static void buildCountryStage() {
     addEnemy(E_JUMPER, 27, 12, 24, 30);
     addCheckpoint(25, 12);
 
-    // Room 5: Windmill ridge
     baseCol = 4 * ROOM_COLS;
     spk(16, 3, 29);
     plat(15, 3, 8);
@@ -1367,7 +1356,6 @@ static void buildCountryStage() {
     addEnemy(E_FLYER, 22, 8, 19, 27);
     plat(10, 27, 30);
 
-    // Room 6: Golden sunset terrace
     baseCol = 5 * ROOM_COLS;
     spk(16, 3, 28);
     plat(14, 3, 9);
@@ -1379,13 +1367,12 @@ static void buildCountryStage() {
     baseCol = 0;
 }
 
-// Redesigned Stage 2: Sandy Desert Canyons & Twin-Wall Chimneys
+// Stage 2: Sandy Desert Canyons & Twin-Wall Chimneys
 static void buildDesertStage() {
     baseCol = 0;
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
-    // Room 1: First twin-wall canyon
     baseCol = 0 * ROOM_COLS;
     wall(10, 6, 14);
     wall(13, 6, 16);
@@ -1395,7 +1382,6 @@ static void buildDesertStage() {
     plat(13, 24, 30);
     addEnemy(E_JUMPER, 27, 13, 24, 30);
 
-    // Room 2: Dune turret & sand leap
     baseCol = 1 * ROOM_COLS;
     spk(16, 3, 28);
     plat(14, 3, 9);
@@ -1406,7 +1392,6 @@ static void buildDesertStage() {
     plat(12, 28, 30);
     addCheckpoint(29, 12);
 
-    // Room 3: Double twin-wall chimneys in one room!
     baseCol = 2 * ROOM_COLS;
     wall(7, 7, 14);
     wall(10, 7, 16);
@@ -1417,7 +1402,6 @@ static void buildDesertStage() {
     spk(16, 11, 20);
     addEnemy(E_WALKER, 25, 5, 21, 29);
 
-    // Room 4: Pyramid steps & moving hazards
     baseCol = 3 * ROOM_COLS;
     spk(16, 2, 29);
     plat(15, 3, 7);
@@ -1429,7 +1413,6 @@ static void buildDesertStage() {
     addEnemy(E_TURRET, 29, 10, 25, 30);
     addCheckpoint(26, 10);
 
-    // Room 5: High oasis wall shaft
     baseCol = 4 * ROOM_COLS;
     spk(16, 3, 29);
     plat(14, 3, 8);
@@ -1439,7 +1422,6 @@ static void buildDesertStage() {
     addEnemy(E_FLYER, 18, 1, 14, 23);
     plat(12, 25, 30);
 
-    // Room 6: Desert temple summit
     baseCol = 5 * ROOM_COLS;
     spk(16, 3, 28);
     plat(14, 3, 8);
@@ -1452,13 +1434,12 @@ static void buildDesertStage() {
     baseCol = 0;
 }
 
-// Redesigned Stage 3: Snowy Mountain Peaks & Saw Bridges
+// Stage 3: Snowy Mountain Peaks & Saw Bridges
 static void buildSnowStage() {
     baseCol = 0;
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
-    // Room 1: Frost ledges & saw timing
     baseCol = 0 * ROOM_COLS;
     plat(14, 6, 12);
     sawAt(15, 14);
@@ -1467,7 +1448,6 @@ static void buildSnowStage() {
     plat(12, 25, 30);
     addEnemy(E_FLYER, 27, 8, 24, 30);
 
-    // Room 2: Glacial twin-wall climb
     baseCol = 1 * ROOM_COLS;
     spk(16, 3, 28);
     plat(14, 3, 8);
@@ -1478,7 +1458,6 @@ static void buildSnowStage() {
     plat(12, 24, 30);
     addCheckpoint(25, 12);
 
-    // Room 3: Saw alley & snow turret
     baseCol = 2 * ROOM_COLS;
     spk(16, 2, 29);
     plat(14, 3, 8);
@@ -1489,7 +1468,6 @@ static void buildSnowStage() {
     addEnemy(E_TURRET, 26, 12, 21, 27);
     plat(14, 28, 30);
 
-    // Room 4: Summit wind & ice platforms
     baseCol = 3 * ROOM_COLS;
     spk(16, 2, 29);
     plat(15, 3, 7);
@@ -1500,7 +1478,6 @@ static void buildSnowStage() {
     plat(11, 25, 30);
     addCheckpoint(26, 11);
 
-    // Room 5: Deep freeze wall-jump & saws
     baseCol = 4 * ROOM_COLS;
     spk(16, 3, 29);
     plat(14, 3, 8);
@@ -1511,7 +1488,6 @@ static void buildSnowStage() {
     plat(10, 24, 30);
     addEnemy(E_WALKER, 27, 10, 24, 30);
 
-    // Room 6: Frozen peak sanctuary
     baseCol = 5 * ROOM_COLS;
     spk(16, 3, 28);
     plat(14, 3, 8);
@@ -1524,7 +1500,7 @@ static void buildSnowStage() {
     baseCol = 0;
 }
 
-// Redesigned Boss Arena: Multi-tiered Combat Arena with Side Wall-Jumps & Strike Switch
+// Boss Arena: Multi-tiered Combat Arena with Side Wall-Jumps & Strike Switch
 static void buildBossArena(int tier) {
     baseCol = 0;
     levelCols = ROOM_COLS;
@@ -1533,16 +1509,13 @@ static void buildBossArena(int tier) {
     for (int r = 0; r < ROWS; r++)
         level[r][ROOM_COLS - 1] = '#';
 
-    // Left & Right wall-jump columns
     wall(3, 6, 14);
     wall(28, 6, 14);
 
-    // Left, Center-High & Right combat platforms
     plat(12, 5, 9);
     plat(7, 13, 18);
     plat(12, 22, 26);
 
-    // Corner hazards on far edges so player stays in active arena
     spk(16, 1, 2);
     spk(16, 29, 30);
 
@@ -1565,14 +1538,13 @@ static void buildBossArena(int tier) {
         bossShots[i].active = false;
 }
 
-// Redesigned Stages 5..11 (Distinct layouts & exciting obstacle/enemy combinations)
+// Stages 5..11
 static void buildExtraStage(int idx) {
     baseCol = 0;
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
     if (idx == 5) {
-        // Stage 6: Midnight Tower Gauntlet
         baseCol = 0 * ROOM_COLS;
         spk(16, 8, 12);
         plat(14, 14, 20);
@@ -1628,7 +1600,6 @@ static void buildExtraStage(int idx) {
         addEnemy(E_WALKER, 23, 8, 20, 26);
         put(7, 28, 'G');
     } else if (idx == 6) {
-        // Stage 7: Crystal Cavern Caverns
         baseCol = 0 * ROOM_COLS;
         spk(16, 7, 13);
         plat(13, 15, 22);
@@ -1687,7 +1658,6 @@ static void buildExtraStage(int idx) {
         plat(9, 24, 30);
         put(8, 28, 'G');
     } else if (idx == 7) {
-        // Stage 8: Autumn Gale Sprint & Jumps
         baseCol = 0 * ROOM_COLS;
         spk(16, 9, 14);
         plat(14, 16, 22);
@@ -1741,7 +1711,6 @@ static void buildExtraStage(int idx) {
         addEnemy(E_TURRET, 24, 9, 20, 25);
         put(8, 28, 'G');
     } else if (idx == 8) {
-        // Stage 9: Mystic Swamp Stepping & Chimneys
         baseCol = 0 * ROOM_COLS;
         spk(16, 6, 27);
         plat(15, 5, 8);
@@ -1800,7 +1769,6 @@ static void buildExtraStage(int idx) {
         addEnemy(E_WALKER, 23, 9, 20, 26);
         put(8, 28, 'G');
     } else if (idx == 10) {
-        // Stage 11: Sky Citadel High Climb
         baseCol = 0 * ROOM_COLS;
         spk(16, 6, 27);
         plat(14, 5, 9);
@@ -1858,7 +1826,6 @@ static void buildExtraStage(int idx) {
         addEnemy(E_FLYER, 23, 5, 20, 27);
         put(7, 28, 'G');
     } else {
-        // Stage 12: Dark Obsidian Tower Grand Finale
         baseCol = 0 * ROOM_COLS;
         spk(16, 6, 27);
         plat(14, 5, 9);
@@ -2243,8 +2210,8 @@ static void updatePlantsAndAmbient(bool p1Burst, bool p2Burst) {
 
 // ---------- Player & 2-Player Co-op Logic ----------
 static void respawn() {
-    px = checkpointX;
-    py = checkpointY;
+    px = (float)(roomIdx * FRAME_WIDTH + TILE + 8);
+    py = (float)((ROWS - 1) * TILE - PH);
 
     vx = 0;
     vy = 0;
@@ -3000,7 +2967,7 @@ static void update() {
     roomIdx = nr;
 }
 
-// ---------- Game drawing (Fixed Room Camera + 60 FPS Dirty Rects) ----------
+// ---------- Game drawing (Fixed Room Camera + Lively Biome Worlds + 60 FPS Dirty Rects) ----------
 static void drawSpike(int cx, int r) {
     int center = cx * TILE + TILE / 2;
     int top = r * TILE + 20;
@@ -3157,31 +3124,36 @@ static void drawTileCell(int r, int cx, char ch, bool hi) {
         Color botC  = mk(38, 30, 58);
 
         if (currentBiome == 0) {
-            mainC = mk(82, 54, 38);
-            topC  = mk(65, 190, 75);
-            botC  = mk(55, 36, 24);
+            mainC = mk(118, 72, 42);
+            topC  = mk(78, 212, 68);
+            botC  = mk(76, 46, 26);
         } else if (currentBiome == 1) {
-            mainC = mk(102, 62, 40);
-            topC  = mk(225, 175, 55);
-            botC  = mk(70, 42, 26);
+            mainC = mk(116, 70, 42);
+            topC  = mk(235, 182, 56);
+            botC  = mk(78, 46, 26);
         } else if (currentBiome == 2) {
-            mainC = mk(165, 118, 68);
-            topC  = mk(240, 200, 115);
-            botC  = mk(120, 82, 46);
+            mainC = mk(178, 118, 62);
+            topC  = mk(248, 206, 95);
+            botC  = mk(124, 78, 40);
         } else if (currentBiome == 3) {
-            mainC = mk(65, 88, 118);
-            topC  = mk(230, 245, 255);
-            botC  = mk(42, 58, 82);
+            mainC = mk(68, 92, 126);
+            topC  = mk(235, 248, 255);
+            botC  = mk(44, 60, 88);
         } else if (currentBiome == 4) {
-            mainC = mk(55, 36, 46);
-            topC  = mk(235, 90, 35);
-            botC  = mk(34, 20, 28);
+            mainC = mk(58, 34, 42);
+            topC  = mk(242, 95, 35);
+            botC  = mk(36, 18, 24);
         }
 
         fillRect(x, y, TILE, TILE, mainC);
 
-        if (hi)
-            fillRect(x, y, TILE, 7, topC);
+        if (hi) {
+            fillRect(x, y, TILE, 8, topC);
+            // Scalloped grass/turf lip for lively platform look
+            fillRect(x + 4, y + 8, 10, 4, topC);
+            fillRect(x + 22, y + 8, 12, 5, topC);
+            fillRect(x + 42, y + 8, 12, 4, topC);
+        }
 
         fillRect(x, y + TILE - 5, TILE, 5, botC);
     }
@@ -3203,17 +3175,18 @@ static void drawTileCell(int r, int cx, char ch, bool hi) {
 
 static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style) {
     if (biome == 0) {
-        Color dark = mk(36, 140, 52);
-        Color mid  = mk(72, 208, 84);
-        Color bud  = (style == 0) ? mk(255, 95, 130) : mk(255, 230, 75);
+        // Biome 0: Lush green grass + cheerful wildflower blossoms
+        Color dark = mk(34, 142, 48);
+        Color mid  = mk(78, 218, 76);
+        Color bud  = (style == 0) ? mk(255, 105, 145) : ((style == 1) ? mk(255, 235, 80) : mk(245, 245, 255));
         for (int b = -1; b <= 1; b++) {
             int ox = bx + b * 5;
             int bh = h - (b == 0 ? 0 : 2);
             int sh = bh / 2;
             fillRect(ox - 1, by - sh, 3, sh, dark);
             fillRect(ox - 1 + (bend / 2) + b, by - bh, 3, bh - sh, mid);
-            if (b == 0 && style != 2)
-                fillRect(ox - 2 + (bend / 2), by - bh - 3, 5, 4, bud);
+            if (b == 0)
+                fillRect(ox - 2 + (bend / 2), by - bh - 4, 5, 4, bud);
         }
     } else if (biome == 1) {
         Color stalk = mk(185, 132, 38);
@@ -3227,16 +3200,17 @@ static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style)
             fillRect(ox - 2 + (bend / 2) + b, by - bh - 4, 4, 5, mk(255, 232, 115));
         }
     } else if (biome == 2) {
-        Color scrub = mk(112, 152, 62);
-        Color thorn = mk(235, 155, 65);
+        // Biome 2: Desert scrub & mini cactus
+        Color scrub = mk(82, 168, 56);
+        Color thorn = mk(255, 125, 145);
         int s1 = bend / 2;
-        fillRect(bx - 2, by - h, 4, h, scrub);
+        fillRect(bx - 2, by - h - 2, 4, h + 2, scrub);
         fillRect(bx - 8 + s1, by - (h * 2) / 3, 6, 4, scrub);
-        fillRect(bx - 8 + s1, by - h + 2, 3, 6, scrub);
+        fillRect(bx - 8 + s1, by - h + 1, 3, 6, scrub);
         fillRect(bx + 2 + s1, by - (h * 3) / 4, 6, 4, scrub);
-        fillRect(bx + 5 + s1, by - h + 1, 3, 6, scrub);
+        fillRect(bx + 5 + s1, by - h, 3, 6, scrub);
         if (style == 0)
-            fillRect(bx - 2 + s1, by - h - 3, 4, 3, thorn);
+            fillRect(bx - 2 + s1, by - h - 5, 4, 3, thorn);
     } else if (biome == 3) {
         Color iceDark = mk(105, 175, 220);
         Color iceMid  = mk(185, 230, 255);
@@ -3304,101 +3278,162 @@ static bool starDim(int i, int phase) {
     return ((phase + i) % 4) == 0;
 }
 
+// Helper to draw a distant castle with towers & flags (inspired by vibrant platform worlds)
+static void drawDistantCastle(int cx, int baseY, Color wallCol, Color roofCol, Color flagCol) {
+    // Main keep & side towers
+    fillRect(cx - 65, baseY - 120, 130, 120, wallCol);
+    fillRect(cx - 105, baseY - 155, 44, 155, wallCol);
+    fillRect(cx + 61, baseY - 155, 44, 155, wallCol);
+    fillRect(cx - 26, baseY - 175, 52, 175, wallCol);
+
+    // Pointed roofs
+    for (int j = 0; j < 26; j++) {
+        int half = (j * 28) / 25 + 4;
+        fillRect(cx - half, baseY - 200 + j, half * 2 + 1, 1, roofCol);
+        fillRect(cx - 83 - (j / 2), baseY - 175 + j, j + 10, 1, roofCol);
+        fillRect(cx + 83 - (j / 2), baseY - 175 + j, j + 10, 1, roofCol);
+    }
+
+    // Castle gate & windows
+    fillRect(cx - 18, baseY - 52, 36, 52, mk(45, 32, 48));
+    fillRect(cx - 45, baseY - 95, 16, 22, mk(250, 215, 90));
+    fillRect(cx + 29, baseY - 95, 16, 22, mk(250, 215, 90));
+
+    // Banners on top
+    fillRect(cx, baseY - 216, 18, 10, flagCol);
+    fillRect(cx - 83, baseY - 190, 14, 8, flagCol);
+    fillRect(cx + 83, baseY - 190, 14, 8, flagCol);
+}
+
+// Helper to draw a desert oasis temple & palm trees
+static void drawDesertTempleAndPalms(int tx, int baseY, Color sandWall, Color trimCol) {
+    // Stepped desert palace/temple
+    fillRect(tx - 95, baseY - 110, 190, 110, sandWall);
+    fillRect(tx - 65, baseY - 155, 130, 45, sandWall);
+    fillRect(tx - 30, baseY - 185, 60, 30, trimCol);
+    fillRect(tx - 24, baseY - 56, 48, 56, mk(62, 38, 22));
+    fillRect(tx - 80, baseY - 95, 18, 32, mk(195, 45, 35));
+    fillRect(tx + 62, baseY - 95, 18, 32, mk(195, 45, 35));
+
+    // Palm tree next to temple
+    int px0 = tx - 170;
+    fillRect(px0 - 7, baseY - 135, 14, 135, mk(118, 72, 36));
+    fillRect(px0 - 34, baseY - 144, 34, 10, mk(58, 168, 52));
+    fillRect(px0, baseY - 144, 34, 10, mk(58, 168, 52));
+    fillRect(px0 - 26, baseY - 156, 24, 9, mk(85, 198, 68));
+    fillRect(px0 + 2, baseY - 156, 24, 9, mk(85, 198, 68));
+    fillRect(px0 - 12, baseY - 166, 24, 9, mk(110, 215, 78));
+}
+
+// Lively Multi-Element Biome Backgrounds (Sun, Distant Castle, Waterfall, Pyramids, Oasis, Aurora & Volcanoes)
 static void paintBackground() {
     if (currentBiome == 0) {
-        Color sky1 = mk(65, 165, 235);
-        Color sky2 = mk(115, 205, 248);
-        Color farC = mk(42, 115, 75);
-        Color nearC = mk(26, 82, 52);
+        // Biome 0: Lively Sunlit Forest with Distant Castle & Waterfall
+        Color sky1  = mk(52, 162, 238);
+        Color sky2  = mk(125, 215, 250);
+        Color hill1 = mk(58, 155, 92);
+        Color hill2 = mk(38, 118, 68);
+        Color lush  = mk(28, 88, 52);
 
-        fillRect(0, 0, FRAME_WIDTH, 280, sky1);
-        fillRect(0, 280, FRAME_WIDTH, 290, sky2);
-        fillRect(0, 570, FRAME_WIDTH, 130, farC);
-        fillRect(0, 700, FRAME_WIDTH, 380, nearC);
+        fillRect(0, 0, FRAME_WIDTH, 260, sky1);
+        fillRect(0, 260, FRAME_WIDTH, 240, sky2);
+        fillRect(0, 500, FRAME_WIDTH, 110, hill1);
+        fillRect(0, 610, FRAME_WIDTH, 130, hill2);
+        fillRect(0, 740, FRAME_WIDTH, 340, lush);
 
-        fillRect(1480, 95, 110, 110, mk(255, 235, 120));
-        fillRect(1495, 80, 80, 140, mk(255, 245, 160));
+        // Bright Sun with outer halo
+        fillRect(1540, 72, 136, 136, mk(255, 242, 155));
+        fillRect(1556, 88, 104, 104, mk(255, 224, 72));
 
+        // Fluffy clouds
         for (int i = 0; i < 4; i++) {
-            int cx = 180 + i * 440;
-            int cy = 130 + (i & 1) * 55;
-            fillRect(cx, cy, 170, 38, mk(235, 248, 255));
-            fillRect(cx + 30, cy - 20, 110, 24, mk(245, 252, 255));
+            int cx = 150 + i * 380;
+            int cy = 115 + (i & 1) * 48;
+            fillRect(cx, cy, 165, 36, mk(236, 248, 255));
+            fillRect(cx + 28, cy - 20, 105, 24, mk(248, 253, 255));
         }
 
-        for (int i = 0; i < 5; i++) {
-            int x = i * 400 + 60;
-            fillRect(x + 60, 430, 140, 140, farC);
-            fillRect(x + 90, 380, 80, 60, farC);
-            if (i % 2 == 1)
-                fillRect(x + 118, 430, 24, 270, mk(150, 225, 255));
-            fillRect(x + 220, 460, 130, 110, farC);
-        }
+        // Distant Castle on hilltop
+        drawDistantCastle(1260, 500, mk(218, 212, 224), mk(195, 55, 65), mk(255, 215, 65));
 
+        // Scenic Waterfall & Blue Lake in the background
+        fillRect(360, 430, 96, 250, mk(72, 178, 245));
+        fillRect(376, 430, 64, 250, mk(145, 224, 255));
+        fillRect(394, 430, 28, 250, mk(225, 248, 255));
+        fillRect(260, 655, 420, 65, mk(62, 165, 235));
+        fillRect(310, 670, 310, 28, mk(135, 218, 252));
+
+        // Lush background trees
         for (int i = 0; i < 6; i++) {
-            int x = i * 330 + 40;
-            fillRect(x + 70, 620, 36, 90, mk(68, 44, 28));
-            fillRect(x + 20, 510, 136, 120, nearC);
-            fillRect(x + 44, 465, 88, 55, nearC);
+            int x = i * 320 + 40;
+            fillRect(x + 42, 580, 26, 95, mk(92, 56, 32));
+            fillRect(x, 470, 110, 115, lush);
+            fillRect(x + 20, 430, 70, 50, mk(45, 132, 74));
         }
         return;
     }
 
     if (currentBiome == 1) {
-        Color sky1 = mk(195, 95, 75);
-        Color sky2 = mk(240, 155, 85);
-        Color farC = mk(135, 82, 52);
-        Color nearC = mk(92, 55, 36);
+        // Biome 1: Golden Countryside with Warm Sun, Distant Castle & Rolling Hills
+        Color sky1 = mk(198, 96, 72);
+        Color sky2 = mk(246, 162, 86);
+        Color farC = mk(142, 86, 52);
+        Color nearC = mk(94, 56, 36);
 
         fillRect(0, 0, FRAME_WIDTH, 300, sky1);
         fillRect(0, 300, FRAME_WIDTH, 270, sky2);
         fillRect(0, 570, FRAME_WIDTH, 130, farC);
         fillRect(0, 700, FRAME_WIDTH, 380, nearC);
 
-        fillRect(1420, 210, 130, 130, mk(255, 215, 95));
-        fillRect(1440, 195, 90, 160, mk(255, 230, 130));
+        fillRect(1420, 195, 146, 146, mk(255, 200, 85));
+        fillRect(1434, 209, 118, 118, mk(255, 232, 125));
+
+        drawDistantCastle(1180, 570, mk(215, 175, 135), mk(175, 58, 48), mk(255, 225, 90));
 
         for (int i = 0; i < 4; i++) {
             int x = i * 500;
-            fillRect(x + 40, 470, 260, 100, farC);
-            fillRect(x + 90, 440, 160, 40, farC);
+            fillRect(x + 40, 485, 260, 85, farC);
+            fillRect(x + 90, 458, 160, 32, farC);
         }
 
-        fillRect(420, 450, 150, 120, nearC);
-        fillRect(445, 420, 100, 35, nearC);
-        fillRect(1160, 420, 76, 150, nearC);
-        fillRect(1172, 398, 52, 26, nearC);
-        fillRect(1265, 455, 110, 115, nearC);
+        fillRect(360, 570, 140, 130, nearC);
+        fillRect(385, 540, 90, 35, nearC);
+        fillRect(1480, 560, 76, 140, nearC);
+        fillRect(1492, 538, 52, 26, nearC);
         return;
     }
 
     if (currentBiome == 2) {
-        Color sky1 = mk(230, 145, 65);
-        Color sky2 = mk(248, 198, 115);
-        Color farC = mk(195, 135, 68);
-        Color nearC = mk(158, 102, 48);
+        // Biome 2: Lively Desert Oasis with Sun, Pyramids, Temple & Palm Trees
+        Color sky1 = mk(68, 168, 238);
+        Color sky2 = mk(185, 228, 248);
+        Color farC = mk(218, 165, 86);
+        Color nearC = mk(178, 122, 58);
 
-        fillRect(0, 0, FRAME_WIDTH, 300, sky1);
-        fillRect(0, 300, FRAME_WIDTH, 270, sky2);
-        fillRect(0, 570, FRAME_WIDTH, 130, farC);
-        fillRect(0, 700, FRAME_WIDTH, 380, nearC);
+        fillRect(0, 0, FRAME_WIDTH, 270, sky1);
+        fillRect(0, 270, FRAME_WIDTH, 250, sky2);
+        fillRect(0, 520, FRAME_WIDTH, 140, farC);
+        fillRect(0, 660, FRAME_WIDTH, 420, nearC);
 
-        fillRect(1490, 105, 120, 120, mk(255, 245, 175));
-        fillRect(1510, 90, 80, 150, mk(255, 250, 205));
+        // Desert sun
+        fillRect(1495, 82, 132, 132, mk(255, 242, 165));
+        fillRect(1511, 98, 100, 100, mk(255, 225, 95));
 
-        for (int i = 0; i < 3; i++) {
-            int px0 = 260 + i * 560;
-            for (int step = 0; step < 8; step++) {
-                int w = (step + 1) * 32;
-                fillRect(px0 - w / 2, 410 + step * 20, w, 20, farC);
+        // Pyramids in distance
+        for (int p = 0; p < 2; p++) {
+            int px0 = 1120 + p * 360;
+            for (int step = 0; step < 9; step++) {
+                int w = (step + 1) * 34;
+                fillRect(px0 - w / 2, 340 + step * 20, w, 20, mk(226, 174, 92));
             }
         }
 
-        for (int i = 0; i < 4; i++) {
-            int x = i * 500;
-            fillRect(x + 60, 610, 280, 90, nearC);
-            fillRect(x + 120, 580, 160, 40, nearC);
-        }
+        // Desert Temple & Palms
+        drawDesertTempleAndPalms(520, 560, mk(216, 162, 88), mk(242, 198, 105));
+
+        // Desert Oasis lake
+        fillRect(760, 625, 310, 58, mk(62, 175, 235));
+        fillRect(800, 638, 220, 24, mk(142, 222, 252));
         return;
     }
 
@@ -3941,6 +3976,18 @@ static void renderGame(int b) {
     resetClip();
 
     int roomX = roomIdx * FRAME_WIDTH;
+
+    // Animated waterfall foam & birds in lively biomes
+    if (currentBiome == 0) {
+        int wf = (tick * 4) % 44;
+        for (int k = 0; k < 5; k++) {
+            int wy = 435 + wf + k * 48;
+            if (wy < 660) {
+                fillRect(398, wy, 20, 18, mk(245, 252, 255));
+                addDirty(b, 396, wy - 2, 24, 22);
+            }
+        }
+    }
 
     if (currentBiome <= 2) {
         Color birdCol = (currentBiome == 0) ? mk(26, 75, 52) : mk(95, 42, 30);
