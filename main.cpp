@@ -1129,7 +1129,7 @@ static void drawStoryArt(int art) {
         if (cyc >= 45 && cyc < 90) { int j = cyc-45; cy = ay+356 - j*(45-j)/4; xOn = j < 14; lbl = "STOMP!"; }
         else if (cyc >= 110 && cyc < 160) { int j = cyc-110; cy = ay+356 - j*(55-j)/4; if (j > 32 && cy > ay+246) cy = ay+246; xOn = j < 34; lbl = "HOLD X"; }
         else if (cyc >= 160) { cy = ay+246; lbl = "GREAT!"; }
-        if (cyc < 72) { Enemy de = {0,0,0,0,0,0,0,E_WALKER,1,1,0,t,-1,true}; drawEnemyChar(de, ax+480, ay+356); }
+        if (cyc < 72) { Enemy de = {0,0,0,0,0,0,0,E_WALKER,1,0,t,-1,true}; drawEnemyChar(de, ax+480, ay+356); }
         for (int i = 0; i < 14; i++) { int gx = ax+60+i*45; drawPlantTuft(gx, ay+400, 15, (iabs(cx+22-gx)<42 && cy>ay+320) ? 12 : SN[(t/5+i)&15]/32, 0, i%3); }
         drawMiniDemo(cx, cy, 1); drawPadPrompt(ax+290, ay+20, false, cyc < 165, false, xOn, lbl);
     } else if (art == 11) {
