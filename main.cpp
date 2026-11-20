@@ -41,14 +41,24 @@ extern "C" {
 #define LCOLS 11
 #define NUM_STARS 75
 #define MAX_SPLATS 280
-#define MAX_PARTS 120
+#define MAX_PARTS 220
 #define MAX_PLANTS 640
-#define MAX_AMB 18
-#define MAX_BIRDS 5
-#define MAX_SHOTS 14
-#define MAX_ENEMIES 56
+#define MAX_AMB 32
+#define MAX_BIRDS 6
+#define MAX_SHOTS 24
+#define MAX_ENEMIES 72
 #define MAX_CHECKS 6
-#define MAX_DIRTY 440
+#define MAX_DIRTY 620
+#define MAX_COINS 96
+#define MAX_CHESTS 12
+#define MAX_MPLATS 16
+#define MAX_DPLATS 24
+#define MAX_POWERUPS 12
+#define MAX_NPCS 6
+#define MAX_TRAIL 8
+#define NUM_SKINS 6
+#define NUM_UPGS 3
+#define NUM_ACHS 6
 #define SPLAT_MAX_AGE 5400
 
 std::stringstream debugLogStream;
@@ -63,22 +73,77 @@ static int audioHandle = -1;
 // ---------- Game & World State ----------
 static float px, py, vx, vy, squashX = 1.0f, squashY = 1.0f, cpX = 80.0f, cpY = 900.0f;
 static int roomIdx = 0, levelCols = COLS, levelPW = WW, curLvl = 0, curBiome = 0;
-static int coyote = 0, wallLock = 0, facing = 1, deaths = 0, winTimer = 0, deadTimer = 0, tick = 0, frameID = 0;
-static bool onGround = false;
+static int coyote = 0, jumpBuf = 0, wallLock = 0, facing = 1, deaths = 0, winTimer = 0, deadTimer = 0, tick = 0, frameID = 0;
+static bool onGround = false, hasDoubleJump = true, isSlamming = false;
+static int jumpsLeft = 2, dashTimer = 0, dashCd = 0, dashDir = 1, slamWaveTimer = 0, slamWaveX = 0, slamWaveY = 0;
+static int shakeTimer = 0, shakeMag = 0, shakeX = 0, shakeY = 0;
+static int shieldHits = 0, speedBoostTimer = 0, magnetTimer = 0;
+static int totalCoins = 0, stageCoins = 0, stageTimer = 0, secretsFound = 0, totalChestsOpened = 0;
+static int bestTime[NUM_LEVELS];
+static int curSkin = 0;
+static bool skinOwned[NUM_SKINS] = {true, false, false, false, false, false};
+static bool upgOwned[NUM_UPGS] = {false, false, false};
+static bool achUnlocked[NUM_ACHS] = {false, false, false, false, false, false};
+static int bannerTimer = 0, bannerTextId = -1;
 static unsigned int rng = 12345;
 static int checkC[MAX_CHECKS], checkR[MAX_CHECKS], checkCount = 0;
 static bool checkAct[MAX_CHECKS];
 
-enum { E_WALKER = 0, E_FLYER = 1, E_JUMPER = 2, E_TURRET = 3 };
-struct Enemy { float x, y, vx, vy, minX, maxX, baseY; int kind, hp, hurt, timer, dir; bool active; };
+struct Trail { float x, y; int life, dir; };
+static Trail trails[MAX_TRAIL];
+
+// Enemy Archetypes matching all reference screenshots + original enemies
+enum {
+    E_SLIME = 0,     // Green Slime with big eyes (Screenshot 5)
+    E_BAT = 1,       // Vampire Bat with Attack/Idle/Hurt/Death (Screenshot 2)
+    E_MUSHROOM = 2,  // Hiding Mushroom Monster that pops out and ambushes
+    E_TURRET = 3,    // Armored Cannon Turret
+    E_WASP = 4,      // Giant Forest Wasp/Spider Mini-Boss (Screenshot 3)
+    E_CHOMPER = 5    // Giant Pink Big-Teeth Beast (Screenshot 4)
+};
+struct Enemy {
+    float x, y, vx, vy, minX, maxX, baseY;
+    int kind, hp, maxHp, hurt, timer, dir, state, deathTimer;
+    bool active;
+};
 static Enemy enemies[MAX_ENEMIES];
 static int enemyCount = 0;
 
+// Boss Types (King Frogus, Behemoth Chomper & Totem, Frost Lord, Magma Crusher, Saw Overlord)
+enum { B_KING_FROGUS = 0, B_CHOMP_TOTEM = 1, B_FROST_LORD = 2, B_MAGMA_CRUSHER = 3, B_SAW_OVERLORD = 4 };
 static bool bossActive = false;
+static int bossKind = B_KING_FROGUS;
 static float bossX, bossY, bossVX, bossVY;
-static int bossW = 104, bossH = 104, bossHP = 5, bossMaxHP = 5, bossHurt = 0, bossTimer = 0, bossSwCd = 0, bossBeam = 0;
-struct Shot { float x, y, vx, vy; bool active; };
+static int bossW = 148, bossH = 132, bossHP = 8, bossMaxHP = 8, bossHurt = 0, bossTimer = 0, bossSwCd = 0, bossBeam = 0;
+static int bossPhase = 0, bossAttackState = 0, bossTongueLen = 0, bossTongueDir = -1;
+
+struct Shot { float x, y, vx, vy; int kind; bool active; };
 static Shot shots[MAX_SHOTS];
+
+struct Coin { int room, x, y; bool taken, secret; };
+static Coin coins[MAX_COINS];
+static int coinCount = 0;
+
+struct Chest { int room, x, y; bool opened; };
+static Chest chests[MAX_CHESTS];
+static int chestCount = 0;
+
+struct MPlat { int room; float x, y, minX, maxX, minY, maxY, vx, vy; int w; };
+static MPlat mplats[MAX_MPLATS];
+static int mplatCount = 0;
+
+struct DPlat { int room, c, r, timer; bool triggered; };
+static DPlat dplats[MAX_DPLATS];
+static int dplatCount = 0;
+
+enum { PU_SHIELD = 0, PU_SPEED = 1, PU_MAGNET = 2 };
+struct PowerUp { int room, x, y, kind; bool active; };
+static PowerUp powerups[MAX_POWERUPS];
+static int powerupCount = 0;
+
+struct NPC { int room, x, y, msgId; };
+static NPC npcs[MAX_NPCS];
+static int npcCount = 0, activeNpcMsg = -1;
 
 struct Splat { short room, x, y, w, h; int born; unsigned char stage, dStage[2]; bool drawn[2]; };
 static Splat splats[MAX_SPLATS];
@@ -91,12 +156,12 @@ struct Plant { short room, x, y; float angle, vel; unsigned char h, style, seed;
 static Plant plants[MAX_PLANTS];
 static int plantCount = 0;
 
-struct Amb { float x, y, vx, vy; unsigned char sz, seed; };
+struct Amb { float x, y, vx, vy; unsigned char sz, seed, kind; };
 static Amb amb[MAX_AMB];
 
 struct Rect { int x, y, w, h; };
 static Rect dirty[2][MAX_DIRTY];
-static int dirtyCnt[2] = {0, 0}, bufRoom[2] = {0, 0}, bufStar[2] = {0, 0}, hudSq[2] = {0, 0}, hudProg[2] = {0, 0};
+static int dirtyCnt[2] = {0, 0}, bufRoom[2] = {0, 0}, bufStar[2] = {0, 0}, hudSq[2] = {0, 0}, hudProg[2] = {0, 0}, hudCoins[2] = {-1, -1};
 static bool needFull[2] = {true, true}, needWin[2] = {false, false}, hudNeed[2] = {false, false};
 static char bufGrid[2][ROWS][RCOLS];
 static bool bufHi[2][ROWS][RCOLS];
@@ -106,8 +171,9 @@ static const int CS[16] = {256,237,181,98,0,-98,-181,-237,-256,-237,-181,-98,0,9
 static const int SN[16] = {0,98,181,237,256,237,181,98,0,-98,-181,-237,-256,-237,-181,-98};
 
 // ---------- UI & Story State ----------
-enum { S_MENU = 0, S_LEVELS = 1, S_SETTINGS = 2, S_CREDITS = 3, S_PLAY = 4, S_STORY = 5 };
-static int state = S_MENU, menuSel = 0, levelSel = 0, settingsSel = 0, controlMode = 1, lang = 0, unlockedLevels = 1;
+enum { S_MENU = 0, S_LEVELS = 1, S_SETTINGS = 2, S_CREDITS = 3, S_PLAY = 4, S_STORY = 5, S_SHOP = 6, S_ACH = 7 };
+static int state = S_MENU, menuSel = 0, levelSel = 0, settingsSel = 0, shopSel = 0, achSel = 0;
+static int controlMode = 1, lang = 0, unlockedLevels = 1;
 static bool introSeen = false, uiFull[2] = {true, true}, pend[2][64];
 static int storyId = 0, storyPage = 0, typed = 0, storyAnimTick = 0, storyDrawnPage[2] = {-1, -1}, storyShown[2] = {0, 0};
 static bool storyBgDone[2] = {false, false};
@@ -123,7 +189,26 @@ static bool storyBgDone[2] = {false, false};
     X(T_PLAYX,"PRESS X TO PLAY",AR(PLAYX)) X(T_LOCKED,"LOCKED",AR(LOCKED)) X(T_DESIGNERS,"GAME DESIGNERS",AR(DESIGNERS)) \
     X(T_KAREEM,"KAREEM",AR(KAREEM)) X(T_CLAUDE,"CLAUDE",AR(CLAUDE)) X(T_GAME,"MEAT CUBE",AR(GAME_NAME)) \
     X(T_DEATHS,"DEATHS",AR(DEATHS)) X(T_BOSS_HP,"BOSS HP",AR(BOSS_HP)) X(T_COMPLETE,"LEVEL COMPLETE",AR(COMPLETE)) \
-    X(T_GREAT,"GREAT JOB",AR(GREAT))
+    X(T_GREAT,"GREAT JOB",AR(GREAT)) \
+    X(T_B_SHOP,"SHOP AND SKINS",AR(B_SHOP)) X(T_B_ACH,"ACHIEVEMENTS",AR(B_ACH)) \
+    X(T_SHOP,"SHOP AND SKINS",AR(SHOP)) X(T_ACH,"ACHIEVEMENTS",AR(ACH)) \
+    X(T_COINS,"COINS",AR(COINS)) X(T_TIME_LBL,"TIME",AR(TIME_LBL)) X(T_SECRETS_LBL,"SECRETS",AR(SECRETS_LBL)) \
+    X(T_KING_FROGUS,"KING FROGUS",AR(KING_FROGUS)) X(T_CHOMP_BEAST,"BEHEMOTH CHOMPER",AR(CHOMP_BEAST)) \
+    X(T_FROST_LORD,"FROST CITADEL LORD",AR(FROST_LORD)) X(T_MAGMA_CRUSHER,"MAGMA CRUSHER",AR(MAGMA_CRUSHER)) \
+    X(T_SAW_OVERLORD,"DARK SAW OVERLORD",AR(SAW_OVERLORD)) \
+    X(T_H_SHOP,"X: BUY OR EQUIP   O: BACK",AR(SHOP_HINT)) X(T_BOUGHT,"EQUIPPED",AR(BOUGHT)) X(T_EQUIP,"PRESS X TO EQUIP",AR(EQUIP)) \
+    X(T_SKIN0,"CLASSIC MEAT CUBE",AR(SKIN0)) X(T_SKIN1,"ROYAL GOLDEN CUBE",AR(SKIN1)) \
+    X(T_SKIN2,"SHADOW NINJA CUBE",AR(SKIN2)) X(T_SKIN3,"FROST GLACIER CUBE",AR(SKIN3)) \
+    X(T_SKIN4,"BLAZING MAGMA CUBE",AR(SKIN4)) X(T_SKIN5,"EMERALD SLIME CUBE",AR(SKIN5)) \
+    X(T_UPG0,"UPGRADE: START STAGE WITH SHIELD",AR(UPG0)) X(T_UPG1,"UPGRADE: FAST DASH COOLDOWN",AR(UPG1)) \
+    X(T_UPG2,"UPGRADE: COIN MAGNET AND 2X GOLD",AR(UPG2)) \
+    X(T_ACH0,"FIRST STEP: CLEAR STAGE 1",AR(ACH0)) X(T_ACH1,"TREASURE HUNTER: OPEN 3 SECRET CHESTS",AR(ACH1)) \
+    X(T_ACH2,"FROG SLAYER: DEFEAT KING FROGUS",AR(ACH2)) X(T_ACH3,"GOLD COLLECTOR: COLLECT 100 COINS",AR(ACH3)) \
+    X(T_ACH4,"SPEEDRUNNER: CLEAR A STAGE UNDER 35S",AR(ACH4)) X(T_ACH5,"LEGEND: UNLOCK 15 STAGES",AR(ACH5)) \
+    X(T_NPC0,"ELDER: PRESS X IN AIR FOR DOUBLE JUMP, DOWN+O FOR SLAM!",AR(NPC_MSG0)) \
+    X(T_NPC1,"SCOUT: CRACKED WALLS HIDE SECRET TREASURE ROOMS!",AR(NPC_MSG1)) \
+    X(T_NPC2,"GUARD: BEWARE KING FROGUS TONGUE AND HIDING MUSHROOMS!",AR(NPC_MSG2)) \
+    X(T_SECRET_FOUND,"SECRET AREA DISCOVERED!",AR(SECRET_FOUND)) X(T_CHEST_OPEN,"TREASURE CHEST! +25 GOLD COINS",AR(CHEST_OPEN))
 
 enum {
 #define X(id, en, ar) id,
@@ -149,18 +234,22 @@ static const Page PAGES[11] = {
     {2,2,{"MEAT CUBE WOKE UP ANGRY.","I WILL BRING YOU BACK!",""},{AR(P2L0),AR(P2L1),-1}},
     {3,3,{"MEAT CUBE REACHED THE TOWER.","BUT SHE WAS NOT THERE.","ONLY A NOTE: FOLLOW THE SAWS."},{AR(P3L0),AR(P3L1),AR(P3L2)}},
     {1,1,{"TO BE CONTINUED.","",""},{AR(P4L0),-1,-1}},
-    {10,3,{"STAGE 1: LIVING FOREST - STOMP ENEMIES","TAP X FOR SHORT JUMP, HOLD X FOR HIGH JUMP.","JUMP ON TOP OF ENEMIES TO DEFEAT THEM!"},{AR(T1L0),AR(T1L1),AR(T1L2)}},
-    {11,3,{"STAGE 2: COUNTRYSIDE - SPRINT & STOMP","HOLD SQUARE TO SPRINT ACROSS WIDE BRIDGES.","STOMP ENEMIES FROM ABOVE TO CLEAR THE PATH!"},{AR(T2L0),AR(T2L1),AR(T2L2)}},
-    {12,3,{"STAGE 3: GOLDEN DESERT - TWO-WALL JUMP","ENTER BETWEEN TWO WALLS AND SLIDE SLOWLY.","PRESS X TO CLIMB AND STOMP DESERT FOES!"},{AR(T3L0),AR(T3L1),AR(T3L2)}},
-    {13,3,{"STAGE 4: SNOWY PEAKS - LEDGE TIMING","WATCH SPINNING SAWS AND TIME YOUR JUMPS.","STOMP ENEMIES AND CROSS FROZEN LEDGES!"},{AR(T4L0),AR(T4L1),AR(T4L2)}},
-    {14,3,{"STAGE 5: BOSS FIGHT - MAGMA CRUSHER!","STOMP ON THE BOSS HEAD OR HIT THE TOP SWITCH.","DODGE FIREBALLS AND DEFEAT THE BOSS!"},{AR(T5L0),AR(T5L1),AR(T5L2)}},
-    {15,3,{"STAGE 10: BOSS FIGHT - SAW OVERLORD!","BOUNCE ON THE BOSS HEAD USING SIDE WALLS.","DODGE DOUBLE SHOTS AND SAVE THE FOREST!"},{AR(T10L0),AR(T10L1),AR(T10L2)}}
+    {10,3,{"STAGE 1: LIVING FOREST - DOUBLE JUMP & SLAM","PRESS X TWICE FOR DOUBLE JUMP, SQUARE FOR DASH.","PRESS DOWN + O IN AIR FOR GROUND SLAM!"},{AR(T1L0),AR(T1L1),AR(T1L2)}},
+    {11,3,{"STAGE 2: COUNTRYSIDE - DASH & PLATFORMS","USE DASH TO CROSS GAPS AND MOVING PLATFORMS.","FIND SECRET WALLS AND TREASURE CHESTS!"},{AR(T2L0),AR(T2L1),AR(T2L2)}},
+    {12,3,{"STAGE 3: GOLDEN DESERT - TWO-WALL JUMP","ENTER BETWEEN TWO WALLS AND SLIDE SLOWLY.","PRESS X TO CLIMB AND WATCH FOR BATS!"},{AR(T3L0),AR(T3L1),AR(T3L2)}},
+    {13,3,{"STAGE 4: SNOWY PEAKS - LEDGE TIMING","WATCH SPINNING SAWS AND DISAPPEARING LEDGES.","COLLECT SHIELDS AND GOLD COINS TO UPGRADE!"},{AR(T4L0),AR(T4L1),AR(T4L2)}},
+    {14,3,{"STAGE 5: BOSS FIGHT - KING FROGUS!","DODGE THE SPIKED TONGUE AND STOMP HIS CROWN.","WATCH OUT FOR SLIMES AND QUAKE JUMPS!"},{AR(T5L0),AR(T5L1),AR(T5L2)}},
+    {15,3,{"STAGE 10: BOSS FIGHT - BEHEMOTH & OVERLORD!","BOUNCE ON THE BOSS HEAD USING DOUBLE JUMP.","DODGE DOUBLE SHOTS AND SAVE THE REALM!"},{AR(T10L0),AR(T10L1),AR(T10L2)}}
 };
 static const int STORY_FIRST[8] = {0,3,5,6,7,8,9,10}, STORY_LAST[8] = {3,5,6,7,8,9,10,11};
 
-struct Input { bool up, down, left, right, dleft, dright, cross, circle, options, square, crossNew, circleNew, optionsNew; float ana; };
+struct Input {
+    bool up, down, left, right, dleft, dright, cross, circle, options, square, triangle, r1, l1;
+    bool crossNew, circleNew, optionsNew, squareNew, triangleNew, dashBtnNew;
+    float ana;
+};
 static Input in;
-static bool prevCross = false, prevCircle = false, prevOptions = false;
+static bool prevCross = false, prevCircle = false, prevOptions = false, prevSquare = false, prevTriangle = false, prevDashBtn = false;
 static int holdCnt[4] = {0, 0, 0, 0};
 
 static inline int iabs(int a) { return a < 0 ? -a : a; }
@@ -169,6 +258,68 @@ static inline int rnd(int n) { rng = rng * 1103515245u + 12345u; return (int)((r
 static inline Color mk(int r, int g, int b) { Color c = {(unsigned char)r, (unsigned char)g, (unsigned char)b}; return c; }
 static inline bool useAr() { return lang == 1 && ARABIC_OK; }
 static inline bool isBossStage(int lvl) { return ((lvl + 1) % 5) == 0; }
+
+// ---------- Save & Load Progress System (PS4 /data/meatcube_save.dat) ----------
+struct SaveData {
+    unsigned int magic;
+    int unlockedLevels, totalCoins, curSkin, totalChestsOpened, lang, controlMode;
+    bool skinOwned[NUM_SKINS];
+    bool upgOwned[NUM_UPGS];
+    bool achUnlocked[NUM_ACHS];
+    int bestTime[NUM_LEVELS];
+};
+
+static void saveGame() {
+    SaveData sd;
+    sd.magic = 0x4D435542u;
+    sd.unlockedLevels = unlockedLevels;
+    sd.totalCoins = totalCoins;
+    sd.curSkin = curSkin;
+    sd.totalChestsOpened = totalChestsOpened;
+    sd.lang = lang;
+    sd.controlMode = controlMode;
+    for (int i = 0; i < NUM_SKINS; i++) sd.skinOwned[i] = skinOwned[i];
+    for (int i = 0; i < NUM_UPGS; i++) sd.upgOwned[i] = upgOwned[i];
+    for (int i = 0; i < NUM_ACHS; i++) sd.achUnlocked[i] = achUnlocked[i];
+    for (int i = 0; i < NUM_LEVELS; i++) sd.bestTime[i] = bestTime[i];
+    FILE *f = fopen("/data/meatcube_save.dat", "wb");
+    if (f) { fwrite(&sd, sizeof(SaveData), 1, f); fclose(f); }
+}
+
+static void loadGame() {
+    for (int i = 0; i < NUM_LEVELS; i++) bestTime[i] = 0;
+    FILE *f = fopen("/data/meatcube_save.dat", "rb");
+    if (!f) return;
+    SaveData sd;
+    if (fread(&sd, sizeof(SaveData), 1, f) == 1 && sd.magic == 0x4D435542u) {
+        unlockedLevels = iclamp(sd.unlockedLevels, 1, NUM_LEVELS);
+        totalCoins = iclamp(sd.totalCoins, 0, 999999);
+        curSkin = iclamp(sd.curSkin, 0, NUM_SKINS - 1);
+        totalChestsOpened = iclamp(sd.totalChestsOpened, 0, 9999);
+        lang = iclamp(sd.lang, 0, 1);
+        controlMode = iclamp(sd.controlMode, 0, 1);
+        for (int i = 0; i < NUM_SKINS; i++) skinOwned[i] = sd.skinOwned[i];
+        skinOwned[0] = true;
+        for (int i = 0; i < NUM_UPGS; i++) upgOwned[i] = sd.upgOwned[i];
+        for (int i = 0; i < NUM_ACHS; i++) achUnlocked[i] = sd.achUnlocked[i];
+        for (int i = 0; i < NUM_LEVELS; i++) bestTime[i] = sd.bestTime[i];
+    }
+    fclose(f);
+}
+
+static void showBanner(int txtId, int duration) {
+    bannerTextId = txtId;
+    bannerTimer = duration;
+    hudNeed[0] = hudNeed[1] = true;
+}
+
+static void unlockAch(int idx) {
+    if (idx < 0 || idx >= NUM_ACHS || achUnlocked[idx]) return;
+    achUnlocked[idx] = true;
+    totalCoins += 30;
+    showBanner(T_ACH0 + idx, 140);
+    saveGame();
+}
 
 // ---------- Controller ----------
 static bool initPad() {
@@ -194,10 +345,22 @@ static void readInput() {
     if (a > 1.0f) a = 1.0f; else if (a < -1.0f) a = -1.0f;
     if (a > -0.2f && a < 0.2f) a = 0.0f;
     in.ana = a;
-    in.cross = (b & ORBIS_PAD_BUTTON_CROSS) != 0; in.circle = (b & ORBIS_PAD_BUTTON_CIRCLE) != 0;
-    in.options = (b & ORBIS_PAD_BUTTON_OPTIONS) != 0; in.square = (b & ORBIS_PAD_BUTTON_SQUARE) != 0;
-    in.crossNew = in.cross && !prevCross; in.circleNew = in.circle && !prevCircle; in.optionsNew = in.options && !prevOptions;
+    in.cross = (b & ORBIS_PAD_BUTTON_CROSS) != 0;
+    in.circle = (b & ORBIS_PAD_BUTTON_CIRCLE) != 0;
+    in.options = (b & ORBIS_PAD_BUTTON_OPTIONS) != 0;
+    in.square = (b & ORBIS_PAD_BUTTON_SQUARE) != 0;
+    in.triangle = (b & ORBIS_PAD_BUTTON_TRIANGLE) != 0;
+    in.r1 = (b & ORBIS_PAD_BUTTON_R1) != 0;
+    in.l1 = (b & ORBIS_PAD_BUTTON_L1) != 0;
+    bool dashBtn = in.r1 || in.l1 || in.triangle;
+    in.crossNew = in.cross && !prevCross;
+    in.circleNew = in.circle && !prevCircle;
+    in.optionsNew = in.options && !prevOptions;
+    in.squareNew = in.square && !prevSquare;
+    in.triangleNew = in.triangle && !prevTriangle;
+    in.dashBtnNew = dashBtn && !prevDashBtn;
     prevCross = in.cross; prevCircle = in.circle; prevOptions = in.options;
+    prevSquare = in.square; prevTriangle = in.triangle; prevDashBtn = dashBtn;
 }
 
 static bool navEvent(int i, bool p) {
@@ -206,7 +369,7 @@ static bool navEvent(int i, bool p) {
     return holdCnt[i] == 1 || (holdCnt[i] > 20 && ((holdCnt[i] - 20) % 6) == 0);
 }
 
-// ---------- PS4 Halal Audio Engine ----------
+// ---------- PS4 Halal Audio Engine (Multi-Biome & Boss Themes + Extended SFX) ----------
 static int curSfx = -1, sfxPos = 0, sfxLen = 0, sfxPhase = 0, bgmSample = 0, humP1 = 0, humP2 = 0, duffP = 0;
 static unsigned int noiseRng = 987654321u;
 
@@ -248,6 +411,9 @@ static void initAudio() {
 #endif
 }
 
+// SFX IDs:
+// 0=UI tick, 1=Checkpoint/Confirm, 2=Back, 3=Locked, 4=Jump, 5=WallJump/DoubleJump,
+// 6=Die, 7=EnemyStomp/BossHit, 8=LevelComplete, 9=Coin, 10=Dash, 11=GroundSlam, 12=Chest/Secret, 13=BossRoar
 static void snd(int k) {
     if (state != S_PLAY) {
         if (k == 0) playToneImmediate(880, 25, 16000);
@@ -256,25 +422,42 @@ static void snd(int k) {
         else playToneImmediate(220, 80, 16000);
         return;
     }
-    static const int LENS[9] = {1400, 4000, 2600, 3500, 2800, 3400, 6500, 7200, 13000};
-    curSfx = k; sfxPos = 0; sfxPhase = 0; sfxLen = LENS[iclamp(k, 0, 8)];
+    static const int LENS[14] = {1400, 4000, 2600, 3500, 2800, 3400, 6500, 7200, 13000, 2200, 2600, 5400, 8200, 7600};
+    curSfx = iclamp(k, 0, 13); sfxPos = 0; sfxPhase = 0; sfxLen = LENS[curSfx];
 }
 
 static void updateGameplayAudio() {
 #ifndef NO_AUDIO
     if (audioHandle < 0 || state != S_PLAY) return;
     static short outBuf[512];
-    static const int HB[4] = {110, 130, 146, 130}, HH[4] = {165, 195, 220, 195};
+    static const int BIOME_BASS[6][4] = {
+        {110, 130, 146, 130}, // Forest
+        {123, 146, 164, 146}, // Countryside
+        {116, 138, 155, 130}, // Desert
+        {130, 164, 196, 164}, // Ice
+        {98,  110, 123, 104}, // Volcano
+        {92,  110, 138, 104}  // Dark Castle
+    };
+    static const int BIOME_HARM[6][4] = {
+        {165, 195, 220, 195},
+        {185, 220, 246, 220},
+        {174, 207, 233, 195},
+        {196, 246, 293, 246},
+        {146, 165, 185, 155},
+        {138, 165, 207, 155}
+    };
     static const unsigned char PAT[16] = {1,0,3,2,1,0,2,0,1,1,3,2,0,2,3,2};
+    static const unsigned char BOSS_PAT[16] = {1,3,2,3,1,1,2,3,1,3,2,1,2,3,2,2};
     bool playBgm = (winTimer == 0);
-    int stepS = bossActive ? 5200 : 6400;
+    int stepS = bossActive ? 4600 : (curBiome == 4 || curBiome == 5 ? 5600 : 6400);
+    int bm = iclamp(curBiome, 0, 5);
     for (int blk = 0; blk < 2; blk++) {
         for (int i = 0; i < 256; i++) {
             int mix = 0;
             if (playBgm) {
                 int step = (bgmSample / stepS) & 15, inS = bgmSample % stepS, bar = (bgmSample / (stepS * 16)) & 3;
                 bgmSample++;
-                unsigned char hit = PAT[step];
+                unsigned char hit = bossActive ? BOSS_PAT[step] : PAT[step];
                 if (hit == 1 && inS < 3200) {
                     int env = 3200 - inS;
                     if ((duffP += 68 + (env >> 6)) >= 48000) duffP -= 48000;
@@ -289,7 +472,8 @@ static void updateGameplayAudio() {
                     noiseRng = noiseRng * 1664525u + 1013904223u;
                     mix += ((((int)(noiseRng >> 22) & 255) - 128) * (750 - inS)) / 320;
                 }
-                int f1 = HB[bar] + (bossActive ? 22 : 0), f2 = HH[bar] + (bossActive ? 33 : 0);
+                int f1 = BIOME_BASS[bm][bar] + (bossActive ? 24 : 0);
+                int f2 = BIOME_HARM[bm][bar] + (bossActive ? 36 : 0);
                 if ((humP1 += f1) >= 48000) humP1 -= 48000;
                 if ((humP2 += f2) >= 48000) humP2 -= 48000;
                 int v1 = humP1 < 24000 ? humP1 - 12000 : 36000 - humP1;
@@ -308,11 +492,16 @@ static void updateGameplayAudio() {
                     else if (curSfx == 5) { f = 350 + (sfxPos >> 2); vol = 14500; }
                     else if (curSfx == 6) { f = iclamp(165 - (sfxPos >> 6), 55, 200); vol = 16000; }
                     else if (curSfx == 7) { f = iclamp(220 - (sfxPos >> 6), 65, 250); vol = 17500; }
-                    else { f = sfxPos < 4200 ? 440 : (sfxPos < 8400 ? 550 : 660); vol = 16000; }
+                    else if (curSfx == 8) { f = sfxPos < 4200 ? 440 : (sfxPos < 8400 ? 550 : 660); vol = 16000; }
+                    else if (curSfx == 9) { f = sfxPos < 900 ? 987 : 1318; vol = 15500; } // Coin chime
+                    else if (curSfx == 10) { f = iclamp(640 - (sfxPos >> 2), 180, 680); vol = 15000; } // Dash whoosh
+                    else if (curSfx == 11) { f = iclamp(140 - (sfxPos >> 6), 45, 160); vol = 18500; } // Ground Slam thud
+                    else if (curSfx == 12) { f = sfxPos < 2600 ? 523 : (sfxPos < 5200 ? 659 : 1046); vol = 16500; } // Chest fanfare
+                    else if (curSfx == 13) { f = iclamp(115 + ((sfxPos >> 5) & 31), 85, 180); vol = 17500; } // Boss roar
                     if ((sfxPhase += f) >= 48000) sfxPhase -= 48000;
                     int tri = sfxPhase < 24000 ? sfxPhase : 48000 - sfxPhase;
                     int s = ((tri - 12000) * vol) / 12000;
-                    if (curSfx == 6 || curSfx == 7) {
+                    if (curSfx == 6 || curSfx == 7 || curSfx == 10 || curSfx == 11 || curSfx == 13) {
                         noiseRng = noiseRng * 1664525u + 1013904223u;
                         s += (((int)(noiseRng >> 19) & 1023) - 512) * 6;
                     }
@@ -379,7 +568,19 @@ static void drawText(int x, int y, const char *s, int sc, Color c) {
 }
 static int textWidth(const char *s, int sc) { int n = (int)strlen(s); return n > 0 ? n * 6 * sc - sc : 0; }
 static void drawTextC(int cx, int y, const char *s, int sc, Color c) { drawText(cx - textWidth(s, sc) / 2, y, s, sc, c); }
-static void intToStr(int v, char *o) { if (v >= 10) { o[0] = '0' + v / 10; o[1] = '0' + v % 10; o[2] = 0; } else { o[0] = '0' + v; o[1] = 0; } }
+static void intToStr(int v, char *o) {
+    if (v < 0) v = 0;
+    if (v >= 1000) {
+        o[0] = '0' + (v / 1000) % 10; o[1] = '0' + (v / 100) % 10;
+        o[2] = '0' + (v / 10) % 10;   o[3] = '0' + v % 10; o[4] = 0;
+    } else if (v >= 100) {
+        o[0] = '0' + (v / 100) % 10; o[1] = '0' + (v / 10) % 10; o[2] = '0' + v % 10; o[3] = 0;
+    } else if (v >= 10) {
+        o[0] = '0' + v / 10; o[1] = '0' + v % 10; o[2] = 0;
+    } else {
+        o[0] = '0' + v; o[1] = 0;
+    }
+}
 
 static int arW(int id) {
 #if ARABIC_OK
@@ -413,21 +614,72 @@ static void drawLabel(int tid, int cx, int by, int bh, int sc, Color c) {
 }
 static int labelWidth(int tid, int sc) { return (useAr() && TXT_AR[tid] >= 0) ? arW(TXT_AR[tid]) : textWidth(TXT_EN[tid], sc); }
 
-// ---------- Level, Enemy, Plant & Ambient Builders ----------
+// ---------- Level, Enemy, Secrets, Platforms, Plant & Ambient Builders ----------
 static int baseCol = 0;
 static void put(int r, int c, char ch) { int g = baseCol + c; if (r >= 0 && r < ROWS && g >= 0 && g < COLS) level[r][g] = ch; }
 static void plat(int r, int a, int b) { for (int c = a; c <= b; c++) put(r, c, '#'); }
 static void wall(int c, int r0, int r1) { for (int r = r0; r <= r1; r++) put(r, c, '#'); }
 static void spk(int r, int a, int b) { for (int c = a; c <= b; c++) put(r, c, '^'); }
 static void sawAt(int r, int c) { put(r, c, 'O'); }
+static void crackFloor(int r, int a, int b) { for (int c = a; c <= b; c++) put(r, c, 'B'); } // Breakable secret floor/wall
 static void addCP(int c, int r) { if (checkCount < MAX_CHECKS) { checkC[checkCount] = baseCol + c; checkR[checkCount] = r; checkAct[checkCount++] = false; } }
+
+static void addCoin(int c, int r, bool sec = false) {
+    if (coinCount >= MAX_COINS) return;
+    int gc = baseCol + c;
+    coins[coinCount++] = {gc / RCOLS, (gc % RCOLS) * TILE + 18, r * TILE + 16, false, sec};
+}
+static void addCoinArc(int c0, int r0, int cnt) {
+    for (int i = 0; i < cnt; i++) addCoin(c0 + i, r0 - ((i > 0 && i < cnt - 1) ? 1 : 0), false);
+}
+static void addChest(int c, int r) {
+    if (chestCount >= MAX_CHESTS) return;
+    int gc = baseCol + c;
+    chests[chestCount++] = {gc / RCOLS, (gc % RCOLS) * TILE + 8, r * TILE - 38, false};
+}
+static void addMPlat(int c, int r, int cMin, int cMax, float spd) {
+    if (mplatCount >= MAX_MPLATS) return;
+    int gc = baseCol + c, rm = gc / RCOLS;
+    MPlat &mp = mplats[mplatCount++];
+    mp.room = rm;
+    mp.x = (float)((gc % RCOLS) * TILE);
+    mp.y = (float)(r * TILE);
+    mp.minX = (float)(cMin * TILE);
+    mp.maxX = (float)(cMax * TILE);
+    mp.minY = mp.maxY = mp.y;
+    mp.vx = spd; mp.vy = 0; mp.w = TILE * 2;
+}
+static void addDPlat(int c, int r, int cnt) {
+    for (int i = 0; i < cnt && dplatCount < MAX_DPLATS; i++) {
+        int gc = baseCol + c + i;
+        put(r, c + i, '#');
+        dplats[dplatCount++] = {gc / RCOLS, gc, r, 0, false};
+    }
+}
+static void addPowerUp(int c, int r, int kind) {
+    if (powerupCount >= MAX_POWERUPS) return;
+    int gc = baseCol + c;
+    powerups[powerupCount++] = {gc / RCOLS, (gc % RCOLS) * TILE + 14, r * TILE - 44, kind, true};
+}
+static void addNPC(int c, int r, int msgId) {
+    if (npcCount >= MAX_NPCS) return;
+    int gc = baseCol + c;
+    npcs[npcCount++] = {gc / RCOLS, (gc % RCOLS) * TILE + 10, r * TILE - 46, msgId};
+}
+
 static void addE(int k, int c, int r, int a, int b) {
     if (enemyCount >= MAX_ENEMIES) return;
     Enemy &e = enemies[enemyCount++];
-    e.kind = k; e.x = (float)((baseCol + c) * TILE + 8); e.y = e.baseY = (float)(r * TILE - 44);
-    e.minX = (float)((baseCol + a) * TILE + 4); e.maxX = (float)((baseCol + b) * TILE + 12);
-    e.dir = 1; e.vx = k == E_WALKER ? 2.7f : (k == E_FLYER ? 2.9f : 2.2f); e.vy = 0;
-    e.hp = 1; e.hurt = 0; e.timer = (c * 17) & 63; e.active = true;
+    e.kind = k;
+    e.x = (float)((baseCol + c) * TILE + 8);
+    e.y = e.baseY = (float)(r * TILE - (k == E_CHOMPER ? 68 : (k == E_WASP ? 58 : 44)));
+    e.minX = (float)((baseCol + a) * TILE + 4);
+    e.maxX = (float)((baseCol + b) * TILE + 12);
+    e.dir = 1;
+    e.vx = (k == E_SLIME) ? 2.6f : (k == E_BAT ? 3.1f : (k == E_CHOMPER ? 4.4f : (k == E_WASP ? 2.8f : 2.3f)));
+    e.vy = 0;
+    e.hp = e.maxHp = (k == E_CHOMPER || k == E_WASP) ? 2 : 1;
+    e.hurt = 0; e.timer = (c * 17) & 63; e.state = 0; e.deathTimer = 0; e.active = true;
 }
 
 static void initWorldDetails() {
@@ -451,10 +703,11 @@ static void initWorldDetails() {
     }
     static const float AVX[6] = {0.6f, 0.9f, 3.2f, -0.5f, -0.3f, 0.3f};
     static const float AVY[6] = {0.8f, 0.3f, 0.4f, 1.4f, -1.3f, -0.4f};
-    static const unsigned char ASZ[6] = {6, 5, 4, 5, 5, 4};
+    static const unsigned char ASZ[6] = {6, 5, 4, 5, 5, 5};
     for (int i = 0; i < MAX_AMB; i++) {
         Amb &a = amb[i]; a.x = (float)((i * 173 + 47) % FW); a.y = (float)(110 + ((i * 113 + 31) % (FH - 260)));
         a.seed = (unsigned char)i; a.sz = ASZ[curBiome];
+        a.kind = (unsigned char)((curBiome == 0 || curBiome == 5) ? (i & 1) : 0); // 1 = Glowing Firefly, 0 = Leaf/Ember/Snow
         a.vx = AVX[curBiome] + (i % 3) * (curBiome == 2 ? 0.6f : 0.3f);
         a.vy = AVY[curBiome] + (i % 2) * (curBiome == 4 ? -0.4f : 0.3f);
     }
@@ -463,18 +716,32 @@ static void initWorldDetails() {
 static void buildLevel() {
     for (int r = 0; r < ROWS; r++) { memset(level[r], '.', COLS); level[r][COLS] = 0; level[r][0] = level[r][COLS - 1] = '#'; }
     memset(level[0], '#', COLS); memset(level[ROWS - 1], '#', COLS);
-    enemyCount = checkCount = 0; bossActive = false;
+    enemyCount = checkCount = coinCount = chestCount = mplatCount = dplatCount = powerupCount = npcCount = 0;
+    bossActive = false; activeNpcMsg = -1;
     cpX = (float)(TILE + 16); cpY = (float)((ROWS - 1) * TILE - PH);
     baseCol = 0; levelCols = COLS; levelPW = WW;
 
     if (isBossStage(curLvl)) {
-        int tier = (curLvl + 1) / 5; curBiome = (tier & 1) ? 4 : 5;
+        int tier = (curLvl + 1) / 5;
+        bossKind = (tier - 1) % 5; // 0: King Frogus, 1: Chomp Beast & Totem, 2: Frost Lord, 3: Magma Crusher, 4: Saw Overlord
+        static const int BOSS_BIOMES[5] = {0, 1, 3, 4, 5};
+        curBiome = BOSS_BIOMES[bossKind];
         levelCols = RCOLS; levelPW = FW;
         for (int r = 0; r < ROWS; r++) level[r][RCOLS - 1] = '#';
-        wall(3, 7, 14); wall(28, 7, 14); plat(12, 5, 9); plat(7, 13, 18); plat(12, 22, 26);
-        bossActive = true; bossX = (float)(21 * TILE); bossY = (float)((ROWS - 1) * TILE - bossH);
-        bossVX = tier >= 2 ? -5.0f : -3.8f; bossVY = 0; bossMaxHP = bossHP = tier >= 2 ? 10 : 6;
-        bossHurt = bossTimer = bossSwCd = bossBeam = 0;
+        wall(2, 5, 16); wall(29, 5, 16);
+        plat(12, 5, 9); plat(7, 13, 18); plat(12, 22, 26);
+        addPowerUp(7, 12, PU_SHIELD);
+        addCoinArc(14, 6, 4);
+        bossActive = true;
+        bossW = (bossKind == B_KING_FROGUS) ? 156 : 124;
+        bossH = (bossKind == B_KING_FROGUS) ? 140 : 116;
+        bossX = (float)((bossKind == B_KING_FROGUS) ? 4 * TILE : 21 * TILE);
+        bossY = (float)((ROWS - 1) * TILE - bossH);
+        bossVX = (bossKind == B_KING_FROGUS) ? 3.5f : (tier >= 2 ? -5.0f : -3.8f);
+        bossVY = 0;
+        bossMaxHP = bossHP = 6 + tier * 2;
+        bossHurt = bossTimer = bossSwCd = bossBeam = bossPhase = bossAttackState = bossTongueLen = 0;
+        bossTongueDir = 1;
         for (int i = 0; i < MAX_SHOTS; i++) shots[i].active = false;
         initWorldDetails(); return;
     }
@@ -483,39 +750,140 @@ static void buildLevel() {
     int idx = curLvl % 12; curBiome = BIOMES[idx];
 
     if (idx == 0) {
-        baseCol = 0 * RCOLS; plat(15,7,13); addE(0,10,17,6,15); addE(0,10,15,7,13); plat(14,16,22); addE(2,19,14,16,22); plat(15,25,30); addE(0,27,17,24,30);
-        baseCol = 1 * RCOLS; spk(16,11,13); plat(14,15,21); addE(0,18,17,14,23); addE(1,18,10,15,22); plat(13,24,30); addE(0,27,13,24,30); addCP(26,13);
-        baseCol = 2 * RCOLS; wall(9,8,14); wall(13,8,16); plat(8,13,20); addE(0,16,8,13,20); addE(0,24,17,21,29); plat(13,23,30); addE(2,26,13,23,30);
-        baseCol = 3 * RCOLS; plat(14,4,10); sawAt(15,13); plat(14,16,22); addE(0,19,17,15,24); addE(1,19,10,16,23); plat(12,25,30); addE(3,29,12,25,30); addCP(26,12);
-        baseCol = 4 * RCOLS; plat(15,4,10); plat(13,13,19); addE(0,16,13,13,19); addE(0,15,17,11,21); plat(11,22,30); addE(2,25,11,22,30);
-        baseCol = 5 * RCOLS; plat(14,4,10); plat(12,13,19); addE(1,16,8,13,20); addE(0,16,17,12,21); plat(10,22,30); put(9,27,'G');
+        // Stage 1: Living Forest (Slimes, Bats, Mushroom Monster, Giant Wasp, Secret Chest, NPC Elder)
+        baseCol = 0 * RCOLS;
+        addNPC(3, 17, T_NPC0);
+        plat(15,7,13); addCoinArc(8,14,4);
+        addE(E_SLIME,10,17,6,15); addE(E_SLIME,10,15,7,13);
+        plat(14,16,22); addE(E_MUSHROOM,19,14,16,22);
+        // Secret breakable wall + hidden treasure chest in Room 0 top-right
+        plat(10,24,30); crackFloor(10,26,27); addChest(28, 10); addCoin(25,9,true); addCoin(29,9,true);
+        plat(15,25,30); addE(E_SLIME,27,17,24,30);
+
+        baseCol = 1 * RCOLS;
+        spk(16,11,13); addMPlat(11, 14, 9, 15, 2.2f);
+        plat(14,16,21); addCoinArc(17,13,4);
+        addE(E_SLIME,18,17,14,23); addE(E_BAT,18,10,15,22);
+        plat(13,24,30); addE(E_MUSHROOM,27,13,24,30); addCP(26,13); addPowerUp(28,13,PU_SHIELD);
+
+        baseCol = 2 * RCOLS;
+        addNPC(3, 17, T_NPC1);
+        wall(9,8,14); wall(13,8,16); plat(8,13,20); addCoinArc(14,7,5);
+        addE(E_SLIME,16,8,13,20); addE(E_CHOMPER,24,17,20,29);
+        plat(13,23,30); addE(E_MUSHROOM,26,13,23,30);
+
+        baseCol = 3 * RCOLS;
+        plat(14,4,10); sawAt(15,13); addDPlat(11,13,4);
+        plat(14,16,22); addE(E_SLIME,19,17,15,24); addE(E_BAT,19,9,16,23);
+        plat(12,25,30); addE(E_TURRET,29,12,25,30); addCP(26,12); addPowerUp(6,14,PU_SPEED);
+
+        baseCol = 4 * RCOLS;
+        plat(15,4,10); plat(13,13,19); addCoinArc(14,12,4);
+        addE(E_WASP,16,11,12,21); addE(E_SLIME,15,17,11,21);
+        plat(11,22,30); addE(E_MUSHROOM,25,11,22,30);
+        // Secret room behind breakable blocks
+        crackFloor(17, 26, 27); addChest(28, 17);
+
+        baseCol = 5 * RCOLS;
+        plat(14,4,10); plat(12,13,19); addCoinArc(14,11,5);
+        addE(E_WASP,16,9,12,21); addE(E_CHOMPER,16,17,11,22);
+        plat(10,22,30); put(9,27,'G');
     } else if (idx == 1) {
-        baseCol = 0 * RCOLS; plat(15,7,13); addE(0,10,15,7,13); addE(0,18,17,14,22); spk(16,15,17); plat(14,20,26); addE(2,23,14,20,26); plat(15,28,30);
-        baseCol = 1 * RCOLS; plat(14,4,10); plat(12,13,19); addE(1,16,8,13,20); plat(14,22,30); addE(0,25,14,22,30); addCP(24,14);
-        baseCol = 2 * RCOLS; wall(9,8,14); wall(13,8,16); plat(8,13,20); addE(3,19,8,13,20); addE(0,24,17,21,29); plat(13,23,30); addE(2,26,13,23,30);
-        baseCol = 3 * RCOLS; plat(14,4,10); sawAt(15,13); plat(14,16,22); addE(0,19,14,16,22); plat(12,25,30); addCP(26,12);
-        baseCol = 4 * RCOLS; plat(15,4,10); plat(12,13,19); addE(1,16,8,13,20); addE(0,16,17,12,21); plat(10,22,30); addE(2,25,10,22,30);
-        baseCol = 5 * RCOLS; plat(14,4,10); plat(12,13,19); addE(0,16,12,13,19); plat(10,22,30); put(9,27,'G');
+        // Stage 2: Golden Countryside
+        baseCol = 0 * RCOLS;
+        addNPC(3, 17, T_NPC2);
+        plat(15,7,13); addCoinArc(8,14,4); addE(E_SLIME,10,15,7,13); addE(E_CHOMPER,18,17,14,22);
+        spk(16,15,17); plat(14,20,26); addE(E_MUSHROOM,23,14,20,26); plat(15,28,30);
+
+        baseCol = 1 * RCOLS;
+        plat(14,4,10); addMPlat(11,12,10,16,2.4f); plat(12,14,19); addE(E_BAT,16,8,13,20);
+        plat(14,22,30); addE(E_SLIME,25,14,22,30); addCP(24,14); addPowerUp(28,14,PU_MAGNET);
+
+        baseCol = 2 * RCOLS;
+        wall(9,8,14); wall(13,8,16); plat(8,13,20); addE(E_TURRET,19,8,13,20);
+        addE(E_CHOMPER,24,17,21,29); plat(13,23,30); addE(E_MUSHROOM,26,13,23,30);
+        crackFloor(8,16,17); addChest(18, 8);
+
+        baseCol = 3 * RCOLS;
+        plat(14,4,10); sawAt(15,13); addDPlat(12,13,3); plat(14,16,22); addE(E_SLIME,19,14,16,22);
+        plat(12,25,30); addCP(26,12); addCoinArc(17,13,4);
+
+        baseCol = 4 * RCOLS;
+        plat(15,4,10); plat(12,13,19); addE(E_WASP,16,8,13,20); addE(E_SLIME,16,17,12,21);
+        plat(10,22,30); addE(E_MUSHROOM,25,10,22,30);
+
+        baseCol = 5 * RCOLS;
+        plat(14,4,10); plat(12,13,19); addE(E_WASP,16,9,13,20); addE(E_CHOMPER,16,17,11,22);
+        plat(10,22,30); put(9,27,'G');
     } else if (idx == 2) {
-        baseCol = 0 * RCOLS; wall(9,8,14); wall(13,8,16); plat(8,13,20); addE(0,16,8,13,20); addE(0,18,17,15,22); plat(13,23,30); addE(2,26,13,23,30);
-        baseCol = 1 * RCOLS; plat(14,4,10); plat(11,13,19); addE(3,18,11,13,19); plat(14,22,30); addE(1,25,10,22,30); addCP(24,14);
-        baseCol = 2 * RCOLS; wall(8,8,14); wall(12,8,16); plat(8,12,18); plat(13,21,30); addE(0,25,13,21,30);
-        baseCol = 3 * RCOLS; plat(14,4,10); sawAt(15,13); plat(13,16,22); addE(2,19,13,16,22); addE(0,18,17,14,24); plat(11,25,30); addE(3,29,11,25,30); addCP(26,11);
-        baseCol = 4 * RCOLS; plat(15,4,10); wall(12,7,13); wall(16,7,15); plat(7,16,22); addE(1,19,4,16,23); plat(12,25,30);
-        baseCol = 5 * RCOLS; plat(14,4,10); plat(12,13,19); addE(0,16,12,13,19); plat(10,22,30); put(9,27,'G');
+        // Stage 3: Desert Ruins
+        baseCol = 0 * RCOLS;
+        wall(9,8,14); wall(13,8,16); plat(8,13,20); addCoinArc(14,7,5);
+        addE(E_SLIME,16,8,13,20); addE(E_CHOMPER,18,17,15,22); plat(13,23,30); addE(E_MUSHROOM,26,13,23,30);
+
+        baseCol = 1 * RCOLS;
+        plat(14,4,10); plat(11,13,19); addE(E_TURRET,18,11,13,19);
+        plat(14,22,30); addE(E_BAT,25,10,22,30); addCP(24,14); addPowerUp(7,14,PU_SHIELD);
+
+        baseCol = 2 * RCOLS;
+        wall(8,8,14); wall(12,8,16); plat(8,12,18); addMPlat(18,10,18,23,2.5f);
+        plat(13,21,30); addE(E_SLIME,25,13,21,30); addChest(28, 13);
+
+        baseCol = 3 * RCOLS;
+        plat(14,4,10); sawAt(15,13); plat(13,16,22); addE(E_MUSHROOM,19,13,16,22);
+        addE(E_CHOMPER,18,17,14,24); plat(11,25,30); addE(E_TURRET,29,11,25,30); addCP(26,11);
+
+        baseCol = 4 * RCOLS;
+        plat(15,4,10); wall(12,7,13); wall(16,7,15); plat(7,16,22); addE(E_WASP,19,5,16,23); plat(12,25,30);
+
+        baseCol = 5 * RCOLS;
+        plat(14,4,10); plat(12,13,19); addE(E_CHOMPER,16,12,13,19); plat(10,22,30); put(9,27,'G');
     } else if (idx == 3) {
-        baseCol = 0 * RCOLS; plat(14,7,13); sawAt(15,15); plat(14,18,24); addE(0,21,14,18,24); addE(0,10,17,6,14); plat(12,26,30);
-        baseCol = 1 * RCOLS; plat(14,4,10); wall(12,7,13); wall(16,7,15); plat(7,16,22); addE(2,19,7,16,22); plat(12,25,30); addCP(26,12);
-        baseCol = 2 * RCOLS; plat(14,4,10); sawAt(15,12); plat(13,15,21); addE(3,20,13,15,21); plat(14,24,30);
-        baseCol = 3 * RCOLS; plat(14,4,10); plat(12,13,19); addE(1,16,8,13,20); addE(0,16,17,12,21); plat(11,22,30); addCP(23,11);
-        baseCol = 4 * RCOLS; plat(14,4,10); wall(12,7,13); wall(16,7,15); plat(7,16,22); plat(11,25,30); addE(0,27,11,25,30);
-        baseCol = 5 * RCOLS; plat(14,4,10); plat(12,13,19); addE(2,16,12,13,19); plat(10,22,30); put(9,27,'G');
+        // Stage 4: Frozen Ice World
+        baseCol = 0 * RCOLS;
+        plat(14,7,13); sawAt(15,15); addDPlat(14,13,3); plat(14,18,24);
+        addE(E_SLIME,21,14,18,24); addE(E_SLIME,10,17,6,14); plat(12,26,30); addCoinArc(8,13,4);
+
+        baseCol = 1 * RCOLS;
+        plat(14,4,10); wall(12,7,13); wall(16,7,15); plat(7,16,22);
+        addE(E_MUSHROOM,19,7,16,22); plat(12,25,30); addCP(26,12); addPowerUp(28,12,PU_SPEED);
+
+        baseCol = 2 * RCOLS;
+        plat(14,4,10); sawAt(15,12); addMPlat(11,12,10,15,2.6f);
+        plat(13,15,21); addE(E_TURRET,20,13,15,21); plat(14,24,30); addChest(28, 14);
+
+        baseCol = 3 * RCOLS;
+        plat(14,4,10); plat(12,13,19); addE(E_BAT,16,8,13,20); addE(E_CHOMPER,16,17,12,21);
+        plat(11,22,30); addCP(23,11);
+
+        baseCol = 4 * RCOLS;
+        plat(14,4,10); wall(12,7,13); wall(16,7,15); plat(7,16,22);
+        plat(11,25,30); addE(E_WASP,27,9,24,30);
+
+        baseCol = 5 * RCOLS;
+        plat(14,4,10); plat(12,13,19); addE(E_CHOMPER,16,12,13,19); plat(10,22,30); put(9,27,'G');
     } else {
+        // Dynamic Advanced World Builder (Volcano, Dark Castle, High Tiers)
         for (int rm = 0; rm < ROOMS; rm++) {
-            baseCol = rm * RCOLS; plat(14,5,11); plat(12,14,20); plat(14,23,29);
-            if (rm == 1 || rm == 3) { wall(9,8,13); wall(13,8,14); addCP(25,14); }
-            if (rm % 2 == 0) { addE(0,8,14,5,11); addE(0,14,17,11,21); addE(2,17,12,14,20); }
-            else { addE(0,9,17,5,14); addE(1,17,8,14,21); addE(3,28,14,23,29); }
+            baseCol = rm * RCOLS;
+            plat(14,5,11); plat(12,14,20); plat(14,23,29);
+            addCoinArc(6, 13, 4);
+            if (rm == 0) addNPC(3, 17, (curBiome == 4) ? T_NPC2 : T_NPC1);
+            if (rm == 1 || rm == 3) {
+                wall(9,8,13); wall(13,8,14); addCP(25,14);
+                addPowerUp(27, 14, (rm == 1) ? PU_SHIELD : PU_MAGNET);
+            }
+            if (rm == 2) { addMPlat(11, 11, 10, 15, 2.5f); addChest(28, 14); }
+            if (rm == 4) { addDPlat(11, 13, 3); sawAt(15, 13); }
+            if (rm % 2 == 0) {
+                addE(E_SLIME,8,14,5,11);
+                addE(E_CHOMPER,14,17,10,21);
+                addE(E_MUSHROOM,17,12,14,20);
+            } else {
+                addE(E_BAT,17,8,13,22);
+                addE(E_WASP,15,9,12,21);
+                addE(E_TURRET,28,14,23,29);
+            }
         }
         baseCol = 5 * RCOLS; plat(10,22,30); put(9,27,'G');
     }
@@ -526,13 +894,21 @@ static void buildLevel() {
 // ---------- Collision & Physics ----------
 static inline char tileAt(int r, int c) { return (r < 0 || r >= ROWS || c < 0 || c >= COLS) ? '#' : level[r][c]; }
 static inline char staticChar(int r, int c) { char ch = tileAt(r, c); return ch == 'O' ? '.' : ch; }
-static inline bool hiAt(int r, int c) { return r > 0 && staticChar(r, c) == '#' && staticChar(r - 1, c) != '#'; }
-static inline bool solidAt(int x, int y) { return x < 0 || y < 0 || x / TILE >= COLS || y / TILE >= ROWS || level[y / TILE][x / TILE] == '#'; }
+static inline bool hiAt(int r, int c) { return r > 0 && (staticChar(r, c) == '#' || staticChar(r, c) == 'B') && staticChar(r - 1, c) != '#'; }
+static inline bool solidAt(int x, int y) {
+    if (x < 0 || y < 0 || x / TILE >= COLS || y / TILE >= ROWS) return true;
+    char ch = level[y / TILE][x / TILE];
+    return ch == '#' || ch == 'B';
+}
 static inline bool rectSolid(int x, int y, int w, int h) { return solidAt(x, y) || solidAt(x + w - 1, y) || solidAt(x, y + h - 1) || solidAt(x + w - 1, y + h - 1); }
 static inline bool rectOverlap(int ax, int ay, int aw, int ah, int bx, int by, int bw, int bh) { return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by; }
 static inline bool circleHit(int cx, int cy, int rad, int rx, int ry, int rw, int rh) {
     int dx = cx - iclamp(cx, rx, rx + rw), dy = cy - iclamp(cy, ry, ry + rh);
     return dx * dx + dy * dy < rad * rad;
+}
+
+static void triggerShake(int mag, int dur) {
+    if (mag >= shakeMag || shakeTimer == 0) { shakeMag = mag; shakeTimer = dur; }
 }
 
 static void addSplat(int wx, int wy, int w, int h) {
@@ -551,22 +927,67 @@ static void spawnPart(float x, float y, float pvx, float pvy, int life, int sz, 
         parts[i] = {x, y, pvx, pvy, (short)life, (short)life, (unsigned char)kind, (unsigned char)sz}; return;
     }
 }
-static void spawnDust(float x, float y, int n, float sp) {
+static void spawnDust(float x, float y, int n, float sp, int kind = 0) {
     for (int i = 0; i < n; i++)
-        spawnPart(x + (rnd(20) - 10), y - rnd(4), ((rnd(100) - 50) / 50.0f) * sp, -(rnd(100) / 100.0f) * 1.6f, 16 + rnd(12), 7 + rnd(5), 0);
+        spawnPart(x + (rnd(20) - 10), y - rnd(4), ((rnd(100) - 50) / 50.0f) * sp, -(rnd(100) / 100.0f) * 2.0f, 16 + rnd(14), 6 + rnd(6), kind);
 }
 
-static void respawn() {
-    px = (float)(roomIdx * FW + TILE + 8); py = (float)((ROWS - 1) * TILE - PH);
-    vx = vy = 0; squashX = squashY = 1.0f; onGround = false; wallLock = coyote = 0;
-    if (bossActive && bossHP > 0) {
-        bossX = (float)(21 * TILE); bossY = (float)((ROWS - 1) * TILE - bossH);
-        for (int i = 0; i < MAX_SHOTS; i++) shots[i].active = false;
+static void breakBlocksNear(int wx, int wy, int rad) {
+    int c0 = iclamp((wx - rad) / TILE, 1, COLS - 2), c1 = iclamp((wx + rad) / TILE, 1, COLS - 2);
+    int r0 = iclamp((wy - rad) / TILE, 1, ROWS - 2), r1 = iclamp((wy + rad) / TILE, 1, ROWS - 2);
+    bool broke = false;
+    for (int r = r0; r <= r1; r++) {
+        for (int c = c0; c <= c1; c++) {
+            if (level[r][c] == 'B') {
+                level[r][c] = '.';
+                broke = true;
+                spawnDust((float)(c * TILE + 30), (float)(r * TILE + 30), 12, 4.5f, 2);
+            }
+        }
+    }
+    if (broke) {
+        secretsFound++;
+        needFull[0] = needFull[1] = true;
+        snd(12);
+        triggerShake(8, 16);
+        showBanner(T_SECRET_FOUND, 110);
     }
 }
 
+static void respawn() {
+    px = cpX; py = cpY;
+    roomIdx = iclamp((int)(px / FW), 0, ROOMS - 1);
+    vx = vy = 0; squashX = squashY = 1.0f; onGround = false; wallLock = coyote = jumpBuf = 0;
+    jumpsLeft = 2; dashTimer = dashCd = 0; isSlamming = false; slamWaveTimer = 0;
+    shieldHits = upgOwned[0] ? 1 : 0;
+    speedBoostTimer = 0;
+    magnetTimer = upgOwned[2] ? 999999 : 0;
+    for (int i = 0; i < MAX_TRAIL; i++) trails[i].life = 0;
+    for (int i = 0; i < dplatCount; i++) {
+        dplats[i].timer = 0; dplats[i].triggered = false;
+        level[dplats[i].r][dplats[i].c] = '#';
+    }
+    if (bossActive && bossHP > 0) {
+        bossX = (float)((bossKind == B_KING_FROGUS) ? 4 * TILE : 21 * TILE);
+        bossY = (float)((ROWS - 1) * TILE - bossH);
+        bossTongueLen = 0; bossAttackState = 0;
+        for (int i = 0; i < MAX_SHOTS; i++) shots[i].active = false;
+    }
+    needFull[0] = needFull[1] = true;
+}
+
 static void die() {
-    deaths++; hudNeed[0] = hudNeed[1] = true; snd(6);
+    if (dashTimer > 0) return;
+    if (shieldHits > 0) {
+        shieldHits--;
+        vy = -12.5f; vx = -facing * 6.5f;
+        dashTimer = 10; // Brief invulnerability frames
+        snd(5); triggerShake(6, 12);
+        spawnDust(px + PW * 0.5f, py + PH * 0.5f, 14, 4.5f, 3);
+        hudNeed[0] = hudNeed[1] = true;
+        return;
+    }
+    deaths++; hudNeed[0] = hudNeed[1] = true; snd(6); triggerShake(9, 16);
     float cx = px + PW * 0.5f, cy = py + PH * 0.5f;
     for (int i = 0; i < 26; i++) spawnPart(cx + rnd(20) - 10, cy + rnd(20) - 10, (rnd(180) - 90) / 10.0f, (rnd(140) - 120) / 10.0f, 90, 5 + rnd(5), 1);
     for (int i = 0; i < 4; i++) addSplat((int)cx + rnd(40) - 20, (int)cy + rnd(40) - 20, 8 + rnd(10), 8 + rnd(10));
@@ -575,19 +996,43 @@ static void die() {
 
 static void damageBoss(int dmg) {
     if (bossHurt > 0 || bossHP <= 0) return;
-    bossHP = iclamp(bossHP - dmg, 0, bossMaxHP); bossHurt = 24; hudNeed[0] = hudNeed[1] = true; snd(7);
-    for (int i = 0; i < 22; i++) spawnPart(bossX + bossW * 0.5f, bossY + bossH * 0.5f, (rnd(200) - 100) / 10.0f, -(40 + rnd(100)) / 10.0f, 90, 6 + rnd(5), 1);
-    if (bossHP <= 0) { for (int i = 0; i < MAX_SHOTS; i++) shots[i].active = false; level[16][15] = 'G'; needFull[0] = needFull[1] = true; }
+    bossHP = iclamp(bossHP - dmg, 0, bossMaxHP); bossHurt = 26; hudNeed[0] = hudNeed[1] = true; snd(7);
+    triggerShake(10, 18);
+    for (int i = 0; i < 24; i++) spawnPart(bossX + bossW * 0.5f, bossY + bossH * 0.5f, (rnd(200) - 100) / 10.0f, -(40 + rnd(100)) / 10.0f, 90, 6 + rnd(5), 1);
+    if (bossHP <= 0) {
+        for (int i = 0; i < MAX_SHOTS; i++) shots[i].active = false;
+        level[16][15] = 'G';
+        totalCoins += 50;
+        if (bossKind == B_KING_FROGUS) unlockAch(2);
+        saveGame();
+        needFull[0] = needFull[1] = true;
+    }
 }
 
-static void spawnShot(float sx, float sy, float svx, float svy) {
-    for (int i = 0; i < MAX_SHOTS; i++) if (!shots[i].active) { shots[i] = {sx, sy, svx, svy, true}; return; }
+static void spawnShot(float sx, float sy, float svx, float svy, int kind = 0) {
+    for (int i = 0; i < MAX_SHOTS; i++) if (!shots[i].active) { shots[i] = {sx, sy, svx, svy, kind, true}; return; }
 }
 
 static void update() {
+    stageTimer++;
+    if (bannerTimer > 0) {
+        if (--bannerTimer == 0) { needFull[0] = needFull[1] = true; }
+    }
+    if (shakeTimer > 0) {
+        shakeTimer--;
+        shakeX = (rnd(shakeMag * 2 + 1) - shakeMag);
+        shakeY = (rnd(shakeMag * 2 + 1) - shakeMag);
+        if (shakeTimer == 0) { shakeX = shakeY = 0; shakeMag = 0; needFull[0] = needFull[1] = true; }
+    }
+    if (speedBoostTimer > 0) speedBoostTimer--;
+    if (magnetTimer > 0 && !upgOwned[2]) magnetTimer--;
+    if (slamWaveTimer > 0) slamWaveTimer--;
+    for (int i = 0; i < MAX_TRAIL; i++) if (trails[i].life > 0) trails[i].life--;
+
+    // Particles
     for (int i = 0; i < MAX_PARTS; i++) {
         Part &p = parts[i]; if (p.life <= 0) continue; p.life--;
-        if (p.kind == 0) { p.x += p.vx; p.y += p.vy; p.vx *= 0.9f; p.vy *= 0.92f; }
+        if (p.kind == 0 || p.kind == 2 || p.kind == 3) { p.x += p.vx; p.y += p.vy; p.vx *= 0.9f; p.vy *= 0.92f; }
         else {
             float ox = p.x, oy = p.y; p.vy = p.vy + 0.62f > 16.0f ? 16.0f : p.vy + 0.62f; p.x += p.vx; p.y += p.vy;
             if (solidAt((int)p.x, (int)p.y)) { addSplat(solidAt((int)ox, (int)p.y) ? (int)ox : (int)p.x, (int)oy, p.size + 6 + rnd(8), p.size / 2 + 3); p.life = 0; }
@@ -599,44 +1044,262 @@ static void update() {
         int age = tick - splats[i].born;
         splats[i].stage = age >= SPLAT_MAX_AGE ? 4 : (age >= SPLAT_MAX_AGE - 300 ? 3 : (age >= SPLAT_MAX_AGE - 600 ? 2 : (age >= SPLAT_MAX_AGE - 900 ? 1 : 0)));
     }
+
+    // Moving Platforms
+    for (int i = 0; i < mplatCount; i++) {
+        MPlat &mp = mplats[i];
+        if (mp.room != roomIdx) continue;
+        float oldX = mp.x;
+        mp.x += mp.vx;
+        if (mp.x <= mp.minX) { mp.x = mp.minX; mp.vx = -mp.vx; }
+        else if (mp.x + mp.w >= mp.maxX) { mp.x = mp.maxX - mp.w; mp.vx = -mp.vx; }
+        float wx = mp.room * FW + oldX;
+        if (deadTimer == 0 && vy >= 0 && px + PW > wx + 4 && px < wx + mp.w - 4 && py + PH >= mp.y - 6 && py + PH <= mp.y + 14) {
+            px += (mp.x - oldX);
+            py = mp.y - PH;
+            vy = 0;
+            onGround = true;
+            jumpsLeft = 2;
+        }
+    }
+
+    // Disappearing Platforms
+    for (int i = 0; i < dplatCount; i++) {
+        DPlat &dp = dplats[i];
+        if (dp.room != roomIdx) continue;
+        int wx = dp.c * TILE, wy = dp.r * TILE;
+        if (!dp.triggered && deadTimer == 0 && onGround && px + PW > wx + 2 && px < wx + TILE - 2 && iabs((int)(py + PH) - wy) <= 6) {
+            dp.triggered = true; dp.timer = 1;
+        }
+        if (dp.triggered) {
+            dp.timer++;
+            if (dp.timer == 35) {
+                level[dp.r][dp.c] = '.';
+                spawnDust((float)(wx + 30), (float)(wy + 12), 8, 2.5f, 0);
+            } else if (dp.timer >= 175) {
+                dp.triggered = false; dp.timer = 0;
+                level[dp.r][dp.c] = '#';
+            }
+        }
+    }
+
     bool burst = false;
     if (deadTimer > 0) { if (--deadTimer == 0) respawn(); }
     else {
         bool wasG = onGround;
+        if (dashCd > 0) dashCd--;
+        if (in.crossNew) jumpBuf = 7; else if (jumpBuf > 0) jumpBuf--;
+
         float k = onGround ? 0.0f : (iabs((int)vy) / 18.0f > 1.0f ? 1.0f : iabs((int)vy) / 18.0f);
         squashX += (1.0f - 0.22f * k - squashX) * 0.3f; squashY += (1.0f + 0.30f * k - squashY) * 0.3f;
         int dir = controlMode == 1 ? (in.ana != 0.0f ? (in.ana > 0 ? 1 : -1) : 0) : ((in.dright ? 1 : 0) - (in.dleft ? 1 : 0));
         float sc = controlMode == 1 && in.ana != 0.0f ? (fabsf(in.ana) < 0.5f ? 0.5f : fabsf(in.ana)) : 1.0f;
         bool wL = rectSolid((int)px - 1, (int)py, 1, PH), wR = rectSolid((int)px + PW, (int)py, 1, PH);
-        float maxS = (in.square ? 8.2f : 5.8f) * sc;
-        if (dir) facing = dir;
-        if (wallLock > 0) wallLock--;
-        else if (dir) { vx += dir * (onGround ? 1.25f : 0.72f); if (vx > maxS) vx = maxS; if (vx < -maxS) vx = -maxS; }
-        else { float fr = onGround ? 1.0f : 0.3f; vx = vx > fr ? vx - fr : (vx < -fr ? vx + fr : 0); }
-        vy = vy + 0.9f > 18.0f ? 18.0f : vy + 0.9f;
-        bool slide = !onGround && vy > 0 && ((wL && dir < 0) || (wR && dir > 0));
-        if (slide && vy > 3.0f) vy = 3.0f;
-        if (slide && (tick & 3) == 0) spawnDust(wL ? px : px + PW, py + PH - 6.0f, 1, 1.0f);
-        if (onGround) coyote = 6; else if (coyote > 0) coyote--;
-        if (in.crossNew) {
-            if (coyote > 0) { vy = -17.2f; coyote = 0; squashX = 0.72f; squashY = 1.30f; spawnDust(px + PW * 0.5f, py + PH, 6, 3.0f); burst = true; snd(4); }
-            else if (wL || wR) { vy = -16.2f; vx = wL ? 8.0f : -8.0f; wallLock = 9; facing = wL ? 1 : -1; squashX = 0.72f; squashY = 1.30f; spawnDust(wL ? px : px + PW, py + PH * 0.5f, 4, 2.0f); burst = true; snd(5); }
+        float boostMult = (speedBoostTimer > 0) ? 1.28f : 1.0f;
+        float maxS = (in.square ? 8.4f : 6.0f) * sc * boostMult;
+        if (dir && dashTimer == 0) facing = dir;
+
+        // Dash Ability (R1/L1/Triangle or Circle when not slamming)
+        bool wantSlam = !onGround && in.down && (in.circleNew || in.squareNew);
+        bool wantDash = !wantSlam && (in.dashBtnNew || (in.circleNew && !in.down));
+        if (wantDash && dashCd == 0 && dashTimer == 0 && !isSlamming) {
+            dashTimer = 11;
+            dashCd = upgOwned[1] ? 24 : 38;
+            dashDir = dir != 0 ? dir : facing;
+            facing = dashDir;
+            vx = dashDir * 15.5f;
+            vy = 0;
+            squashX = 1.38f; squashY = 0.68f;
+            snd(10);
+            spawnDust(px + PW * 0.5f, py + PH * 0.5f, 10, 3.8f, 3);
         }
-        if (!in.cross && vy < -6.0f) vy = -6.0f;
+
+        // Ground Slam Ability (Down + O or Down + Square in midair)
+        if (wantSlam && !isSlamming) {
+            isSlamming = true;
+            dashTimer = 0;
+            vx = 0;
+            vy = 22.0f;
+            squashX = 0.65f; squashY = 1.42f;
+            snd(10);
+        }
+
+        if (dashTimer > 0) {
+            dashTimer--;
+            vx = dashDir * 15.0f;
+            vy = 0;
+            if ((dashTimer & 1) == 0) {
+                for (int i = 0; i < MAX_TRAIL; i++) if (trails[i].life <= 0) {
+                    trails[i] = {px, py, 10, facing}; break;
+                }
+            }
+            // Break secret cracked walls with Dash!
+            breakBlocksNear((int)(px + PW * 0.5f + dashDir * 24), (int)(py + PH * 0.5f), 36);
+        } else if (isSlamming) {
+            vx *= 0.5f;
+            vy = 22.0f;
+            if ((tick & 1) == 0) spawnDust(px + PW * 0.5f, py, 2, 1.5f, 2);
+        } else {
+            if (wallLock > 0) wallLock--;
+            else if (dir) { vx += dir * (onGround ? 1.32f : 0.78f); if (vx > maxS) vx = maxS; if (vx < -maxS) vx = -maxS; }
+            else { float fr = onGround ? 1.05f : 0.32f; vx = vx > fr ? vx - fr : (vx < -fr ? vx + fr : 0); }
+            vy = vy + 0.9f > 18.0f ? 18.0f : vy + 0.9f;
+        }
+
+        bool slide = !onGround && !isSlamming && dashTimer == 0 && vy > 0 && ((wL && dir < 0) || (wR && dir > 0));
+        if (slide && vy > 2.8f) vy = 2.8f;
+        if (slide && (tick & 3) == 0) spawnDust(wL ? px : px + PW, py + PH - 6.0f, 1, 1.2f);
+        if (onGround) { coyote = 7; jumpsLeft = 2; } else if (coyote > 0) coyote--;
+
+        // Jump, Wall Jump, and Double Jump
+        if (jumpBuf > 0) {
+            if (coyote > 0) {
+                vy = -17.2f; coyote = 0; jumpBuf = 0; jumpsLeft = 1; isSlamming = false;
+                squashX = 0.72f; squashY = 1.30f; spawnDust(px + PW * 0.5f, py + PH, 7, 3.2f); burst = true; snd(4);
+            } else if (wL || wR) {
+                vy = -16.4f; vx = wL ? 8.4f : -8.4f; wallLock = 9; facing = wL ? 1 : -1;
+                jumpBuf = 0; jumpsLeft = 1; isSlamming = false;
+                squashX = 0.72f; squashY = 1.30f; spawnDust(wL ? px : px + PW, py + PH * 0.5f, 6, 2.5f); burst = true; snd(5);
+            } else if (hasDoubleJump && jumpsLeft > 0) {
+                vy = -15.6f; jumpsLeft = 0; jumpBuf = 0; isSlamming = false; dashTimer = 0;
+                squashX = 0.70f; squashY = 1.34f;
+                spawnDust(px + PW * 0.5f, py + PH, 10, 4.2f, 3); // Cyan/white double-jump ring
+                burst = true; snd(5);
+            }
+        }
+        if (!in.cross && vy < -6.0f && !isSlamming) vy = -6.0f;
+
         px += vx;
-        if (rectSolid((int)px, (int)py, PW, PH)) { px = (float)(vx > 0 ? ((((int)px + PW - 1) / TILE) * TILE - PW) : ((((int)px) / TILE + 1) * TILE)); vx = 0; }
-        py += vy; onGround = false;
+        if (rectSolid((int)px, (int)py, PW, PH)) {
+            if (dashTimer > 0) breakBlocksNear((int)(px + PW * 0.5f + dashDir * 24), (int)(py + PH * 0.5f), 40);
+            if (rectSolid((int)px, (int)py, PW, PH)) {
+                px = (float)(vx > 0 ? ((((int)px + PW - 1) / TILE) * TILE - PW) : ((((int)px) / TILE + 1) * TILE));
+                vx = 0; dashTimer = 0;
+            }
+        }
+        py += vy;
+        if (!onGround) onGround = false;
         if (rectSolid((int)px, (int)py, PW, PH)) {
             if (vy > 0) {
-                py = (float)((((int)py + PH - 1) / TILE) * TILE - PH); onGround = true;
-                if (!wasG && vy > 5.0f) { float lk = vy / 18.0f > 1.0f ? 1.0f : vy / 18.0f; squashY = 1.0f - 0.35f * lk; squashX = 1.0f + 0.40f * lk; spawnDust(px + PW * 0.5f, py + PH, 4 + (int)(lk * 6), 4.0f); burst = true; }
-            } else if (vy < 0) py = (float)((((int)py) / TILE + 1) * TILE);
-            vy = 0;
+                if (isSlamming) {
+                    breakBlocksNear((int)(px + PW * 0.5f), (int)(py + PH + 16), 52);
+                }
+                if (rectSolid((int)px, (int)py, PW, PH)) {
+                    py = (float)((((int)py + PH - 1) / TILE) * TILE - PH);
+                    onGround = true; jumpsLeft = 2;
+                    if (isSlamming) {
+                        isSlamming = false;
+                        slamWaveTimer = 14;
+                        slamWaveX = (int)(px + PW * 0.5f);
+                        slamWaveY = (int)(py + PH);
+                        squashY = 0.52f; squashX = 1.50f;
+                        triggerShake(9, 16);
+                        snd(11);
+                        spawnDust(px + PW * 0.5f, py + PH, 18, 6.5f, 2);
+                        burst = true;
+                        // Ground Slam shockwave damages nearby enemies!
+                        for (int eIdx = 0; eIdx < enemyCount; eIdx++) {
+                            Enemy &en = enemies[eIdx];
+                            if (en.active && en.deathTimer == 0 && fabsf((en.x + 22) - slamWaveX) < 155.0f && fabsf((en.y + 22) - slamWaveY) < 95.0f) {
+                                en.hp -= 2; en.hurt = 16;
+                                if (en.hp <= 0) {
+                                    en.deathTimer = 18; snd(7);
+                                    for (int k2 = 0; k2 < 18; k2++) spawnPart(en.x + 22, en.y + 22, (rnd(180) - 90) / 10.0f, -(45 + rnd(95)) / 10.0f, 95, 6 + rnd(4), 1);
+                                }
+                            }
+                        }
+                    } else if (!wasG && vy > 5.0f) {
+                        float lk = vy / 18.0f > 1.0f ? 1.0f : vy / 18.0f;
+                        squashY = 1.0f - 0.35f * lk; squashX = 1.0f + 0.40f * lk;
+                        spawnDust(px + PW * 0.5f, py + PH, 4 + (int)(lk * 6), 4.0f); burst = true;
+                    }
+                }
+            } else if (vy < 0) {
+                py = (float)((((int)py) / TILE + 1) * TILE);
+                isSlamming = false;
+            }
+            if (onGround || vy < 0) vy = 0;
         }
+
+        // Checkpoints
         for (int i = 0; i < checkCount; i++) if (!checkAct[i] && (int)px + PW >= checkC[i] * TILE) {
-            checkAct[i] = true; cpX = (float)(checkC[i] * TILE); cpY = (float)(checkR[i] * TILE - PH); snd(1); spawnDust(cpX + 20, cpY + 4, 10, 3.5f);
+            checkAct[i] = true; cpX = (float)(checkC[i] * TILE); cpY = (float)(checkR[i] * TILE - PH);
+            snd(1); spawnDust(cpX + 20, cpY + 4, 12, 3.8f, 3);
+        }
+
+        // Collect Coins (with Magnet attraction)
+        for (int i = 0; i < coinCount; i++) {
+            Coin &cn = coins[i];
+            if (cn.taken || cn.room != roomIdx) continue;
+            float wx = (float)(cn.room * FW + cn.x), wy = (float)cn.y;
+            float dx = (px + PW * 0.5f) - (wx + 12), dy = (py + PH * 0.5f) - (wy + 12);
+            if ((magnetTimer > 0 || upgOwned[2]) && dx * dx + dy * dy < 190.0f * 190.0f) {
+                cn.x += (int)(dx * 0.14f); cn.y += (int)(dy * 0.14f);
+                wx = (float)(cn.room * FW + cn.x); wy = (float)cn.y;
+            }
+            if (rectOverlap((int)px, (int)py, PW, PH, (int)wx - 4, (int)wy - 4, 32, 32)) {
+                cn.taken = true;
+                int gain = upgOwned[2] ? 2 : 1;
+                totalCoins += gain; stageCoins += gain;
+                hudNeed[0] = hudNeed[1] = true;
+                snd(9);
+                spawnDust(wx + 12, wy + 12, 6, 2.5f, 2);
+                if (totalCoins >= 100) unlockAch(3);
+            }
+        }
+
+        // Treasure Chests
+        for (int i = 0; i < chestCount; i++) {
+            Chest &ch = chests[i];
+            if (ch.opened || ch.room != roomIdx) continue;
+            int wx = ch.room * FW + ch.x, wy = ch.y;
+            if (rectOverlap((int)px, (int)py, PW, PH, wx - 8, wy - 8, 60, 48)) {
+                ch.opened = true;
+                int bonus = upgOwned[2] ? 50 : 25;
+                totalCoins += bonus; stageCoins += bonus;
+                totalChestsOpened++;
+                hudNeed[0] = hudNeed[1] = true;
+                snd(12); triggerShake(6, 12);
+                spawnDust((float)(wx + 22), (float)(wy + 16), 18, 4.8f, 2);
+                showBanner(T_CHEST_OPEN, 120);
+                if (totalChestsOpened >= 3) unlockAch(1);
+                if (totalCoins >= 100) unlockAch(3);
+                saveGame();
+            }
+        }
+
+        // Power-Ups
+        for (int i = 0; i < powerupCount; i++) {
+            PowerUp &pu = powerups[i];
+            if (!pu.active || pu.room != roomIdx) continue;
+            int wx = pu.room * FW + pu.x, wy = pu.y;
+            if (rectOverlap((int)px, (int)py, PW, PH, wx - 4, wy - 4, 40, 40)) {
+                pu.active = false;
+                if (pu.kind == PU_SHIELD) shieldHits = 1;
+                else if (pu.kind == PU_SPEED) speedBoostTimer = 420;
+                else if (pu.kind == PU_MAGNET) magnetTimer = 600;
+                hudNeed[0] = hudNeed[1] = true;
+                snd(12);
+                spawnDust((float)(wx + 16), (float)(wy + 16), 14, 4.0f, 3);
+            }
+        }
+
+        // NPC Proximity Dialogue
+        int prevNpc = activeNpcMsg;
+        activeNpcMsg = -1;
+        for (int i = 0; i < npcCount; i++) {
+            NPC &np = npcs[i];
+            if (np.room != roomIdx) continue;
+            int wx = np.room * FW + np.x;
+            if (iabs((int)(px + PW * 0.5f) - (wx + 22)) < 130 && iabs((int)(py + PH) - (np.y + 46)) < 110) {
+                activeNpcMsg = np.msgId;
+            }
+        }
+        if (prevNpc != activeNpcMsg && prevNpc != -1) {
+            needFull[0] = needFull[1] = true;
         }
     }
+
     // Plants & ambient
     float pcx = px - roomIdx * FW + PW * 0.5f, pby = py + PH;
     for (int i = 0; i < plantCount; i++) {
@@ -658,65 +1321,201 @@ static void update() {
     }
     if (deadTimer > 0) return;
 
-    // Smart Enemies (Stomp from above ONLY!)
+    // Diverse Smart Enemies (Slime, Bat, Mushroom Monster, Turret, Giant Wasp, Behemoth Chomper)
     int rmX0 = roomIdx * FW - 240, rmX1 = roomIdx * FW + FW + 240;
     for (int i = 0; i < enemyCount; i++) {
         Enemy &e = enemies[i]; if (!e.active || (int)e.x < rmX0 || (int)e.x > rmX1) continue;
-        if (e.hurt > 0) e.hurt--; e.timer++;
+        if (e.deathTimer > 0) {
+            e.y += 3.5f;
+            if (--e.deathTimer == 0) e.active = false;
+            continue;
+        }
+        if (e.hurt > 0) e.hurt--;
+        e.timer++;
         float dx = px - e.x, adx = fabsf(dx), ady = fabsf(py - e.y);
-        if (e.kind == E_WALKER) {
-            if (adx < 340 && ady < 140) e.dir = dx >= 0 ? 1 : -1;
-            float nx = e.x + ((adx < 340 && ady < 140) ? e.vx * 1.25f : e.vx) * e.dir;
+        int ew = (e.kind == E_CHOMPER) ? 68 : (e.kind == E_WASP ? 58 : 44);
+        int eh = (e.kind == E_CHOMPER) ? 68 : (e.kind == E_WASP ? 58 : 44);
+
+        if (e.kind == E_SLIME) {
+            // Slime chases player with squishy hops
+            if (adx < 360 && ady < 150) e.dir = dx >= 0 ? 1 : -1;
+            if (e.timer % 44 == 0 && e.vy == 0) e.vy = (adx < 260) ? -9.8f : -7.2f;
+            float nx = e.x + ((adx < 340 && ady < 140) ? e.vx * 1.35f : e.vx) * e.dir;
             if (nx <= e.minX) { nx = e.minX; e.dir = 1; } else if (nx >= e.maxX) { nx = e.maxX; e.dir = -1; }
             int prX = e.dir > 0 ? (int)nx + 46 : (int)nx - 4;
             if (solidAt(prX, (int)e.y + 20)) { if (e.vy == 0) e.vy = -11.5f; else e.dir = -e.dir; }
             if (!rectSolid((int)nx, (int)e.y, 44, 44)) e.x = nx; else e.dir = -e.dir;
             e.vy += 0.65f; e.y += e.vy;
             if (rectSolid((int)e.x, (int)e.y, 44, 44)) { if (e.vy > 0) e.y = (float)((((int)e.y + 43) / TILE) * TILE - 44); e.vy = 0; }
-        } else if (e.kind == E_FLYER) {
-            if (adx < 360) e.dir = dx >= 0 ? 1 : -1;
-            e.x += e.vx * e.dir; if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; } else if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
-            e.y = e.baseY + (SN[(e.timer / 4) & 15] * 28) / 256;
-        } else if (e.kind == E_JUMPER) {
-            if (adx < 320) e.dir = dx >= 0 ? 1 : -1;
-            e.x += e.vx * e.dir; if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; } else if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
-            if (e.timer % 50 == 0 && e.y >= e.baseY - 2) e.vy = -12.5f;
+        } else if (e.kind == E_BAT) {
+            // Bat hovers (Idle/Walk) and swoops down (Attack) when player is near!
+            if (adx < 380) e.dir = dx >= 0 ? 1 : -1;
+            e.x += e.vx * e.dir;
+            if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; } else if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
+            if (adx < 240 && py > e.baseY) {
+                e.state = 1; // Attack swoop state
+                float targetY = iclamp((int)py - 10, (int)e.baseY, (int)e.baseY + 135);
+                e.y += (targetY - e.y) * 0.08f;
+            } else {
+                e.state = 0; // Idle/Fly wave
+                e.y = e.baseY + (SN[(e.timer / 4) & 15] * 26) / 256;
+            }
+        } else if (e.kind == E_MUSHROOM) {
+            // Hides underground as a small mushroom cap until player approaches, then pops up and attacks!
+            if (adx < 280 && ady < 160) {
+                if (e.state == 0) {
+                    e.state = 1; e.vy = -11.5f;
+                    spawnDust(e.x + 22, e.y + 44, 6, 2.5f);
+                }
+                e.dir = dx >= 0 ? 1 : -1;
+                e.x += e.vx * 1.2f * e.dir;
+                if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; } else if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
+                if (e.timer % 52 == 0 && e.y >= e.baseY - 2) e.vy = -12.0f;
+            } else {
+                e.state = 0; // Hidden state
+            }
             e.vy += 0.65f; e.y += e.vy; if (e.y >= e.baseY) { e.y = e.baseY; e.vy = 0; }
-        } else {
+        } else if (e.kind == E_WASP) {
+            // Giant Forest Wasp/Spider (Screenshot 3): hovers, bobs, and fires venom stingers
             e.dir = dx < 0 ? -1 : 1;
-            if (e.timer % 90 == 0 && adx < 680) spawnShot(e.x + 22, e.y + 18, e.dir * 6.8f, 0);
+            e.x += e.vx * ((e.timer & 64) ? 1 : -1);
+            if (e.x <= e.minX) e.x = e.minX; else if (e.x >= e.maxX) e.x = e.maxX;
+            e.y = e.baseY + (SN[(e.timer / 5) & 15] * 22) / 256;
+            if (e.timer % 85 == 0 && adx < 620) {
+                spawnShot(e.x + 28, e.y + 38, e.dir * 6.5f, 2.2f, 1);
+            }
+        } else if (e.kind == E_CHOMPER) {
+            // Giant Pink Beast with huge teeth (Screenshot 4): charges rapidly when player is in sight
+            bool charge = (adx < 380 && ady < 110);
+            if (charge) e.dir = dx >= 0 ? 1 : -1;
+            float spd = charge ? e.vx * 1.45f : e.vx * 0.75f;
+            float nx = e.x + spd * e.dir;
+            if (nx <= e.minX) { nx = e.minX; e.dir = 1; } else if (nx >= e.maxX) { nx = e.maxX; e.dir = -1; }
+            if (!rectSolid((int)nx, (int)e.y, ew, eh)) e.x = nx; else e.dir = -e.dir;
+            e.vy += 0.65f; e.y += e.vy;
+            if (rectSolid((int)e.x, (int)e.y, ew, eh)) { if (e.vy > 0) e.y = (float)((((int)e.y + eh - 1) / TILE) * TILE - eh); e.vy = 0; }
+        } else {
+            // Turret
+            e.dir = dx < 0 ? -1 : 1;
+            if (e.timer % 90 == 0 && adx < 680) spawnShot(e.x + 22, e.y + 18, e.dir * 6.8f, 0, 0);
         }
-        if (rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8, (int)e.x + 4, (int)e.y + 4, 36, 36)) {
-            if (vy > 0 && py + PH < e.y + 28) {
-                py = e.y - PH; vy = -15.5f; squashX = 0.72f; squashY = 1.28f;
-                e.active = false; snd(7);
-                for (int k = 0; k < 24; k++) spawnPart(e.x + 22, e.y + 22, (rnd(180) - 90) / 10.0f, -(45 + rnd(95)) / 10.0f, 110, 6 + rnd(4), 1);
-            } else { die(); return; }
+
+        // Player vs Enemy Collision (Stomp from above, Ground Slam, or Dash attack)
+        if (rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8, (int)e.x + 4, (int)e.y + 4, ew - 8, eh - 8)) {
+            if ((vy > 0 && py + PH < e.y + 32) || isSlamming) {
+                if (!isSlamming) { py = e.y - PH; vy = -15.8f; jumpsLeft = 1; }
+                squashX = 0.72f; squashY = 1.28f;
+                e.hp--; e.hurt = 16;
+                snd(7); triggerShake(5, 10);
+                if (e.hp <= 0) {
+                    e.deathTimer = (e.kind == E_BAT) ? 18 : 0;
+                    if (e.deathTimer == 0) e.active = false;
+                    totalCoins += (e.maxHp > 1) ? 3 : 1;
+                    hudNeed[0] = hudNeed[1] = true;
+                    for (int k2 = 0; k2 < 24; k2++) spawnPart(e.x + ew * 0.5f, e.y + eh * 0.5f, (rnd(180) - 90) / 10.0f, -(45 + rnd(95)) / 10.0f, 110, 6 + rnd(4), 1);
+                }
+            } else if (e.hurt == 0) {
+                die(); return;
+            }
         }
     }
+
+    // Projectiles
     for (int i = 0; i < MAX_SHOTS; i++) {
         Shot &s = shots[i]; if (!s.active) continue; s.x += s.vx; s.y += s.vy;
         if (s.x < TILE || s.x > levelPW - TILE || s.y < TILE || s.y > FH - TILE || solidAt((int)s.x, (int)s.y)) { s.active = false; continue; }
         if (rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8, (int)s.x - 14, (int)s.y - 14, 28, 28)) { s.active = false; die(); return; }
     }
+
+    // Multi-Pattern Boss Battles (King Frogus, Behemoth Chomper, Frost Lord, Magma Crusher, Saw Overlord)
     if (bossActive && bossHP > 0) {
-        if (bossHurt > 0) bossHurt--; if (bossSwCd > 0) bossSwCd--; if (bossBeam > 0) bossBeam--; bossTimer++;
-        int tier = (curLvl + 1) / 5; float floorY = (float)((ROWS - 1) * TILE - bossH);
-        bossX += bossVX * (tier >= 2 ? 1.3f : 1.0f);
-        if (bossX < 5 * TILE) { bossX = 5 * TILE; bossVX = 4.2f; } else if (bossX > 24 * TILE) { bossX = 24 * TILE; bossVX = -4.2f; }
-        if (bossTimer % 105 == 50 && bossY >= floorY - 2) bossVY = -14.5f;
-        bossVY += 0.65f; bossY += bossVY; if (bossY >= floorY) { bossY = floorY; bossVY = 0; }
-        if (bossTimer % (tier >= 2 ? 60 : 80) == 0) {
-            float d = px < bossX ? -1.0f : 1.0f;
-            spawnShot(bossX + bossW * 0.5f, bossY + bossH - 28, d * 7.0f, 0);
-            if (tier >= 2) spawnShot(bossX + bossW * 0.5f, bossY + 24, d * 6.0f, -2.5f);
+        if (bossHurt > 0) bossHurt--;
+        if (bossSwCd > 0) bossSwCd--;
+        if (bossBeam > 0) bossBeam--;
+        bossTimer++;
+        int tier = (curLvl + 1) / 5;
+        float floorY = (float)((ROWS - 1) * TILE - bossH);
+        bool enraged = (bossHP * 2 <= bossMaxHP);
+
+        if (bossKind == B_KING_FROGUS) {
+            // King Frogus (Screenshot 1): Royal Crown Frog with Spiked Tongue Lash, Quake Leaps & Acid Shots
+            bossTongueDir = (px >= bossX + bossW * 0.5f) ? 1 : -1;
+            int cycle = bossTimer % (enraged ? 150 : 190);
+            if (cycle < 50) {
+                // Idle / Telegraph open mouth
+                bossAttackState = (cycle > 30) ? 1 : 0;
+                bossTongueLen = 0;
+            } else if (cycle < 95) {
+                // Spiked Tongue Lash attack!
+                bossAttackState = 2;
+                int tStep = cycle - 50;
+                bossTongueLen = (tStep < 22) ? (tStep * 14) : ((45 - tStep) * 14);
+                if (bossTongueLen < 0) bossTongueLen = 0;
+                if (tStep == 10) snd(13);
+                // Tongue hitbox check
+                int tx = (bossTongueDir > 0) ? ((int)bossX + bossW - 10) : ((int)bossX - bossTongueLen + 10);
+                int ty = (int)bossY + 54;
+                if (bossTongueLen > 24 && rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8, tx, ty - 14, bossTongueLen, 28)) {
+                    die(); return;
+                }
+            } else if (cycle == 105 && bossY >= floorY - 2) {
+                // Royal Quake Leap toward player
+                bossAttackState = 0; bossTongueLen = 0;
+                bossVY = -16.5f;
+                bossVX = (px > bossX) ? 5.2f : -5.2f;
+                snd(4);
+            } else if (cycle == 145) {
+                float d = (px < bossX) ? -1.0f : 1.0f;
+                spawnShot(bossX + bossW * 0.5f, bossY + 58, d * 7.2f, -1.2f, 1);
+                if (enraged) spawnShot(bossX + bossW * 0.5f, bossY + 38, d * 6.4f, -3.4f, 1);
+            }
+            if (bossY < floorY) {
+                bossX += bossVX;
+                if (bossX < 3 * TILE) { bossX = 3 * TILE; bossVX = -bossVX; }
+                else if (bossX > 24 * TILE) { bossX = 24 * TILE; bossVX = -bossVX; }
+            }
+            float prevBY = bossY;
+            bossVY += 0.65f; bossY += bossVY;
+            if (bossY >= floorY) {
+                bossY = floorY;
+                if (prevBY < floorY - 4 && bossVY > 8.0f) {
+                    triggerShake(10, 18); snd(11);
+                    spawnDust(bossX + bossW * 0.5f, bossY + bossH, 16, 5.5f);
+                }
+                bossVY = 0;
+            }
+        } else {
+            // Behemoth Chomper / Frost Lord / Magma Crusher / Saw Overlord
+            float spdM = (enraged ? 1.35f : 1.0f) * (tier >= 2 ? 1.2f : 1.0f);
+            bossX += bossVX * spdM;
+            if (bossX < 4 * TILE) { bossX = 4 * TILE; bossVX = 4.4f; }
+            else if (bossX > 24 * TILE) { bossX = 24 * TILE; bossVX = -4.4f; }
+            if (bossTimer % (enraged ? 85 : 105) == 50 && bossY >= floorY - 2) bossVY = -15.0f;
+            bossVY += 0.65f; bossY += bossVY;
+            if (bossY >= floorY) { bossY = floorY; bossVY = 0; }
+            if (bossTimer % (enraged ? 55 : 75) == 0) {
+                float d = px < bossX ? -1.0f : 1.0f;
+                int sk = (bossKind == B_FROST_LORD) ? 2 : 0;
+                spawnShot(bossX + bossW * 0.5f, bossY + bossH - 32, d * 7.2f, 0, sk);
+                if (tier >= 2 || enraged) spawnShot(bossX + bossW * 0.5f, bossY + 24, d * 6.2f, -2.5f, sk);
+            }
         }
-        if (bossSwCd == 0 && rectOverlap((int)px, (int)py, PW, PH, 15 * TILE, 6 * TILE + 20, 120, 40)) { bossSwCd = 130; bossBeam = 25; vy = -12.0f; damageBoss(2); return; }
-        if (rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8, (int)bossX + 8, (int)bossY + 8, bossW - 16, bossH - 16)) {
-            if (vy > 0 && py + PH < bossY + 46) { py = bossY - PH; vy = -16.5f; squashX = 0.7f; squashY = 1.32f; damageBoss(2); }
-            else if (bossHurt == 0) { die(); return; }
+
+        // Top Arena Switch Hit
+        if (bossSwCd == 0 && rectOverlap((int)px, (int)py, PW, PH, 15 * TILE, 6 * TILE + 20, 120, 40)) {
+            bossSwCd = 130; bossBeam = 25; vy = -12.0f; damageBoss(2); return;
+        }
+        // Stomp Boss Head / Crown
+        if (rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8, (int)bossX + 10, (int)bossY + 10, bossW - 20, bossH - 16)) {
+            if ((vy > 0 && py + PH < bossY + 52) || isSlamming) {
+                isSlamming = false;
+                py = bossY - PH; vy = -16.8f; jumpsLeft = 1;
+                squashX = 0.7f; squashY = 1.32f;
+                damageBoss(2);
+            } else if (bossHurt == 0) { die(); return; }
         }
     }
+
     // Hazards & Goal
     int c0 = iclamp((int)px / TILE - 2, 0, COLS - 1), c1 = iclamp(((int)px + PW) / TILE + 2, 0, COLS - 1);
     for (int r = 0; r < ROWS; r++) for (int c = c0; c <= c1; c++) {
@@ -724,7 +1523,14 @@ static void update() {
         if ((ch == '^' && rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8, c * TILE + 14, r * TILE + 26, 32, 34)) ||
             (ch == 'O' && circleHit(c * TILE + 30, r * TILE + 30, 24, (int)px + 4, (int)py + 4, PW - 8, PH - 8))) { die(); return; }
         if (ch == 'G' && rectOverlap((int)px, (int)py, PW, PH, c * TILE + 8, r * TILE + 16, PW, PH)) {
-            winTimer = 150; needWin[0] = needWin[1] = true; snd(8); return;
+            winTimer = 150; needWin[0] = needWin[1] = true; snd(8);
+            int secElapsed = stageTimer / 60;
+            if (bestTime[curLvl] == 0 || secElapsed < bestTime[curLvl]) bestTime[curLvl] = secElapsed;
+            if (curLvl == 0) unlockAch(0);
+            if (secElapsed <= 35) unlockAch(4);
+            if (curLvl + 2 >= 15) unlockAch(5);
+            saveGame();
+            return;
         }
     }
     roomIdx = iclamp(((int)px + PW / 2) / FW, 0, ROOMS - 1);
@@ -747,18 +1553,35 @@ static void drawFace(int x, int y, int d, Color ew) {
     int o = d > 0 ? 5 : 0; fillRect(x + 9 + o, y + 16, 5, 8, mk(0, 0, 0)); fillRect(x + 25 + o, y + 16, 5, 8, mk(0, 0, 0));
 }
 
+struct SkinPal { Color outC, mainC, hiC, mouthC; };
+static const SkinPal SkinPalSKINS[NUM_SKINS] = {
+    {{125,0,14},   {208,26,36},  {242,85,95},  {120,0,12}},  // 0: Classic Meat Cube
+    {{145,98,12},  {245,195,42}, {255,242,145},{135,75,10}}, // 1: Royal Golden Cube
+    {{22,18,38},   {52,44,82},   {115,98,175}, {235,45,75}}, // 2: Shadow Ninja Cube
+    {{24,82,128},  {68,178,242}, {185,240,255},{18,58,96}},  // 3: Frost Glacier Cube
+    {{92,18,12},   {238,85,24},  {255,210,75}, {70,10,8}},   // 4: Blazing Magma Cube
+    {{18,108,42},  {48,225,88},  {155,255,165},{14,78,30}}   // 5: Emerald Slime Cube
+};
+
 static void drawPlayerFace(int dx, int dy, int dw, int dh, int d) {
     int ew = dw * 10 / 44 < 4 ? 4 : dw * 10 / 44, eh = dh * 14 / 44 < 6 ? 6 : dh * 14 / 44;
     int pw = dw * 5 / 44 < 2 ? 2 : dw * 5 / 44, ph = dh * 8 / 44 < 3 ? 3 : dh * 8 / 44;
     int e1 = dx + dw * 9 / 44, e2 = dx + dw * 25 / 44, ey = dy + dh * 12 / 44, po = d > 0 ? dw * 5 / 44 : 0, pyy = dy + dh * 16 / 44;
+    if (curSkin == 2) {
+        // Ninja headband
+        fillRect(dx + 2, dy + dh * 7 / 44, dw - 4, dh * 5 / 44 < 3 ? 3 : dh * 5 / 44, mk(225, 35, 55));
+    } else if (curSkin == 1) {
+        // Mini golden crown
+        fillRect(dx + dw / 4, dy - 5, dw / 2, 5, mk(255, 225, 75));
+    }
     fillRect(e1, ey, ew, eh, mk(255, 255, 255)); fillRect(e2, ey, ew, eh, mk(255, 255, 255));
     fillRect(e1 + po, pyy, pw, ph, mk(0, 0, 0)); fillRect(e2 + po, pyy, pw, ph, mk(0, 0, 0));
-    fillRect(dx + dw * 15 / 44, dy + dh * 32 / 44, dw * 14 / 44, dh * 4 / 44 < 2 ? 2 : dh * 4 / 44, mk(120, 0, 12));
+    fillRect(dx + dw * 15 / 44, dy + dh * 32 / 44, dw * 14 / 44, dh * 4 / 44 < 2 ? 2 : dh * 4 / 44, SkinPalSKINS[curSkin].mouthC);
 }
 
 struct TilePal { Color mainC, litC, topC, topHi, botC, spHi, spMid, spShd; };
 static const TilePal TPAL[6] = {
-    {{124,76,44},{148,94,56},{76,208,68},{135,240,115},{74,44,24},{245,248,255},{195,200,215},{125,132,152}},
+    {{112,68,42},{142,88,54},{62,218,54},{145,252,105},{64,38,22},{245,248,255},{195,200,215},{125,132,152}},
     {{122,74,44},{146,92,56},{236,184,56},{255,224,115},{76,44,24},{245,248,255},{195,200,215},{125,132,152}},
     {{184,124,66},{208,146,84},{248,208,98},{255,236,155},{122,76,38},{255,232,185},{224,184,128},{162,124,78}},
     {{72,98,134},{94,124,165},{232,248,255},{255,255,255},{42,58,86},{240,252,255},{175,224,250},{105,165,205}},
@@ -768,13 +1591,21 @@ static const TilePal TPAL[6] = {
 
 static void drawTileCell(int r, int cx, char ch, bool hi) {
     int x = cx * TILE, y = r * TILE; const TilePal &tp = TPAL[curBiome];
-    if (ch == '#') {
+    if (ch == '#' || ch == 'B') {
         fillRect(x, y, TILE, TILE, tp.mainC);
         fillRect(x + 6, y + 14, TILE - 12, TILE - 22, tp.litC);
         fillRect(x + 10, y + 18, 14, 8, tp.mainC); fillRect(x + 32, y + 32, 16, 10, tp.botC);
+        // Chunky dirt pebbles like Screenshot 5
+        fillRect(x + 6, y + 38, 10, 8, tp.botC); fillRect(x + 22, y + 26, 8, 8, tp.botC);
+        if (ch == 'B') {
+            // Cracked breakable block details
+            fillRect(x + 16, y + 12, 4, 24, tp.botC); fillRect(x + 20, y + 24, 18, 4, tp.botC);
+            fillRect(x + 34, y + 28, 4, 18, tp.botC);
+        }
         if (hi) {
-            fillRect(x, y, TILE, 9, tp.topC); fillRect(x, y, TILE, 3, tp.topHi);
-            fillRect(x + 4, y + 9, 10, 4, tp.topC); fillRect(x + 22, y + 9, 12, 5, tp.topC); fillRect(x + 42, y + 9, 12, 4, tp.topC);
+            fillRect(x, y, TILE, 10, tp.topC); fillRect(x, y, TILE, 4, tp.topHi);
+            fillRect(x + 4, y + 10, 10, 5, tp.topC); fillRect(x + 22, y + 10, 12, 7, tp.topC); fillRect(x + 42, y + 10, 12, 5, tp.topC);
+            fillRect(x + 14, y + 10, 6, 9, tp.topHi);
         }
         fillRect(x, y + TILE - 6, TILE, 6, tp.botC);
     } else if (ch == '^') {
@@ -804,7 +1635,7 @@ static void drawPlantTuft(int bx, int by, int h, int bend, int bm, int st) {
     static const Color PD[6] = {{34,142,48},{185,132,38},{82,168,56},{105,175,220},{95,32,32},{78,52,128}};
     static const Color PM[6] = {{78,218,76},{248,205,72},{82,168,56},{185,230,255},{242,102,32},{138,98,205}};
     static const Color PT[6] = {{255,235,80},{255,232,115},{255,125,145},{255,255,255},{255,225,75},{185,235,255}};
-    Color tip = bm == 0 ? (st == 0 ? mk(255,105,145) : (st == 1 ? mk(255,235,80) : mk(245,245,255))) : PT[bm];
+    Color tip = bm == 0 ? (st == 0 ? mk(255,105,145) : (st == 1 ? mk(80,235,255) : mk(255,235,80))) : PT[bm];
     for (int b = -1; b <= 1; b++) {
         int ox = bx + b * 5, bh = h + (bm == 1 ? 2 : 0) - (b ? (bm == 3 ? 3 : 2) : 0), sh = bh / 2, w = bm == 1 ? 2 : 3;
         int off = bend / 2 + b * (bm == 4 ? 2 : 1);
@@ -839,23 +1670,87 @@ static void drawCastle(int cx, int by, Color wc, Color rc, Color fc) {
     fillRect(cx, by - 216, 18, 10, fc); fillRect(cx - 83, by - 190, 14, 8, fc); fillRect(cx + 83, by - 190, 14, 8, fc);
 }
 
+// Draw Ancient Forest Totem Statue & Battlefield Spears (Screenshots 4 & 5)
+static void drawAncientTotemAndSpears(int ox) {
+    // Ancient Green Totem Statue from Screenshot 4
+    int tx = 960 - ox / 4;
+    fillRect(tx - 58, 510, 116, 190, mk(24, 58, 48));
+    fillRect(tx - 48, 520, 96, 170, mk(34, 82, 68));
+    // Crown horns on totem
+    for (int k = -2; k <= 2; k++) fillRect(tx + k * 20 - 6, 488 + iabs(k) * 4, 12, 24, mk(42, 98, 80));
+    // Side arms
+    fillRect(tx - 78, 545, 22, 14, mk(34, 82, 68)); fillRect(tx - 78, 530, 12, 18, mk(42, 98, 80));
+    fillRect(tx + 56, 545, 22, 14, mk(34, 82, 68)); fillRect(tx + 66, 530, 12, 18, mk(42, 98, 80));
+    // Glowing eyes & carved teeth
+    fillRect(tx - 26, 552, 18, 18, mk(15, 32, 26)); fillRect(tx + 8, 552, 18, 18, mk(15, 32, 26));
+    fillRect(tx - 20, 558, 8, 8, mk(175, 245, 195)); fillRect(tx + 14, 558, 8, 8, mk(175, 245, 195));
+    fillRect(tx - 32, 584, 64, 8, mk(18, 42, 34));
+    // Battlefield spears stuck in ground like Screenshot 5
+    for (int s = 0; s < 7; s++) {
+        int sx = ((s * 270 + 140 - ox / 2) % (FW - 120)) + 60;
+        int sy = 640 + (s & 1) * 35;
+        fillRect(sx, sy, 5, 75, mk(62, 46, 54));
+        fillRect(sx - 5, sy - 14, 15, 14, mk(145, 175, 205));
+        fillRect(sx - 2, sy - 22, 9, 8, mk(205, 232, 255));
+    }
+}
+
 static void paintBackground() {
+    int pxOff = roomIdx * 80; // Parallax shift across rooms
     if (curBiome == 0) {
-        fillRect(0, 0, FW, 260, mk(52,162,238)); fillRect(0, 260, FW, 240, mk(125,215,250));
-        fillRect(0, 500, FW, 110, mk(58,155,92)); fillRect(0, 610, FW, 130, mk(38,118,68)); fillRect(0, 740, FW, 340, mk(28,88,52));
-        fillRect(1540, 72, 136, 136, mk(255,242,155)); fillRect(1556, 88, 104, 104, mk(255,224,72));
-        for (int i = 0; i < 4; i++) { int cx = 150 + i * 380, cy = 115 + (i & 1) * 48; fillRect(cx, cy, 165, 36, mk(236,248,255)); fillRect(cx + 28, cy - 20, 105, 24, mk(248,253,255)); }
-        drawCastle(1260, 500, mk(218,212,224), mk(195,55,65), mk(255,215,65));
+        if (bossActive && bossKind == B_KING_FROGUS) {
+            // King Frogus Temple Chamber (Screenshot 1)
+            fillRect(0, 0, FW, FH, mk(18, 48, 28));
+            for (int i = 0; i < 6; i++) {
+                int bx = i * 330 + 50;
+                fillRect(bx, 60, 74, FH - 120, mk(48, 38, 28));
+                fillRect(bx + 10, 60, 54, FH - 120, mk(68, 52, 36));
+                //Hanging Jungle Vines
+                fillRect(bx + 110, 60, 14, 140 + (i & 1) * 55, mk(42, 148, 52));
+                fillRect(bx + 165, 60, 10, 95 + (i % 3) * 40, mk(75, 195, 72));
+            }
+            // Temple sunbeams
+            for (int b = 0; b < 3; b++) {
+                int sx = 380 + b * 480;
+                fillRect(sx, 60, 110, FH - 160, mk(34, 82, 48));
+                fillRect(sx + 25, 60, 60, FH - 160, mk(48, 112, 64));
+            }
+            return;
+        }
+        fillRect(0, 0, FW, 260, mk(42,148,218)); fillRect(0, 260, FW, 240, mk(105,198,235));
+        fillRect(0, 500, FW, 110, mk(48,138,82)); fillRect(0, 610, FW, 130, mk(32,102,58)); fillRect(0, 740, FW, 340, mk(22,68,42));
+        fillRect(1540 - pxOff / 4, 72, 136, 136, mk(255,242,155)); fillRect(1556 - pxOff / 4, 88, 104, 104, mk(255,224,72));
+        for (int i = 0; i < 4; i++) {
+            int cx = ((150 + i * 380 - pxOff / 3) % (FW - 180)) + 40, cy = 115 + (i & 1) * 48;
+            fillRect(cx, cy, 165, 36, mk(236,248,255)); fillRect(cx + 28, cy - 20, 105, 24, mk(248,253,255));
+        }
+        drawCastle(1260 - pxOff / 3, 500, mk(218,212,224), mk(195,55,65), mk(255,215,65));
+        drawAncientTotemAndSpears(pxOff);
         fillRect(360, 430, 96, 250, mk(72,178,245)); fillRect(376, 430, 64, 250, mk(145,224,255)); fillRect(394, 430, 28, 250, mk(225,248,255));
         fillRect(260, 655, 420, 65, mk(62,165,235)); fillRect(310, 670, 310, 28, mk(135,218,252));
-        for (int i = 0; i < 6; i++) { int x = i * 320 + 40; fillRect(x + 42, 580, 26, 95, mk(92,56,32)); fillRect(x, 470, 110, 115, mk(28,88,52)); fillRect(x + 20, 430, 70, 50, mk(45,132,74)); }
+        for (int i = 0; i < 6; i++) {
+            int x = i * 320 + 40 - (pxOff % 60);
+            fillRect(x + 42, 480, 34, 195, mk(78,48,30));
+            fillRect(x, 420, 118, 115, mk(26,92,48)); fillRect(x + 18, 385, 82, 55, mk(48,148,74));
+        }
     } else if (curBiome == 1) {
-        Color fC = mk(142,86,52), nC = mk(94,56,36);
-        fillRect(0, 0, FW, 300, mk(198,96,72)); fillRect(0, 300, FW, 270, mk(246,162,86)); fillRect(0, 570, FW, 130, fC); fillRect(0, 700, FW, 380, nC);
-        fillRect(1420, 195, 146, 146, mk(255,200,85)); fillRect(1434, 209, 118, 118, mk(255,232,125));
-        drawCastle(1180, 570, mk(215,175,135), mk(175,58,48), mk(255,225,90));
-        for (int i = 0; i < 4; i++) { fillRect(i * 500 + 40, 485, 260, 85, fC); fillRect(i * 500 + 90, 458, 160, 32, fC); }
-        fillRect(360, 570, 140, 130, nC); fillRect(385, 540, 90, 35, nC); fillRect(1480, 560, 76, 140, nC); fillRect(1492, 538, 52, 26, nC);
+        // Golden Mushroom & Giant Forest World (Screenshot 4 atmosphere)
+        Color fC = mk(132,88,78), nC = mk(88,54,48);
+        fillRect(0, 0, FW, 300, mk(188,158,162)); fillRect(0, 300, FW, 270, mk(218,188,182)); fillRect(0, 570, FW, 130, fC); fillRect(0, 700, FW, 380, nC);
+        // Giant background mushrooms & ancient trees from Screenshot 4
+        for (int m = 0; m < 5; m++) {
+            int mx = m * 380 + 110 - (pxOff / 3);
+            fillRect(mx + 38, 450, 34, 130, mk(148, 122, 118));
+            fillRect(mx, 410, 110, 45, mk(118, 96, 94));
+            fillRect(mx + 16, 392, 78, 22, mk(142, 116, 112));
+        }
+        drawAncientTotemAndSpears(pxOff);
+        for (int i = 0; i < 4; i++) {
+            int tx = i * 480 + 180;
+            fillRect(tx, 160, 78, 540, mk(68, 44, 38));
+            fillRect(tx + 12, 160, 54, 540, mk(88, 58, 48));
+            fillRect(tx - 60, 140, 198, 55, mk(58, 86, 48));
+        }
     } else if (curBiome == 2) {
         fillRect(0, 0, FW, 270, mk(68,168,238)); fillRect(0, 270, FW, 250, mk(185,228,248)); fillRect(0, 520, FW, 140, mk(218,165,86)); fillRect(0, 660, FW, 420, mk(178,122,58));
         fillRect(1495, 82, 132, 132, mk(255,242,165)); fillRect(1511, 98, 100, 100, mk(255,225,95));
@@ -887,6 +1782,7 @@ static void paintBackground() {
             if (i % 7 == 0) fillRect(sx - 2, sy - 2, 7, 7, mk(70, 55, 110));
             fillRect(sx, sy, 3, 3, starDim(i, ph) ? mk(130, 115, 185) : mk(220, 210, 255));
         }
+        drawCastle(960 - pxOff / 4, 570, mk(48, 34, 88), mk(95, 28, 52), mk(255, 85, 110));
         for (int i = 0; i < 3; i++) { int x = i * 700; fillRect(x+80,450,180,130,fC); fillRect(x+220,390,180,190,fC); fillRect(x+390,470,180,110,fC); }
         for (int i = 0; i < 4; i++) { int x = i * 560; fillRect(x+70,590,160,120,nC); fillRect(x+220,530,180,180,nC); fillRect(x+380,630,130,80,nC); }
     }
@@ -915,34 +1811,156 @@ static void restoreRect(int b, int x, int y, int w, int h, bool det) {
 static inline void addDirty(int b, int x, int y, int w, int h) { if (dirtyCnt[b] < MAX_DIRTY) dirty[b][dirtyCnt[b]++] = {x, y, w, h}; }
 static int progressNow() { return bossActive ? (bossMaxHP > 0 ? bossHP * 520 / bossMaxHP : 0) : iclamp((int)(px / levelPW * 520.0f), 0, 520); }
 
+// Ornate HUD (Matching Screenshots 1 & 3: Hearts/Deaths, Ornate Gold Progress Bar, Ability Brackets, Coin Counter, & Skull Boss Bar)
 static void drawHUDFull(int b) {
-    int hn = deaths < 30 ? deaths : 30, pr = progressNow();
-    if (useAr() && TXT_AR[T_DEATHS] >= 0) drawArCols(TXT_AR[T_DEATHS], 70, 22, 0, arW(TXT_AR[T_DEATHS]), mk(235, 225, 255));
-    else drawText(70, 28, "DEATHS", 3, mk(235, 225, 255));
-    for (int i = 0; i < hn; i++) fillRect(70 + i * 20, 60, 13, 13, mk(205, 25, 35));
-    if (bossActive) drawLabel(T_BOSS_HP, 960, 10, 30, 3, mk(255, 215, 90));
-    fillRect(696, 40, 528, 20, mk(30, 20, 50));
-    fillRect(700, 43, 520, 14, bossActive ? mk(65, 25, 35) : mk(45, 35, 70));
-    fillRect(700, 43, pr, 14, bossActive ? mk(245, 55, 40) : mk(205, 40, 100));
-    hudSq[b] = hn; hudProg[b] = pr; hudNeed[b] = false;
+    int hn = deaths < 20 ? deaths : 20, pr = progressNow();
+    // Top-left Deaths / Hearts Panel
+    if (useAr() && TXT_AR[T_DEATHS] >= 0) drawArCols(TXT_AR[T_DEATHS], 64, 18, 0, arW(TXT_AR[T_DEATHS]), mk(235, 225, 255));
+    else drawText(64, 24, "DEATHS", 3, mk(235, 225, 255));
+    for (int i = 0; i < hn; i++) fillRect(64 + i * 18, 56, 12, 12, mk(215, 28, 42));
+
+    // Ornate Center Progress / Boss Bar (Screenshot 1 & 3 style)
+    static const int BOSS_NAMES[5] = {T_KING_FROGUS, T_CHOMP_BEAST, T_FROST_LORD, T_MAGMA_CRUSHER, T_SAW_OVERLORD};
+    if (bossActive) {
+        drawLabel(BOSS_NAMES[iclamp(bossKind, 0, 4)], 960, 8, 28, 3, mk(255, 225, 105));
+    }
+    // Gold & wood ornate frame
+    fillRect(690, 36, 540, 26, mk(135, 86, 38));
+    fillRect(694, 39, 532, 20, mk(34, 22, 46));
+    fillRect(700, 42, 520, 14, bossActive ? mk(72, 24, 34) : mk(42, 34, 72));
+    fillRect(700, 42, pr, 14, bossActive ? mk(242, 72, 85) : mk(58, 175, 245));
+    fillRect(700, 42, pr, 4, bossActive ? mk(255, 145, 155) : mk(145, 225, 255));
+    if (bossActive) {
+        // Boss Skull Emblem in center top of bar (like Screenshot 1 King Frogus bar)
+        fillRect(948, 28, 24, 18, mk(235, 232, 210));
+        fillRect(952, 33, 5, 5, mk(25, 15, 20)); fillRect(963, 33, 5, 5, mk(25, 15, 20));
+    }
+
+    // Ability / Power-Up Ornate Bracket Slots (like Screenshot 3)
+    int s1x = 585, s2x = 1265, sy = 24;
+    fillRect(s1x, sy, 48, 44, mk(155, 108, 45)); fillRect(s1x + 4, sy + 4, 40, 36, mk(28, 22, 42));
+    // Double Jump Feather / Wing Icon
+    fillRect(s1x + 14, sy + 14, 20, 8, mk(85, 235, 145)); fillRect(s1x + 18, sy + 22, 14, 8, mk(165, 255, 205));
+    fillRect(s2x, sy, 48, 44, mk(155, 108, 45)); fillRect(s2x + 4, sy + 4, 40, 36, mk(28, 22, 42));
+    // Active PowerUp / Shield Flask Icon
+    Color pCol = shieldHits > 0 ? mk(85, 215, 255) : (speedBoostTimer > 0 ? mk(255, 215, 65) : mk(145, 155, 185));
+    fillRect(s2x + 16, sy + 14, 16, 18, pCol); fillRect(s2x + 20, sy + 9, 8, 5, mk(220, 225, 240));
+
+    // Top-Right Gold Coins & Timer Counter (like Screenshot 3)
+    fillRect(1560, 22, 290, 46, mk(32, 22, 52));
+    fillRect(1572, 33, 22, 22, mk(255, 205, 45)); fillRect(1577, 38, 12, 12, mk(255, 240, 135));
+    char cBuf[16]; intToStr(totalCoins, cBuf);
+    drawText(1606, 34, cBuf, 3, mk(255, 232, 115));
+    char tBuf[16]; intToStr(stageTimer / 60, tBuf); strcat(tBuf, "S");
+    drawText(1735, 34, tBuf, 3, mk(185, 225, 255));
+
+    hudSq[b] = hn; hudProg[b] = pr; hudCoins[b] = totalCoins; hudNeed[b] = false;
 }
 
+// High-detail pixel art enemy sprites matching all 5 reference screenshots!
 static void drawEnemyChar(const Enemy &e, int sx, int sy) {
     bool fl = (e.hurt & 2) != 0;
-    if (e.kind == E_WALKER) {
-        fillRect(sx, sy, 44, 44, mk(82, 16, 102)); fillRect(sx + 4, sy + 4, 36, 36, fl ? mk(255,255,255) : mk(158, 42, 182));
-        fillRect(sx + 6, sy + 6, 32, 10, mk(198, 86, 224)); fillRect(sx + 10, sy - 6, 8, 6, mk(235,238,248)); fillRect(sx + 26, sy - 6, 8, 6, mk(235,238,248));
-        drawFace(sx, sy, e.dir, mk(255, 235, 90));
-    } else if (e.kind == E_FLYER) {
-        int wy = ((tick / 4) & 1) ? -10 : 8;
-        fillRect(sx - 12, sy + 14 + wy, 14, 10, mk(175, 45, 25)); fillRect(sx + 42, sy + 14 + wy, 14, 10, mk(175, 45, 25));
-        fillRect(sx + 4, sy + 4, 36, 36, fl ? mk(255,255,255) : mk(232, 92, 38)); fillRect(sx + 6, sy + 6, 32, 8, mk(255, 155, 85));
-        drawFace(sx, sy, e.dir, mk(255, 245, 120));
-    } else if (e.kind == E_JUMPER) {
-        fillRect(sx, sy, 44, 44, mk(24, 112, 78)); fillRect(sx + 4, sy + 4, 36, 36, fl ? mk(255,255,255) : mk(48, 195, 142));
-        fillRect(sx + 6, sy + 6, 32, 8, mk(115, 235, 185)); fillRect(sx + 12, sy + 42, 20, 6, mk(215, 224, 236));
-        drawFace(sx, sy, e.dir, mk(255, 255, 255));
+    if (e.kind == E_SLIME) {
+        // Green Slime with glossy highlight and big white/black eyes (Screenshot 5)
+        int sq = (e.vy != 0) ? -4 : ((e.timer / 8) & 1) * 3;
+        int w = 44 + sq, h = 38 - sq, x = sx - sq / 2, y = sy + 6 + sq;
+        fillRect(x + 2, y, w - 4, h, mk(12, 65, 22)); // Dark outline
+        fillRect(x + 4, y + 3, w - 8, h - 5, fl ? mk(255, 255, 255) : mk(32, 228, 65)); // Bright green body
+        fillRect(x + 6, y + 4, w - 14, 10, mk(115, 255, 128)); // Top light green sheen
+        fillRect(x + 8, y + 6, 8, 6, mk(255, 255, 255)); // White specular blob (Screenshot 5)
+        // Big wide-spaced eyes on lower front
+        int eo = e.dir > 0 ? 4 : -2;
+        fillRect(x + 10 + eo, y + 16, 10, 10, mk(255, 255, 255));
+        fillRect(x + 26 + eo, y + 16, 10, 10, mk(255, 255, 255));
+        fillRect(x + 13 + eo + (e.dir > 0 ? 2 : 0), y + 19, 5, 5, mk(15, 20, 15));
+        fillRect(x + 29 + eo + (e.dir > 0 ? 2 : 0), y + 19, 5, 5, mk(15, 20, 15));
+    } else if (e.kind == E_BAT) {
+        // Vampire Bat with Attack / Death / Hurt / Idle / Walk animations (Screenshot 2)
+        Color bodyC = (e.hurt > 0) ? mk(245, 58, 52) : mk(78, 52, 64);
+        Color wingC = (e.hurt > 0) ? mk(255, 105, 95) : mk(128, 64, 76);
+        Color outC  = mk(38, 22, 32);
+        if (e.deathTimer > 0) {
+            // Death falling state (wings folded up/flat)
+            fillRect(sx + 8, sy + 24, 28, 12, outC);
+            fillRect(sx + 10, sy + 26, 24, 8, wingC);
+            return;
+        }
+        int frame = (e.timer / 4) & 3;
+        int wy = (e.state == 1) ? 4 : ((frame == 0) ? -10 : (frame == 1 ? -2 : (frame == 2 ? 8 : 0)));
+        int ww = (frame == 1) ? 20 : 16;
+        // Left & Right Bat Wings with membrane ribs
+        fillRect(sx - ww + 2, sy + 14 + wy, ww, 12, outC);
+        fillRect(sx + 42, sy + 14 + wy, ww, 12, outC);
+        fillRect(sx - ww + 4, sy + 16 + wy, ww - 4, 8, wingC);
+        fillRect(sx + 42, sy + 16 + wy, ww - 4, 8, wingC);
+        // Bat Body & Ears
+        fillRect(sx + 10, sy + 8, 24, 24, outC);
+        fillRect(sx + 12, sy + 4, 6, 6, outC); fillRect(sx + 26, sy + 4, 6, 6, outC);
+        fillRect(sx + 12, sy + 10, 20, 20, fl ? mk(255, 255, 255) : bodyC);
+        // Glowing red/yellow eyes & fangs
+        fillRect(sx + 15, sy + 16, 4, 4, mk(255, 220, 75));
+        fillRect(sx + 25, sy + 16, 4, 4, mk(255, 220, 75));
+        fillRect(sx + 17, sy + 24, 3, 4, mk(255, 255, 255));
+        fillRect(sx + 24, sy + 24, 3, 4, mk(255, 255, 255));
+    } else if (e.kind == E_MUSHROOM) {
+        // Hiding Mushroom Monster (pops out when ambushing!)
+        if (e.state == 0) {
+            // Disguised as a cute small spotted mushroom on the ground
+            fillRect(sx + 14, sy + 32, 16, 12, mk(225, 215, 195));
+            fillRect(sx + 6, sy + 20, 32, 14, mk(215, 45, 65));
+            fillRect(sx + 12, sy + 23, 6, 6, mk(255, 245, 230));
+            fillRect(sx + 26, sy + 24, 5, 5, mk(255, 245, 230));
+        } else {
+            // Full Mushroom Monster revealed!
+            fillRect(sx + 8, sy + 18, 28, 26, mk(235, 220, 195));
+            fillRect(sx + 2, sy, 40, 20, fl ? mk(255, 255, 255) : mk(215, 42, 62));
+            fillRect(sx + 8, sy + 4, 8, 8, mk(255, 245, 230));
+            fillRect(sx + 26, sy + 5, 8, 8, mk(255, 245, 230));
+            int eo = e.dir > 0 ? 3 : -3;
+            fillRect(sx + 14 + eo, sy + 24, 5, 8, mk(25, 15, 20));
+            fillRect(sx + 25 + eo, sy + 24, 5, 8, mk(25, 15, 20));
+        }
+    } else if (e.kind == E_WASP) {
+        // Giant Forest Wasp / Spider Monster (Screenshot 3): Segmented amber abdomen, green thorax, red eyes, 6 sharp legs
+        int bob = (SN[(e.timer / 4) & 15] * 5) / 256;
+        int y = sy + bob;
+        // Sharp dark scythe legs / wings
+        for (int l = 0; l < 3; l++) {
+            int ly = y + 6 + l * 10;
+            fillRect(sx - 16, ly - 4, 20, 5, mk(45, 52, 62));
+            fillRect(sx + 52, ly - 4, 20, 5, mk(45, 52, 62));
+        }
+        // Green head/thorax with glowing red compound eyes
+        fillRect(sx + 14, y + 4, 30, 22, fl ? mk(255, 255, 255) : mk(95, 138, 38));
+        fillRect(sx + 12, y + 10, 10, 10, mk(195, 22, 32));
+        fillRect(sx + 36, y + 10, 10, 10, mk(195, 22, 32));
+        // Striped golden-brown segmented abdomen + stinger
+        fillRect(sx + 10, y + 26, 38, 28, fl ? mk(255, 255, 255) : mk(185, 118, 52));
+        fillRect(sx + 12, y + 32, 34, 5, mk(115, 68, 28));
+        fillRect(sx + 14, y + 42, 30, 5, mk(115, 68, 28));
+        fillRect(sx + 24, y + 54, 10, 8, mk(42, 35, 45));
+    } else if (e.kind == E_CHOMPER) {
+        // Giant Pink Chomper Beast with huge white teeth & yellow eye (Screenshot 4)
+        Color bC = fl ? mk(255, 255, 255) : mk(188, 108, 128);
+        Color sC = mk(128, 68, 86);
+        fillRect(sx, sy + 8, 68, 60, sC);
+        fillRect(sx + 4, sy + 12, 60, 52, bC);
+        // Bunny/Beast ears & dark spots
+        fillRect(sx + 22, sy - 6, 10, 18, bC); fillRect(sx + 36, sy - 4, 10, 16, bC);
+        fillRect(sx + 10, sy + 24, 10, 10, sC); fillRect(sx + 18, sy + 42, 12, 10, sC);
+        // Yellow eye + Giant open mouth with upper & lower teeth!
+        int mx = (e.dir > 0) ? (sx + 34) : (sx + 4);
+        int ex = (e.dir > 0) ? (sx + 36) : (sx + 22);
+        fillRect(ex, sy + 18, 10, 10, mk(255, 220, 45));
+        fillRect(ex + 3, sy + 21, 4, 4, mk(20, 15, 15));
+        fillRect(mx, sy + 30, 30, 32, mk(75, 22, 32));
+        // Big blocky white teeth
+        for (int t = 0; t < 3; t++) {
+            fillRect(mx + 2 + t * 9, sy + 30, 7, 10, mk(245, 245, 238));
+            fillRect(mx + 2 + t * 9, sy + 52, 7, 10, mk(245, 245, 238));
+        }
     } else {
+        // Armored Turret
         fillRect(sx, sy + 6, 44, 38, mk(48, 54, 68)); fillRect(sx + 4, sy + 10, 36, 30, fl ? mk(255,255,255) : mk(102, 114, 136));
         fillRect(sx + 6, sy + 12, 32, 7, mk(152, 166, 192));
         fillRect(e.dir < 0 ? sx - 14 : sx + 38, sy + 18, 18, 12, mk(235, 75, 45)); fillRect(sx + 14, sy + 16, 16, 12, mk(255, 215, 70));
@@ -950,14 +1968,65 @@ static void drawEnemyChar(const Enemy &e, int sx, int sy) {
 }
 
 static void drawBossChar(int bx, int by, int bw, int bh, bool hurt) {
-    Color dC = hurt ? mk(255,240,180) : mk(85,22,32), mC = hurt ? mk(255,255,255) : mk(175,35,45), cC = (tick & 4) ? mk(255,215,65) : mk(255,110,30);
-    fillRect(bx, by, bw, bh, dC); fillRect(bx + 8, by + 8, bw - 16, bh - 16, mC); fillRect(bx + 12, by + 12, bw - 24, 22, mk(220, 68, 82));
+    if (bossKind == B_KING_FROGUS) {
+        // KING FROGUS (Screenshot 1): Giant Green Toad King with Golden Crown, Red Royal Cape, Golden Scepter & Spiked Tongue!
+        Color bodyC = hurt ? mk(255, 255, 255) : mk(64, 218, 72);
+        Color bellyC = hurt ? mk(255, 250, 210) : mk(158, 252, 168);
+        Color capeC = mk(168, 32, 38);
+        // Red Royal Mantle / Cape with white trim
+        int capeX = (bossTongueDir > 0) ? bx : (bx + bw - 54);
+        fillRect(capeX, by + 48, 54, bh - 48, capeC);
+        fillRect(capeX, by + 48, 54, 10, mk(240, 238, 232));
+        // Frog Body & Belly
+        fillRect(bx + 8, by + 18, bw - 16, bh - 18, mk(24, 118, 36));
+        fillRect(bx + 14, by + 24, bw - 28, bh - 28, bodyC);
+        fillRect(bx + 24, by + 76, bw - 48, bh - 80, bellyC);
+        // Golden Royal Crown on Head
+        int crX = bx + 34, crY = by - 14;
+        fillRect(crX, crY + 12, 56, 16, mk(252, 212, 55));
+        fillRect(crX, crY, 12, 14, mk(252, 212, 55));
+        fillRect(crX + 22, crY - 4, 12, 18, mk(252, 212, 55));
+        fillRect(crX + 44, crY, 12, 14, mk(252, 212, 55));
+        fillRect(crX + 24, crY + 14, 8, 8, mk(225, 35, 55)); // Crown ruby
+        // Frog Eyes
+        int eyeX = (bossTongueDir > 0) ? (bx + 92) : (bx + 36);
+        fillRect(eyeX, by + 28, 24, 24, mk(255, 255, 255));
+        fillRect(eyeX + (bossTongueDir > 0 ? 10 : 4), by + 34, 10, 10, mk(20, 28, 20));
+        // Golden Royal Scepter
+        int scX = (bossTongueDir > 0) ? (bx + bw + 8) : (bx - 20);
+        fillRect(scX + 4, by + 56, 6, 80, mk(245, 205, 62));
+        fillRect(scX - 4, by + 40, 22, 20, mk(255, 225, 85));
+        fillRect(scX + 1, by + 45, 12, 10, mk(215, 32, 48));
+        // Giant Open Mouth & Spiked Tongue Lash!
+        if (bossAttackState >= 1) {
+            int mX = (bossTongueDir > 0) ? (bx + 76) : (bx + 12);
+            fillRect(mX, by + 46, 68, 44, mk(118, 28, 36));
+            if (bossTongueLen > 0) {
+                int tx = (bossTongueDir > 0) ? (bx + bw - 14) : (bx - bossTongueLen + 14);
+                int ty = by + 58;
+                fillRect(tx, ty, bossTongueLen, 16, mk(198, 96, 96));
+                fillRect(tx, ty + 3, bossTongueLen, 6, mk(232, 132, 132));
+                // Spiked Mace Tip on Tongue (Screenshot 1)
+                int tipX = (bossTongueDir > 0) ? (tx + bossTongueLen - 22) : tx;
+                fillRect(tipX, ty - 8, 26, 32, mk(185, 82, 82));
+                fillRect(tipX + 8, ty - 14, 10, 6, mk(235, 135, 135));
+                fillRect(tipX + 8, ty + 24, 10, 6, mk(235, 135, 135));
+            }
+        }
+        return;
+    }
+
+    // Other Bosses (Behemoth Chomper, Frost Citadel Lord, Magma Crusher, Dark Saw Overlord)
+    Color dC = hurt ? mk(255,240,180) : (bossKind == B_FROST_LORD ? mk(28,72,118) : (bossKind == B_CHOMP_TOTEM ? mk(128,56,82) : mk(85,22,32)));
+    Color mC = hurt ? mk(255,255,255) : (bossKind == B_FROST_LORD ? mk(68,165,235) : (bossKind == B_CHOMP_TOTEM ? mk(205,105,138) : mk(175,35,45)));
+    Color cC = (tick & 4) ? mk(255,215,65) : (bossKind == B_FROST_LORD ? mk(165,245,255) : mk(255,110,30));
+    fillRect(bx, by, bw, bh, dC); fillRect(bx + 8, by + 8, bw - 16, bh - 16, mC); fillRect(bx + 12, by + 12, bw - 24, 22, cC);
     fillRect(bx + 20, by - 8, bw - 40, 10, cC);
     fillRect(bx + 18, by + 26, 24, 20, mk(255,240,90)); fillRect(bx + bw - 42, by + 26, 24, 20, mk(255,240,90));
     fillRect(bx + 24, by + 32, 12, 12, mk(20,0,0)); fillRect(bx + bw - 36, by + 32, 12, 12, mk(20,0,0));
     fillRect(bx + 14, by + 20, 32, 6, dC); fillRect(bx + bw - 46, by + 20, 32, 6, dC);
-    fillRect(bx + 22, by + 68, bw - 44, 20, mk(35,10,18));
-    for (int k = 0; k < 4; k++) fillRect(bx + 28 + k * 14, by + 70, 6, 16, cC);
+    fillRect(bx + 22, by + 68, bw - 44, 24, mk(35,10,18));
+    for (int k = 0; k < 4; k++) fillRect(bx + 28 + k * 18, by + 70, 8, 18, mk(245, 245, 240));
 }
 
 static void renderGame(int b) {
@@ -965,8 +2034,20 @@ static void renderGame(int b) {
     if (winTimer > 0) {
         if (needWin[b]) {
             fillRect(0, 0, FW, FH, mk(20, 90, 60));
-            drawLabel(T_COMPLETE, 960, 370, 110, 10, mk(255, 255, 255));
-            drawLabel(T_GREAT, 960, 520, 80, 6, mk(255, 220, 180));
+            drawLabel(T_COMPLETE, 960, 310, 110, 10, mk(255, 255, 255));
+            drawLabel(T_GREAT, 960, 440, 80, 6, mk(255, 220, 180));
+            // Stage Mastery Summary (Coins, Time Trial & Best Time)
+            fillRect(580, 560, 760, 220, mk(15, 58, 40));
+            char line1[64], n1[16];
+            strcpy(line1, "COINS COLLECTED: "); intToStr(stageCoins, n1); strcat(line1, n1);
+            drawTextC(960, 595, line1, 4, mk(255, 225, 95));
+            char line2[64], n2[16], n3[16];
+            strcpy(line2, "CLEAR TIME: "); intToStr(stageTimer / 60, n2); strcat(line2, n2);
+            strcat(line2, "S   BEST: "); intToStr(bestTime[curLvl], n3); strcat(line2, n3); strcat(line2, "S");
+            drawTextC(960, 665, line2, 4, mk(185, 240, 255));
+            char line3[64], n4[16];
+            strcpy(line3, "SECRETS FOUND: "); intToStr(secretsFound, n4); strcat(line3, n4);
+            drawTextC(960, 730, line3, 3, mk(165, 255, 185));
             needWin[b] = false;
         }
         return;
@@ -995,12 +2076,24 @@ static void renderGame(int b) {
             for (int r = 0; r < ROWS; r++) for (int c = 0; c < RCOLS; c++) {
                 int wc = roomIdx * RCOLS + c; char nc = staticChar(r, wc); bool nh = hiAt(r, wc);
                 if (nc == bufGrid[b][r][c] && nh == bufHi[b][r][c]) continue;
-                if (bufGrid[b][r][c] != '.' && nc != '#') { setClip(c * TILE, r * TILE, TILE, TILE); paintBackground(); resetClip(); }
+                if (bufGrid[b][r][c] != '.' && nc != '#' && nc != 'B') { setClip(c * TILE, r * TILE, TILE, TILE); paintBackground(); resetClip(); }
                 bufGrid[b][r][c] = nc; bufHi[b][r][c] = nh;
                 if (nc != '.') drawTileCell(r, c, nc, nh);
                 if (r <= 1) hudNeed[b] = true;
             }
             bufRoom[b] = roomIdx;
+        } else {
+            // Check if any disappearing platform changed tile state in the current room
+            for (int i = 0; i < dplatCount; i++) {
+                DPlat &dp = dplats[i];
+                if (dp.room != roomIdx) continue;
+                int c = dp.c % RCOLS, r = dp.r;
+                char nc = staticChar(r, dp.c); bool nh = hiAt(r, dp.c);
+                if (nc != bufGrid[b][r][c]) {
+                    bufGrid[b][r][c] = nc; bufHi[b][r][c] = nh;
+                    restoreRect(b, c * TILE, r * TILE, TILE, TILE, true);
+                }
+            }
         }
         for (int i = 0; i < splatCount; i++) {
             Splat &s = splats[i]; if (s.room != bufRoom[b]) continue;
@@ -1018,73 +2111,230 @@ static void renderGame(int b) {
             for (int i = 0; i < NUM_STARS; i++) if (starDim(i, bufStar[b]) != starDim(i, ph)) { int sx, sy; starPos(i, sx, sy); restoreRect(b, sx - 3, sy - 3, 9, 9, true); }
             bufStar[b] = ph;
         }
-        int hn = deaths < 30 ? deaths : 30, pr = progressNow();
+        if ((tick % 60) == 0 || hudCoins[b] != totalCoins) hudNeed[b] = true;
+        int hn = deaths < 20 ? deaths : 20, pr = progressNow();
         if (hudNeed[b]) drawHUDFull(b);
         else {
-            for (int i = hudSq[b]; i < hn; i++) fillRect(70 + i * 20, 60, 13, 13, mk(205, 25, 35));
+            for (int i = hudSq[b]; i < hn; i++) fillRect(64 + i * 18, 56, 12, 12, mk(215, 28, 42));
             hudSq[b] = hn;
-            if (pr > hudProg[b]) fillRect(700 + hudProg[b], 43, pr - hudProg[b], 14, bossActive ? mk(245,55,40) : mk(205,40,100));
-            else if (pr < hudProg[b]) fillRect(700 + pr, 43, hudProg[b] - pr, 14, bossActive ? mk(65,25,35) : mk(45,35,70));
+            if (pr > hudProg[b]) fillRect(700 + hudProg[b], 42, pr - hudProg[b], 14, bossActive ? mk(242,72,85) : mk(58,175,245));
+            else if (pr < hudProg[b]) fillRect(700 + pr, 42, hudProg[b] - pr, 14, bossActive ? mk(72,24,34) : mk(42,34,72));
             hudProg[b] = pr;
         }
     }
     resetClip();
-    int roomX = roomIdx * FW;
-    if (curBiome == 0) {
+    int roomX = roomIdx * FW - shakeX;
+    int shY = shakeY;
+
+    if (curBiome == 0 && !bossActive) {
         int wf = (tick * 4) % 44;
         for (int k = 0; k < 5; k++) { int wy = 435 + wf + k * 48; if (wy < 660) { fillRect(398, wy, 20, 18, mk(245,252,255)); addDirty(b, 396, wy - 2, 24, 22); } }
     }
-    if (curBiome <= 2) {
+    if (curBiome <= 2 && !bossActive) {
         Color bc = curBiome == 0 ? mk(26,75,52) : mk(95,42,30); int wg = ((tick / 8) & 1) ? -6 : 5;
         for (int i = 0; i < MAX_BIRDS; i++) {
             int bx = (i * 390 + tick * 2) % (FW - 80) + 40, by = 125 + (i % 3) * 48 + (SN[((tick / 6) + i * 3) & 15] >> 5);
             fillRect(bx, by, 10, 4, bc); fillRect(bx - 7, by + wg, 8, 4, bc); fillRect(bx + 9, by + wg, 8, 4, bc); addDirty(b, bx - 9, by - 8, 28, 18);
         }
     }
+
+    // Fireflies & Ambient Leaves/Snow/Embers
     static const Color AMBC[6] = {{140,235,110},{255,230,130},{245,215,145},{240,250,255},{255,145,45},{175,155,235}};
-    for (int i = 0; i < MAX_AMB; i++) { fillRect((int)amb[i].x, (int)amb[i].y, amb[i].sz, amb[i].sz, AMBC[curBiome]); addDirty(b, (int)amb[i].x - 1, (int)amb[i].y - 1, amb[i].sz + 2, amb[i].sz + 2); }
+    for (int i = 0; i < MAX_AMB; i++) {
+        int ax = (int)amb[i].x, ay = (int)amb[i].y, sz = amb[i].sz;
+        if (amb[i].kind == 1) {
+            // Glowing Firefly with pulsing aura!
+            bool bright = (((tick / 6) + i) & 3) != 0;
+            if (bright) fillRect(ax - 2, ay - 2, sz + 4, sz + 4, mk(115, 225, 95));
+            fillRect(ax, ay, sz, sz, bright ? mk(245, 255, 145) : mk(145, 215, 95));
+            addDirty(b, ax - 3, ay - 3, sz + 6, sz + 6);
+        } else {
+            fillRect(ax, ay, sz, sz, AMBC[curBiome]);
+            addDirty(b, ax - 1, ay - 1, sz + 2, sz + 2);
+        }
+    }
+
+    // Moving Platforms
+    for (int i = 0; i < mplatCount; i++) {
+        MPlat &mp = mplats[i];
+        if (mp.room != roomIdx) continue;
+        int mx = (int)mp.x + shakeX, my = (int)mp.y + shY;
+        fillRect(mx, my, mp.w, 18, TPAL[curBiome].botC);
+        fillRect(mx + 2, my + 2, mp.w - 4, 12, TPAL[curBiome].litC);
+        fillRect(mx, my, mp.w, 5, TPAL[curBiome].topC);
+        addDirty(b, mx - 4, my - 2, mp.w + 8, 22);
+    }
+
+    // Disappearing Platforms warning shake overlay
+    for (int i = 0; i < dplatCount; i++) {
+        DPlat &dp = dplats[i];
+        if (dp.room != roomIdx || !dp.triggered || dp.timer >= 35) continue;
+        int dx = (dp.c % RCOLS) * TILE + ((tick & 1) ? 2 : -2), dy = dp.r * TILE;
+        fillRect(dx + 4, dy + 2, TILE - 8, 8, mk(255, 195, 75));
+        addDirty(b, (dp.c % RCOLS) * TILE - 4, dy, TILE + 8, 16);
+    }
+
+    // Collectible Gold Coins & Crystals
+    for (int i = 0; i < coinCount; i++) {
+        Coin &cn = coins[i];
+        if (cn.taken || cn.room != roomIdx) continue;
+        int bob = (SN[((tick / 5) + i * 3) & 15] * 4) / 256;
+        int cx = cn.x + shakeX, cy = cn.y + bob + shY;
+        int cw = (((tick / 6) + i) & 3) == 1 ? 12 : 20;
+        int ox = cx + (20 - cw) / 2;
+        fillRect(ox - 2, cy - 2, cw + 4, 24, cn.secret ? mk(45, 145, 225) : mk(185, 115, 20));
+        fillRect(ox, cy, cw, 20, cn.secret ? mk(125, 225, 255) : mk(255, 215, 55));
+        fillRect(ox + 2, cy + 3, cw > 6 ? 4 : 2, 10, mk(255, 250, 195));
+        addDirty(b, cx - 4, cn.y - 8, 28, 36);
+    }
+
+    // Secret Treasure Chests
+    for (int i = 0; i < chestCount; i++) {
+        Chest &ch = chests[i];
+        if (ch.room != roomIdx) continue;
+        int cx = ch.x + shakeX, cy = ch.y + shY;
+        fillRect(cx, cy + 8, 44, 30, mk(92, 48, 22));
+        fillRect(cx + 3, cy + 11, 38, 24, mk(152, 86, 38));
+        fillRect(cx, cy + (ch.opened ? -4 : 2), 44, 10, mk(215, 165, 45));
+        fillRect(cx + 18, cy + 12, 8, 10, ch.opened ? mk(90, 90, 100) : mk(255, 232, 95));
+        addDirty(b, cx - 4, cy - 8, 52, 48);
+    }
+
+    // Power-Ups (Shield, Speed, Magnet)
+    for (int i = 0; i < powerupCount; i++) {
+        PowerUp &pu = powerups[i];
+        if (!pu.active || pu.room != roomIdx) continue;
+        int bob = (SN[((tick / 4) + i * 5) & 15] * 5) / 256;
+        int px0 = pu.x + shakeX, py0 = pu.y + bob + shY;
+        Color cOut = pu.kind == PU_SHIELD ? mk(35, 145, 235) : (pu.kind == PU_SPEED ? mk(225, 135, 25) : mk(185, 45, 215));
+        Color cIn  = pu.kind == PU_SHIELD ? mk(145, 235, 255) : (pu.kind == PU_SPEED ? mk(255, 235, 95) : mk(245, 155, 255));
+        fillRect(px0, py0, 32, 32, cOut);
+        fillRect(px0 + 4, py0 + 4, 24, 24, cIn);
+        fillRect(px0 + 10, py0 + 10, 12, 12, mk(255, 255, 255));
+        addDirty(b, px0 - 4, pu.y - 8, 40, 48);
+    }
+
+    // Friendly NPCs & Dialogue Banner
+    for (int i = 0; i < npcCount; i++) {
+        NPC &np = npcs[i];
+        if (np.room != roomIdx) continue;
+        int nx = np.x + shakeX, ny = np.y + shY;
+        // Wise Forest Elder sprite with staff & robe
+        fillRect(nx + 4, ny + 14, 34, 32, mk(58, 95, 165));
+        fillRect(nx + 8, ny + 2, 26, 18, mk(240, 205, 165));
+        fillRect(nx + 4, ny - 4, 34, 8, mk(225, 185, 65));
+        fillRect(nx + 12, ny + 18, 18, 14, mk(235, 235, 242)); // White beard
+        fillRect(nx + 40, ny - 2, 5, 48, mk(135, 86, 42));
+        fillRect(nx + 38, ny - 8, 9, 9, mk(95, 245, 195));
+        addDirty(b, nx - 2, ny - 10, 52, 60);
+    }
+    if (activeNpcMsg >= 0) {
+        fillRect(410, 105, 1100, 58, mk(235, 190, 65));
+        fillRect(414, 109, 1092, 50, mk(28, 20, 48));
+        drawLabel(activeNpcMsg, 960, 109, 50, 3, mk(245, 242, 255));
+        addDirty(b, 408, 103, 1104, 62);
+    }
+
+    // Checkpoints
     for (int i = 0; i < checkCount; i++) if (checkC[i] / RCOLS == roomIdx) {
-        int fx = (checkC[i] % RCOLS) * TILE + 24, fy = checkR[i] * TILE - 64;
-        fillRect(fx, fy, 6, 64, mk(220,220,235)); fillRect(fx + 6, fy + 4, 28, 20, checkAct[i] ? mk(65,235,110) : mk(235,190,55)); addDirty(b, fx - 2, fy - 2, 38, 66);
+        int fx = (checkC[i] % RCOLS) * TILE + 24 + shakeX, fy = checkR[i] * TILE - 64 + shY;
+        fillRect(fx, fy, 6, 64, mk(220,220,235)); fillRect(fx + 6, fy + 4, 28, 20, checkAct[i] ? mk(65,235,110) : mk(235,190,55)); addDirty(b, fx - 4, fy - 4, 42, 70);
     }
+    // Spinning Saws
     for (int r = 0; r < ROWS; r++) for (int c = roomIdx * RCOLS; c < roomIdx * RCOLS + RCOLS && c < COLS; c++)
-        if (level[r][c] == 'O') { int cx = c * TILE + 30 - roomX, cy = r * TILE + 30; drawSaw(cx, cy); addDirty(b, cx - 27, cy - 27, 55, 55); }
+        if (level[r][c] == 'O') { int cx = c * TILE + 30 - roomX, cy = r * TILE + 30 + shY; drawSaw(cx, cy); addDirty(b, cx - 28, cy - 28, 58, 58); }
+
+    // Enemies
     for (int i = 0; i < enemyCount; i++) if (enemies[i].active) {
-        int sx = (int)enemies[i].x - roomX, sy = (int)enemies[i].y;
-        if (sx >= -60 && sx <= FW + 60) { drawEnemyChar(enemies[i], sx, sy); addDirty(b, sx - 16, sy - 8, 76, 60); }
+        int sx = (int)enemies[i].x - roomX, sy = (int)enemies[i].y + shY;
+        if (sx >= -80 && sx <= FW + 80) {
+            drawEnemyChar(enemies[i], sx, sy);
+            addDirty(b, sx - 24, sy - 12, 104, 88);
+        }
     }
+
+    // Boss & King Frogus Tongue
     if (bossActive && bossHP > 0) {
         fillRect(15 * TILE + 20, 7 * TILE - 18, 80, 18, bossSwCd == 0 ? ((tick & 8) ? mk(80,255,120) : mk(40,200,85)) : mk(90,80,100));
         addDirty(b, 15 * TILE + 18, 7 * TILE - 20, 84, 22);
-        int bx = (int)bossX, by = (int)bossY;
+        int bx = (int)bossX + shakeX, by = (int)bossY + shY;
         if (bossBeam > 0) { fillRect(bx + bossW / 2 - 16, 7 * TILE, 32, by - 7 * TILE + 20, mk(120,255,220)); addDirty(b, bx + bossW / 2 - 20, 7 * TILE, 40, by - 7 * TILE + 24); }
-        drawBossChar(bx, by, bossW, bossH, (bossHurt & 2) != 0); addDirty(b, bx - 6, by - 12, bossW + 12, bossH + 16);
+        drawBossChar(bx, by, bossW, bossH, (bossHurt & 2) != 0);
+        int dirtyX = (bossKind == B_KING_FROGUS && bossTongueDir < 0) ? (bx - bossTongueLen - 28) : (bx - 28);
+        int dirtyW = bossW + bossTongueLen + 64;
+        addDirty(b, dirtyX, by - 24, dirtyW, bossH + 36);
     }
+
+    // Projectiles
     for (int i = 0; i < MAX_SHOTS; i++) if (shots[i].active) {
-        int sx = (int)shots[i].x - roomX, sy = (int)shots[i].y;
-        if (sx >= -30 && sx <= FW + 30) { fillRect(sx - 14, sy - 14, 28, 28, mk(255,95,35)); fillRect(sx - 8, sy - 8, 16, 16, mk(255,235,90)); addDirty(b, sx - 16, sy - 16, 32, 32); }
+        int sx = (int)shots[i].x - roomX, sy = (int)shots[i].y + shY;
+        if (sx >= -30 && sx <= FW + 30) {
+            Color c1 = shots[i].kind == 1 ? mk(95, 235, 65) : (shots[i].kind == 2 ? mk(85, 205, 255) : mk(255, 95, 35));
+            Color c2 = shots[i].kind == 1 ? mk(215, 255, 145) : (shots[i].kind == 2 ? mk(225, 250, 255) : mk(255, 235, 90));
+            fillRect(sx - 14, sy - 14, 28, 28, c1); fillRect(sx - 8, sy - 8, 16, 16, c2);
+            addDirty(b, sx - 16, sy - 16, 32, 32);
+        }
     }
+
+    // Ground Slam Shockwave Ring
+    if (slamWaveTimer > 0) {
+        int rad = (15 - slamWaveTimer) * 12;
+        int wx = slamWaveX - roomX, wy = slamWaveY + shY - 10;
+        fillRect(wx - rad, wy, 22, 10, mk(255, 230, 120));
+        fillRect(wx + rad - 22, wy, 22, 10, mk(255, 230, 120));
+        addDirty(b, wx - rad - 4, wy - 4, rad * 2 + 8, 18);
+    }
+
+    // Dash Afterimage Trails
+    for (int i = 0; i < MAX_TRAIL; i++) {
+        if (trails[i].life <= 0) continue;
+        int tx = (int)trails[i].x - roomX, ty = (int)trails[i].y + shY;
+        Color tc = (trails[i].life > 5) ? SkinPalSKINS[curSkin].hiC : SkinPalSKINS[curSkin].mainC;
+        fillRect(tx + 6, ty + 6, PW - 12, PH - 12, tc);
+        addDirty(b, tx, ty, PW, PH);
+    }
+
+    // Particles
     for (int i = 0; i < MAX_PARTS; i++) {
         Part &p = parts[i]; if (p.life <= 0) continue;
-        int sx = (int)p.x - roomX, sy = (int)p.y; if (sx < -20 || sx > FW + 20 || sy < -20 || sy > FH + 20) continue;
-        int sz = p.kind == 0 ? 2 + (p.size - 2) * p.life / p.maxLife : p.size;
-        Color col = p.kind == 0 ? (p.life * 2 > p.maxLife ? mk(205,195,230) : mk(150,140,185)) : mk(210,18,32);
+        int sx = (int)p.x - roomX, sy = (int)p.y + shY; if (sx < -20 || sx > FW + 20 || sy < -20 || sy > FH + 20) continue;
+        int sz = (p.kind != 1) ? 2 + (p.size - 2) * p.life / p.maxLife : p.size;
+        Color col = p.kind == 0 ? (p.life * 2 > p.maxLife ? mk(205,195,230) : mk(150,140,185)) :
+                   (p.kind == 2 ? mk(255, 220, 85) : (p.kind == 3 ? mk(125, 235, 255) : mk(210, 18, 32)));
         fillRect(sx, sy, sz, sz, col); addDirty(b, sx - 1, sy - 1, sz + 2, sz + 2);
     }
+
+    // Player Character (with Skins, Shield Aura & Squash/Stretch)
     if (deadTimer == 0) {
-        int x = (int)px - roomX, y = (int)py, dw = iclamp((int)(PW * squashX), 20, 80), dh = iclamp((int)(PH * squashY), 20, 80);
+        int x = (int)px - roomX, y = (int)py + shY, dw = iclamp((int)(PW * squashX), 20, 80), dh = iclamp((int)(PH * squashY), 20, 80);
         int dx = x + (PW - dw) / 2, dy = y + (PH - dh);
-        fillRect(dx, dy, dw, dh, mk(125,0,14)); fillRect(dx + 3, dy + 3, dw - 6, dh - 6, mk(208,26,36)); fillRect(dx + 5, dy + 5, dw - 10, 7, mk(242,85,95));
-        drawPlayerFace(dx, dy, dw, dh, facing); addDirty(b, x - 14, y - 18, PW + 28, PH + 20);
+        if (shieldHits > 0) {
+            fillRect(dx - 5, dy - 5, dw + 10, dh + 10, (tick & 4) ? mk(95, 225, 255) : mk(55, 165, 235));
+        }
+        const SkinPal &sp = SkinPalSKINS[curSkin];
+        fillRect(dx, dy, dw, dh, sp.outC);
+        fillRect(dx + 3, dy + 3, dw - 6, dh - 6, sp.mainC);
+        fillRect(dx + 5, dy + 5, dw - 10, 7, sp.hiC);
+        drawPlayerFace(dx, dy, dw, dh, facing);
+        addDirty(b, x - 20, y - 24, PW + 40, PH + 32);
+    }
+
+    // Achievement / Secret Unlocked Toast Banner
+    if (bannerTimer > 0 && bannerTextId >= 0) {
+        fillRect(510, 112, 900, 62, mk(255, 215, 75));
+        fillRect(514, 116, 892, 54, mk(38, 24, 64));
+        drawLabel(bannerTextId, 960, 116, 54, 4, mk(255, 245, 145));
+        addDirty(b, 508, 110, 904, 66);
     }
 }
 
-// ---------- Cutscenes & Menus ----------
+// ---------- Cutscenes & Menus (Including Shop/Skins & Achievements) ----------
 static void drawCubeK(int x, int y, int k) {
-    fillRect(x, y, 88*k, 88*k, mk(140,0,15)); fillRect(x+6*k, y+6*k, 76*k, 76*k, mk(205,25,35));
+    const SkinPal &sp = SkinPalSKINS[curSkin];
+    fillRect(x, y, 88*k, 88*k, sp.outC); fillRect(x+6*k, y+6*k, 76*k, 76*k, sp.mainC);
     fillRect(x+18*k, y+24*k, 20*k, 28*k, mk(255,255,255)); fillRect(x+50*k, y+24*k, 20*k, 28*k, mk(255,255,255));
     fillRect(x+28*k, y+32*k, 10*k, 16*k, mk(0,0,0)); fillRect(x+60*k, y+32*k, 10*k, 16*k, mk(0,0,0));
-    fillRect(x+30*k, y+64*k, 28*k, 8*k, mk(120,0,12));
+    fillRect(x+30*k, y+64*k, 28*k, 8*k, sp.mouthC);
 }
 static void drawGirlK(int x, int y, int k) {
     fillRect(x, y, 88*k, 88*k, mk(255,140,170)); fillRect(x, y+8*k, 88*k, 12*k, mk(240,230,200));
@@ -1100,7 +2350,10 @@ static void drawPadPrompt(int x, int y, bool dL, bool dR, bool sq, bool xB, cons
     fillRect(x+196, y+16, 54, 42, xB ? mk(65,165,255) : mk(55,45,80)); drawTextC(x+223, y+27, "X", 3, mk(255,255,255));
     drawTextC(x+332, y+29, lbl, 2, (xB || sq) ? mk(255,235,110) : mk(190,180,215));
 }
-static void drawMiniDemo(int x, int y, int dir) { fillRect(x, y, 44, 44, mk(140,0,15)); fillRect(x+3, y+3, 38, 38, mk(205,25,35)); drawPlayerFace(x, y, 44, 44, dir); }
+static void drawMiniDemo(int x, int y, int dir) {
+    const SkinPal &sp = SkinPalSKINS[curSkin];
+    fillRect(x, y, 44, 44, sp.outC); fillRect(x+3, y+3, 38, 38, sp.mainC); drawPlayerFace(x, y, 44, 44, dir);
+}
 
 static void drawStoryArt(int art) {
     int ax = 460, ay = 90, aw = 1000, ah = 500, t = storyAnimTick;
@@ -1126,10 +2379,10 @@ static void drawStoryArt(int art) {
         fillRect(ax, ay+400, aw, 100, mk(82,54,38)); fillRect(ax, ay+400, aw, 8, mk(65,190,75));
         fillRect(ax+700, ay+290, 240, 110, mk(82,54,38)); fillRect(ax+700, ay+290, 240, 8, mk(65,190,75));
         int cyc = t % 180, cx = iclamp(ax+90+cyc*4, ax, ax+820), cy = ay+356; bool xOn = false; const char *lbl = "WALK";
-        if (cyc >= 45 && cyc < 90) { int j = cyc-45; cy = ay+356 - j*(45-j)/4; xOn = j < 14; lbl = "STOMP!"; }
-        else if (cyc >= 110 && cyc < 160) { int j = cyc-110; cy = ay+356 - j*(55-j)/4; if (j > 32 && cy > ay+246) cy = ay+246; xOn = j < 34; lbl = "HOLD X"; }
+        if (cyc >= 45 && cyc < 90) { int j = cyc-45; cy = ay+356 - j*(45-j)/4; xOn = j < 14; lbl = "2X JUMP!"; }
+        else if (cyc >= 110 && cyc < 160) { int j = cyc-110; cy = ay+356 - j*(55-j)/4; if (j > 32 && cy > ay+246) cy = ay+246; xOn = j < 34; lbl = "SLAM O"; }
         else if (cyc >= 160) { cy = ay+246; lbl = "GREAT!"; }
-        if (cyc < 72) { Enemy de = {0,0,0,0,0,0,0,E_WALKER,1,0,t,-1,true}; drawEnemyChar(de, ax+480, ay+356); }
+        if (cyc < 72) { Enemy de = {0,0,0,0,0,0,0,E_SLIME,1,1,0,t,-1,0,0,true}; drawEnemyChar(de, ax+480, ay+356); }
         for (int i = 0; i < 14; i++) { int gx = ax+60+i*45; drawPlantTuft(gx, ay+400, 15, (iabs(cx+22-gx)<42 && cy>ay+320) ? 12 : SN[(t/5+i)&15]/32, 0, i%3); }
         drawMiniDemo(cx, cy, 1); drawPadPrompt(ax+290, ay+20, false, cyc < 165, false, xOn, lbl);
     } else if (art == 11) {
@@ -1137,7 +2390,7 @@ static void drawStoryArt(int art) {
         fillRect(ax, ay+400, 420, 100, mk(102,62,40)); fillRect(ax, ay+400, 420, 8, mk(225,175,55));
         fillRect(ax+660, ay+400, 340, 100, mk(102,62,40)); fillRect(ax+660, ay+400, 340, 8, mk(225,175,55));
         int cyc = t % 160, cx = iclamp(ax+70+cyc*6, ax, ax+850), cy = (cyc>=50&&cyc<102) ? ay+356-(cyc-50)*(102-cyc)/5 : ay+356;
-        drawMiniDemo(cx, cy, 1); drawPadPrompt(ax+290, ay+20, false, cyc < 140, cyc < 140, cyc >= 50 && cyc < 85, cyc >= 50 ? "SPRINT+X" : "HOLD SQ");
+        drawMiniDemo(cx, cy, 1); drawPadPrompt(ax+290, ay+20, false, cyc < 140, cyc < 140, cyc >= 50 && cyc < 85, cyc >= 50 ? "DASH+X" : "HOLD SQ");
     } else if (art == 12) {
         fillRect(ax, ay, aw, ah, mk(235,165,85)); fillRect(ax, ay+420, aw, 80, mk(165,118,68)); fillRect(ax, ay+420, aw, 8, mk(240,200,115));
         fillRect(ax+340, ay+150, 55, 200, mk(150,105,58)); fillRect(ax+590, ay+120, 55, 300, mk(150,105,58)); fillRect(ax+590, ay+120, 220, 45, mk(165,118,68));
@@ -1153,14 +2406,17 @@ static void drawStoryArt(int art) {
         int cyc = t % 160, cx = iclamp(ax+110+cyc*5, ax, ax+820), cy = (cyc>=50&&cyc<106) ? ay+356-(cyc-50)*(106-cyc)/4 : ay+356;
         drawMiniDemo(cx, cy, 1); drawPadPrompt(ax+290, ay+20, false, cyc < 140, false, cyc >= 50 && cyc < 80, cyc >= 50 ? "EDGE JUMP" : "TIMING");
     } else {
-        fillRect(ax, ay, aw, ah, art == 14 ? mk(55,20,30) : mk(28,22,58)); fillRect(ax, ay+410, aw, 90, mk(55,36,46));
+        fillRect(ax, ay, aw, ah, art == 14 ? mk(24,58,34) : mk(28,22,58)); fillRect(ax, ay+410, aw, 90, mk(55,36,46));
         fillRect(ax+400, ay+180, 200, 32, mk(55,36,46)); fillRect(ax+460, ay+164, 80, 16, (t&8) ? mk(80,255,120) : mk(40,200,85));
         int cyc = t % 160, bx = ax+620 - (cyc < 80 ? cyc*2 : (160-cyc)*2), cx = ax+180, cy = ay+366;
-        drawBossChar(bx, ay+306, 104, 104, cyc >= 70 && cyc < 110 && (t&2));
+        int prevKind = bossKind; bossKind = (art == 14) ? B_KING_FROGUS : B_CHOMP_TOTEM;
+        bossTongueDir = -1; bossAttackState = (cyc < 65) ? 2 : 0; bossTongueLen = (cyc < 65) ? 95 : 0;
+        drawBossChar(bx, ay+276, 140, 134, cyc >= 70 && cyc < 110 && (t&2));
+        bossKind = prevKind;
         if (cyc < 25) cx = ax+160+cyc*5;
         else if (cyc < 72) { int j = cyc-25; cx = ax+285+j*235/47; cy = ay+366-j*(47-j)/3-j*104/47; }
         else { int j = cyc-72; cx = ax+520+j*240/88; cy = iclamp(ay+262-j*(70-j)/6, ay, ay+366); }
-        drawMiniDemo(cx, cy, 1); drawPadPrompt(ax+290, ay+20, false, true, false, cyc >= 25 && cyc < 55, cyc >= 72 ? "BOSS HIT!" : "STOMP HEAD!");
+        drawMiniDemo(cx, cy, 1); drawPadPrompt(ax+290, ay+20, false, true, false, cyc >= 25 && cyc < 55, cyc >= 72 ? "BOSS HIT!" : "STOMP CROWN!");
     }
 }
 
@@ -1200,7 +2456,8 @@ static void markPend(int i) { if (i >= 0 && i < 64) pend[0][i] = pend[1][i] = tr
 static void setState(int s) { state = s; uiFull[0] = uiFull[1] = true; }
 static void startStory(int id) { storyId = id; storyPage = STORY_FIRST[id]; typed = storyAnimTick = 0; storyBgDone[0] = storyBgDone[1] = false; state = S_STORY; }
 static void startLevel() {
-    curLvl = levelSel; buildLevel(); roomIdx = 0; respawn(); deaths = splatCount = winTimer = deadTimer = 0;
+    curLvl = levelSel; buildLevel(); roomIdx = 0; respawn();
+    deaths = splatCount = winTimer = deadTimer = stageCoins = stageTimer = secretsFound = 0;
     for (int i = 0; i < MAX_PARTS; i++) parts[i].life = 0;
     for (int b = 0; b < 2; b++) { for (int i = 0; i < MAX_SPLATS; i++) splats[i].drawn[b] = false; needFull[b] = true; needWin[b] = hudNeed[b] = false; dirtyCnt[b] = 0; }
     state = S_PLAY;
@@ -1225,13 +2482,18 @@ static void drawHint(int tid) {
     drawLabel(tid, 960, 980, 60, 3, mk(220,212,238));
 }
 
+static const int SHOP_COSTS[NUM_SKINS + NUM_UPGS] = {0, 25, 40, 50, 65, 80, 45, 55, 75};
+static const int SHOP_NAMES[NUM_SKINS + NUM_UPGS] = {
+    T_SKIN0, T_SKIN1, T_SKIN2, T_SKIN3, T_SKIN4, T_SKIN5, T_UPG0, T_UPG1, T_UPG2
+};
+
 static void drawItem(int i) {
-    static const int MENU_T[4] = {T_LEVELS, T_SETTINGS, T_CREDITS, T_EXIT};
-    if (state == S_MENU && i >= 0 && i <= 3) {
-        int y = 420 + i * 120; bool sel = (i == menuSel);
-        if (sel) fillRect(606, y - 4, 708, 98, mk(255,210,85));
-        fillRect(610, y, 700, 90, sel ? mk(215,30,45) : mk(48,36,68));
-        drawLabel(MENU_T[i], 960, y, 90, 6, sel ? mk(255,255,255) : mk(215,205,230));
+    static const int MENU_T[6] = {T_LEVELS, T_SHOP, T_ACH, T_SETTINGS, T_CREDITS, T_EXIT};
+    if (state == S_MENU && i >= 0 && i <= 5) {
+        int y = 325 + i * 102; bool sel = (i == menuSel);
+        if (sel) fillRect(606, y - 4, 708, 88, mk(255,210,85));
+        fillRect(610, y, 700, 80, sel ? mk(215,30,45) : mk(48,36,68));
+        drawLabel(MENU_T[i], 960, y, 80, 5, sel ? mk(255,255,255) : mk(215,205,230));
     } else if (state == S_LEVELS) {
         if (i >= 0 && i < NUM_LEVELS) {
             int x = 375 + (i % LCOLS) * 108, y = 330 + (i / LCOLS) * 108;
@@ -1241,17 +2503,62 @@ static void drawItem(int i) {
             fillRect(x + ins, y + ins, 90 - 2 * ins, 90 - 2 * ins, unl ? (bs ? mk(165,15,45) : mk(205,25,35)) : mk(50,40,62));
             if (unl) {
                 if (bs) { fillRect(x+27,y+10,36,6,mk(255,215,70)); fillRect(x+27,y+6,8,6,mk(255,215,70)); fillRect(x+41,y+4,8,8,mk(255,215,70)); fillRect(x+55,y+6,8,6,mk(255,215,70)); }
-                char buf[4]; intToStr(i + 1, buf); drawTextC(x + 45, y + (bs ? 28 : 24), buf, 6, mk(255,255,255));
+                char buf[8]; intToStr(i + 1, buf); drawTextC(x + 45, y + (bs ? 28 : 24), buf, 6, mk(255,255,255));
+                if (bestTime[i] > 0) {
+                    fillRect(x + 68, y + 68, 12, 12, bestTime[i] <= 35 ? mk(255, 225, 65) : mk(145, 225, 255));
+                }
             } else {
                 Color g = mk(140,140,155); int cx = x + 45, cy = y + 45;
                 fillRect(cx-18,cy-2,36,28,g); fillRect(cx-12,cy-26,24,6,g); fillRect(cx-12,cy-22,6,20,g); fillRect(cx+6,cy-22,6,20,g); fillRect(cx-3,cy+6,6,10,mk(40,40,50));
             }
         } else if (i == NUM_LEVELS) {
-            fillRect(610, 880, 700, 60, mk(35,25,55));
+            fillRect(510, 880, 900, 60, mk(35,25,55));
             bool ok = (levelSel < unlockedLevels); Color c = ok ? mk(120,230,140) : mk(255,170,60);
             if (useAr()) drawLabel(ok ? T_PLAYX : T_LOCKED, 960, 880, 60, 4, c);
-            else { char buf[64], n[4]; strcpy(buf, isBossStage(levelSel) ? "BOSS LEVEL " : "LEVEL "); intToStr(levelSel + 1, n); strcat(buf, n); strcat(buf, ok ? ": PRESS X TO PLAY" : ": LOCKED"); drawTextC(960, 896, buf, 4, c); }
+            else {
+                char buf[80], n[8];
+                strcpy(buf, isBossStage(levelSel) ? "BOSS LEVEL " : "LEVEL ");
+                intToStr(levelSel + 1, n); strcat(buf, n);
+                if (ok && bestTime[levelSel] > 0) {
+                    char tn[8]; intToStr(bestTime[levelSel], tn);
+                    strcat(buf, " [BEST "); strcat(buf, tn); strcat(buf, "S]");
+                } else {
+                    strcat(buf, ok ? ": PRESS X TO PLAY" : ": LOCKED");
+                }
+                drawTextC(960, 896, buf, 4, c);
+            }
         }
+    } else if (state == S_SHOP && i >= 0 && i < (NUM_SKINS + NUM_UPGS)) {
+        int y = 265 + i * 74; bool sel = (i == shopSel);
+        bool owned = (i < NUM_SKINS) ? skinOwned[i] : upgOwned[i - NUM_SKINS];
+        bool equipped = (i < NUM_SKINS && curSkin == i) || (i >= NUM_SKINS && owned);
+        if (sel) fillRect(416, y - 3, 1088, 68, mk(255, 215, 75));
+        fillRect(420, y, 1080, 62, sel ? mk(195, 32, 52) : mk(42, 32, 66));
+        if (i < NUM_SKINS) {
+            const SkinPal &sp = SkinPalSKINS[i];
+            fillRect(442, y + 9, 44, 44, sp.outC);
+            fillRect(446, y + 13, 36, 36, sp.mainC);
+            fillRect(448, y + 15, 32, 6, sp.hiC);
+        } else {
+            fillRect(442, y + 9, 44, 44, mk(65, 185, 245));
+            fillRect(450, y + 17, 28, 28, mk(195, 245, 255));
+        }
+        drawLabel(SHOP_NAMES[i], 880, y, 62, 4, mk(255, 255, 255));
+        if (equipped) {
+            drawText(1310, y + 20, "EQUIPPED", 3, mk(115, 255, 145));
+        } else if (owned) {
+            drawText(1330, y + 20, "OWNED", 3, mk(185, 230, 255));
+        } else {
+            char cBuf[16]; intToStr(SHOP_COSTS[i], cBuf); strcat(cBuf, "G");
+            drawText(1345, y + 20, cBuf, 3, mk(255, 225, 85));
+        }
+    } else if (state == S_ACH && i >= 0 && i < NUM_ACHS) {
+        int y = 310 + i * 96;
+        bool unl = achUnlocked[i];
+        fillRect(436, y - 3, 1048, 82, unl ? mk(255, 210, 75) : mk(85, 75, 110));
+        fillRect(440, y, 1040, 76, unl ? mk(45, 88, 64) : mk(38, 28, 58));
+        fillRect(464, y + 16, 44, 44, unl ? mk(255, 215, 55) : mk(75, 65, 95));
+        drawLabel(T_ACH0 + i, 960, y, 76, 4, unl ? mk(255, 255, 255) : mk(165, 155, 185));
     } else if (state == S_SETTINGS && i >= 0 && i <= 2) {
         int y = 380 + i * 110; bool sel = (i == settingsSel);
         if (sel) fillRect(506, y - 4, 908, 98, mk(255,210,85));
@@ -1268,11 +2575,22 @@ static void drawUI(int b) {
         fillRect(1560,85,110,110,mk(255,210,85)); fillRect(1576,101,78,78,mk(255,238,140));
         for (int i = 0; i < 4; i++) { fillRect(i*520+40,580,260,100,mk(42,98,72)); fillRect(i*520+90,545,160,40,mk(42,98,72)); }
         for (int gx = 90; gx < FW - 80; gx += 75) drawPlantTuft(gx, 940, 14, SN[(tick/8)&15]/36, 0, (gx/75)%3);
-        if (state == S_MENU) { drawBanner(T_TITLE, 12, 140, 150, true); drawHint(T_H_SELECT); }
+
+        // Always show Gold Coin Bank at top-left in menus
+        fillRect(60, 42, 260, 54, mk(245, 195, 65));
+        fillRect(64, 46, 252, 46, mk(35, 25, 58));
+        fillRect(80, 57, 24, 24, mk(255, 215, 55));
+        char cBuf[16]; intToStr(totalCoins, cBuf);
+        drawText(120, 58, cBuf, 4, mk(255, 235, 115));
+
+        if (state == S_MENU) { drawBanner(T_TITLE, 12, 120, 150, true); drawHint(T_H_SELECT); }
         else if (state == S_LEVELS) { drawBanner(T_B_LEVELS, 8, 130, 110, false); drawHint(T_H_LEVELS); }
+        else if (state == S_SHOP) { drawBanner(T_B_SHOP, 8, 120, 110, false); drawHint(T_H_SHOP); }
+        else if (state == S_ACH) { drawBanner(T_B_ACH, 8, 130, 110, false); drawHint(T_H_BACK); }
         else if (state == S_SETTINGS) { drawBanner(T_B_SETTINGS, 8, 130, 110, false); fillRect(607,737,706,66,mk(235,185,65)); fillRect(610,740,700,60,mk(35,25,55)); drawLabel(T_TIP,960,740,60,3,mk(220,212,238)); drawHint(T_H_BACK); }
         else if (state == S_CREDITS) { drawBanner(T_B_CREDITS, 8, 130, 110, false); fillRect(456,296,1008,548,mk(235,185,65)); fillRect(460,300,1000,540,mk(35,25,55)); drawLabel(T_DESIGNERS,960,340,60,5,mk(220,212,238)); drawLabel(T_KAREEM,960,450,110,10,mk(255,75,115)); drawLabel(T_CLAUDE,960,580,110,10,mk(255,75,115)); drawLabel(T_GAME,960,740,60,4,mk(165,165,185)); drawHint(T_H_BACK); }
-        int cnt = state == S_MENU ? 4 : (state == S_LEVELS ? NUM_LEVELS + 1 : (state == S_SETTINGS ? 3 : 0));
+
+        int cnt = state == S_MENU ? 6 : (state == S_LEVELS ? NUM_LEVELS + 1 : (state == S_SHOP ? (NUM_SKINS + NUM_UPGS) : (state == S_ACH ? NUM_ACHS : (state == S_SETTINGS ? 3 : 0))));
         for (int i = 0; i < cnt; i++) drawItem(i);
         uiFull[b] = false; memset(pend[b], 0, 64);
     } else {
@@ -1283,13 +2601,15 @@ static void drawUI(int b) {
 static void updateUI() {
     bool nu = navEvent(0, in.up), nd = navEvent(1, in.down), nl = navEvent(2, in.left), nr = navEvent(3, in.right);
     if (state == S_MENU) {
-        int o = menuSel; if (nu) menuSel = (menuSel + 3) % 4; if (nd) menuSel = (menuSel + 1) % 4;
+        int o = menuSel; if (nu) menuSel = (menuSel + 5) % 6; if (nd) menuSel = (menuSel + 1) % 6;
         if (menuSel != o) { markPend(o); markPend(menuSel); snd(0); }
         if (in.crossNew) {
             if (menuSel == 0) { snd(1); setState(S_LEVELS); }
-            else if (menuSel == 1) { snd(1); settingsSel = 0; setState(S_SETTINGS); }
-            else if (menuSel == 2) { snd(1); setState(S_CREDITS); }
-            else { snd(2); exit(0); }
+            else if (menuSel == 1) { snd(1); shopSel = 0; setState(S_SHOP); }
+            else if (menuSel == 2) { snd(1); achSel = 0; setState(S_ACH); }
+            else if (menuSel == 3) { snd(1); settingsSel = 0; setState(S_SETTINGS); }
+            else if (menuSel == 4) { snd(1); setState(S_CREDITS); }
+            else { snd(2); saveGame(); exit(0); }
         }
     } else if (state == S_LEVELS) {
         int o = levelSel, n = levelSel;
@@ -1299,11 +2619,38 @@ static void updateUI() {
         if (in.crossNew && levelSel < unlockedLevels) { snd(1); launchLevel(levelSel); }
         else if (in.crossNew) snd(3);
         else if (in.circleNew) { snd(2); setState(S_MENU); }
+    } else if (state == S_SHOP) {
+        int totalItems = NUM_SKINS + NUM_UPGS;
+        int o = shopSel;
+        if (nu) shopSel = (shopSel + totalItems - 1) % totalItems;
+        if (nd) shopSel = (shopSel + 1) % totalItems;
+        if (shopSel != o) { markPend(o); markPend(shopSel); snd(0); }
+        if (in.crossNew) {
+            if (shopSel < NUM_SKINS) {
+                if (skinOwned[shopSel]) {
+                    curSkin = shopSel; snd(1); saveGame(); setState(S_SHOP);
+                } else if (totalCoins >= SHOP_COSTS[shopSel]) {
+                    totalCoins -= SHOP_COSTS[shopSel];
+                    skinOwned[shopSel] = true;
+                    curSkin = shopSel;
+                    snd(1); saveGame(); setState(S_SHOP);
+                } else snd(3);
+            } else {
+                int uIdx = shopSel - NUM_SKINS;
+                if (!upgOwned[uIdx] && totalCoins >= SHOP_COSTS[shopSel]) {
+                    totalCoins -= SHOP_COSTS[shopSel];
+                    upgOwned[uIdx] = true;
+                    snd(1); saveGame(); setState(S_SHOP);
+                } else snd(3);
+            }
+        } else if (in.circleNew) { snd(2); setState(S_MENU); }
+    } else if (state == S_ACH) {
+        if (in.crossNew || in.circleNew) { snd(2); setState(S_MENU); }
     } else if (state == S_SETTINGS) {
         int o = settingsSel; if (nu) settingsSel = (settingsSel + 2) % 3; if (nd) settingsSel = (settingsSel + 1) % 3;
         if (settingsSel != o) { markPend(o); markPend(settingsSel); snd(0); }
-        if (settingsSel == 0 && (nl || nr || in.crossNew)) { controlMode = 1 - controlMode; markPend(0); snd(0); }
-        else if (settingsSel == 1 && (nl || nr || in.crossNew)) { if (ARABIC_OK) { lang = 1 - lang; snd(1); setState(S_SETTINGS); } else snd(3); }
+        if (settingsSel == 0 && (nl || nr || in.crossNew)) { controlMode = 1 - controlMode; saveGame(); markPend(0); snd(0); }
+        else if (settingsSel == 1 && (nl || nr || in.crossNew)) { if (ARABIC_OK) { lang = 1 - lang; saveGame(); snd(1); setState(S_SETTINGS); } else snd(3); }
         else if (in.crossNew || in.circleNew) { snd(2); setState(S_MENU); }
     } else if (state == S_CREDITS && (in.crossNew || in.circleNew)) { snd(2); setState(S_MENU); }
 }
@@ -1312,14 +2659,16 @@ int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     scene = new Scene2D(FW, FH, 4);
     if (!scene->Init(0xC000000, 2) || !initPad()) for (;;);
+    loadGame();
     initAudio(); buildLevel(); roomIdx = 0; respawn(); setState(S_MENU); snd(1);
     for (;;) {
         int b = frameID & 1; readInput();
         if (state == S_PLAY) {
-            if (in.optionsNew) setState(S_LEVELS);
+            if (in.optionsNew) { saveGame(); setState(S_LEVELS); }
             else if (winTimer > 0) {
                 if (--winTimer == 0) {
                     if (curLvl + 2 > unlockedLevels && unlockedLevels < NUM_LEVELS) unlockedLevels = curLvl + 2;
+                    saveGame();
                     if (curLvl < 11) launchLevel(curLvl + 1); else startStory(1);
                 }
             } else update();
