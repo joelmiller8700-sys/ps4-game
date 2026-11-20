@@ -62,6 +62,8 @@ extern "C" {
 
 // 1.5 Minutes at 60 FPS = 90 * 60 = 5400 frames
 #define SPLAT_MAX_AGE 5400
+// 30 Seconds cooldown at 60 FPS = 30 * 60 = 1800 frames
+#define ABILITY_COOLDOWN_FRAMES 1800
 
 std::stringstream debugLogStream;
 
@@ -103,6 +105,29 @@ static int coyote = 0;
 static int wallLock = 0;
 static int facing = 1;
 
+// ---------- Character & Secret Naruto Roster state ----------
+// 0=Red Cube, 1=Gold Cube, 2=Emerald Cube, 3=Kakashi, 4=Madara, 5=Itachi, 6=Pain, 7=Obito
+enum {
+    CHAR_CUBE_RED = 0,
+    CHAR_CUBE_GOLD = 1,
+    CHAR_CUBE_EMERALD = 2,
+    CHAR_KAKASHI = 3,
+    CHAR_MADARA = 4,
+    CHAR_ITACHI = 5,
+    CHAR_PAIN = 6,
+    CHAR_OBITO = 7,
+    CHAR_TOTAL = 8
+};
+
+static int selectedChar = CHAR_CUBE_RED;
+static int p2Char = CHAR_CUBE_EMERALD;
+static bool secretMenuOpen = false;
+static int secretSel = 0;
+static int abilityCooldown = 0;
+static int abilityEffectTimer = 0;
+static int p2AbilityCooldown = 0;
+static int p2AbilityEffectTimer = 0;
+
 // ---------- Player 2 Co-op state ----------
 static bool p2Joined = false;
 static float p2x, p2y, p2vx, p2vy;
@@ -123,12 +148,12 @@ static int frameID = 0;
 
 static unsigned int rng = 12345;
 
-// ---------- Weapons System ----------
+// ---------- Swords System (Replacing Guns with Swords & Abilities) ----------
 enum {
-    W_BLASTER = 0,
-    W_SHOTGUN = 1,
-    W_SAW     = 2,
-    W_PLASMA  = 3,
+    W_BLASTER = 0, // Dawn Sword
+    W_SHOTGUN = 1, // Triple Gale Sword
+    W_SAW     = 2, // Twin Sawblade Sword
+    W_PLASMA  = 3, // Crimson Flame Sword
     W_TOTAL   = 4
 };
 
@@ -136,6 +161,9 @@ static int unlockedWeapons = 1;
 static int curWeapon = 0;
 static int p2Weapon = 0;
 static int shootCooldown = 0;
+static int swordSlashTimer = 0;
+static int swordSlashDir = 1;
+static int swordSlashKind = 0;
 static bool justUnlockedWeapon = false;
 
 struct Bullet {
@@ -164,7 +192,7 @@ struct Enemy {
 static Enemy enemies[MAX_ENEMIES];
 static int enemyCount = 0;
 
-// ---------- Boss Fight state (Every 5 levels: Level 5, 10, 15...) ----------
+// ---------- Boss Fight state ----------
 static bool bossActive = false;
 static float bossX = 0.0f;
 static float bossY = 0.0f;
@@ -187,10 +215,12 @@ struct BossShot {
 
 static BossShot bossShots[MAX_BOSS_SHOTS];
 
-// Blood stains that gradually fade and vanish after 1.5 minutes (5400 frames)
+// Blood stains that arc in the air, land on ground, and fade out after 1.5 minutes (5400 frames)
 struct Splat {
     short room;
+    float fx, fy, fvx, fvy;
     short x, y, w, h;
+    bool grounded;
     int bornTick;
     unsigned char stage;
     unsigned char drawnStage[2];
@@ -248,6 +278,8 @@ static int bufStar[2] = {0, 0};
 static int hudSq[2] = {0, 0};
 static int hudProg[2] = {0, 0};
 static int hudWeap[2] = {-1, -1};
+static int hudChar[2] = {-1, -1};
+static int hudCdSec[2] = {-1, -1};
 static bool hudNeed[2] = {false, false};
 
 static int clipX0 = 0;
@@ -324,11 +356,11 @@ static int storyShown[2] = {0, 0};
     X(T_GAME, "MEAT CUBE", AR(GAME_NAME)) \
     X(T_DEATHS, "DEATHS", AR(DEATHS)) \
     X(T_BOSS_HP, "BOSS HP", AR(BOSS_HP)) \
-    X(T_W0, "WEAPON: BLASTER  -  O: SHOOT  TRIANGLE: SWITCH", AR(W_BLASTER)) \
-    X(T_W1, "WEAPON: SHOTGUN  -  O: SHOOT  TRIANGLE: SWITCH", AR(W_SHOTGUN)) \
-    X(T_W2, "WEAPON: SAW LAUNCHER  -  O: SHOOT  TRIANGLE: SWITCH", AR(W_SAW)) \
-    X(T_W3, "WEAPON: PLASMA CANNON  -  O: SHOOT  TRIANGLE: SWITCH", AR(W_PLASMA)) \
-    X(T_NEW_WEAPON, "NEW WEAPON UNLOCKED! PRESS TRIANGLE TO SWITCH", AR(NEW_WEAPON)) \
+    X(T_W0, "SWORD: DAWN BLADE  -  O: SLASH  TRIANGLE: SWITCH", AR(W_BLASTER)) \
+    X(T_W1, "SWORD: TRIPLE GALE  -  O: SLASH  TRIANGLE: SWITCH", AR(W_SHOTGUN)) \
+    X(T_W2, "SWORD: SAW EDGE  -  O: SLASH  TRIANGLE: SWITCH", AR(W_SAW)) \
+    X(T_W3, "SWORD: CRIMSON FLAME  -  O: SLASH  TRIANGLE: SWITCH", AR(W_PLASMA)) \
+    X(T_NEW_WEAPON, "NEW SWORD UNLOCKED! PRESS TRIANGLE TO SWITCH", AR(NEW_WEAPON)) \
     X(T_COMPLETE, "LEVEL COMPLETE", AR(COMPLETE)) \
     X(T_GREAT, "GREAT JOB", AR(GREAT))
 
@@ -371,28 +403,28 @@ static const Page PAGES[11] = {
     {1, 1, {"TO BE CONTINUED.", "", ""},
      {AR(P4L0), -1, -1}},
 
-    {10, 3, {"STAGE 1: LIVING FOREST - JUMP AND SHOOT",
-             "PRESS X TO JUMP, PRESS O OR R1 TO SHOOT ENEMIES.",
-             "P2 CAN JOIN WITH OPTIONS! TRIANGLE SWITCHES WEAPONS."},
+    {10, 3, {"STAGE 1: LIVING FOREST - SWORD SLASH",
+             "PRESS X TO JUMP, PRESS O OR R1 TO SLASH WITH SWORD.",
+             "L2+R2+X OPENS SECRET NARUTO ROSTER! SQUARE: SKILL (30S)."},
      {AR(T1L0), AR(T1L1), AR(T1L2)}},
-    {11, 3, {"STAGE 2: COUNTRYSIDE - SPRINT AND SHOTGUN",
-             "HOLD SQUARE TO SPRINT AND FIRE YOUR SPREAD SHOTGUN.",
-             "STOMP ENEMIES OR BLAST THEM ACROSS BRIDGES!"},
+    {11, 3, {"STAGE 2: COUNTRYSIDE - TRIPLE GALE SWORD",
+             "HOLD SQUARE FOR SKILL (30S CD) AND SLASH WITH O.",
+             "SMART GROUND ENEMIES JUMP AND PURSUE YOU!"},
      {AR(T2L0), AR(T2L1), AR(T2L2)}},
     {12, 3, {"STAGE 3: GOLDEN DESERT - TWO-WALL JUMP",
              "ENTER BETWEEN TWO WALLS AND SLIDE SLOWLY.",
-             "PRESS X TO CLIMB AND DESTROY DESERT TURRETS!"},
+             "PRESS X TO CLIMB AND SLASH DESERT TURRETS!"},
      {AR(T3L0), AR(T3L1), AR(T3L2)}},
-    {13, 3, {"STAGE 4: SNOWY PEAKS - SAW LAUNCHER",
-             "FIRE PIERCING SAW BLADES AT FLYING ENEMIES.",
+    {13, 3, {"STAGE 4: SNOWY PEAKS - SAW EDGE SWORD",
+             "SLASH PIERCING SAW WAVES AT FLYING ENEMIES.",
              "DODGE SPINNING SAWS ACROSS FROZEN BRIDGES!"},
      {AR(T4L0), AR(T4L1), AR(T4L2)}},
     {14, 3, {"STAGE 5: BOSS FIGHT - MAGMA CRUSHER!",
-             "SHOOT WITH O, STOMP ITS HEAD, OR HIT THE TOP SWITCH.",
-             "DEFEAT IT TO UNLOCK THE HEAVY PLASMA CANNON!"},
+             "SLASH WITH O, STOMP ITS HEAD, OR HIT THE TOP SWITCH.",
+             "DEFEAT IT TO UNLOCK THE CRIMSON FLAME SWORD!"},
      {AR(T5L0), AR(T5L1), AR(T5L2)}},
     {15, 3, {"STAGE 10: BOSS FIGHT - SAW OVERLORD!",
-             "USE YOUR PLASMA CANNON AND SIDE WALLS TO FIGHT.",
+             "USE YOUR CRIMSON SWORD AND SIDE WALLS TO FIGHT.",
              "DODGE DOUBLE SAWS AND SAVE THE FOREST!"},
      {AR(T10L0), AR(T10L1), AR(T10L2)}}
 };
@@ -405,11 +437,12 @@ struct Input {
     bool up, down, left, right;
     bool dleft, dright;
 
-    bool cross, circle, options, square, triangle, r1, l1;
+    bool cross, circle, options, square, triangle, r1, l1, l2, r2;
 
     bool crossNew;
     bool circleNew;
     bool optionsNew;
+    bool squareNew;
     bool shootNew;
     bool switchNew;
 
@@ -422,12 +455,14 @@ static Input in2;
 static bool prevCross = false;
 static bool prevCircle = false;
 static bool prevOptions = false;
+static bool prevSquare = false;
 static bool prevShoot = false;
 static bool prevSwitch = false;
 
 static bool prevCross2 = false;
 static bool prevCircle2 = false;
 static bool prevOptions2 = false;
+static bool prevSquare2 = false;
 static bool prevShoot2 = false;
 static bool prevSwitch2 = false;
 
@@ -492,7 +527,6 @@ static void refreshSecondPad() {
         }
     }
 
-    // Check common PS4 user IDs (1..8) and secondary pad slots
     for (int uid = 1; uid <= 8 && padHandle2 < 0; uid++) {
         if (uid != padUserID)
             tryOpenPad2Slot(uid, 0);
@@ -524,7 +558,7 @@ static bool initPad() {
 
 static void parsePadData(const OrbisPadData &pd, Input &dst,
                          bool &pCross, bool &pCircle, bool &pOptions,
-                         bool &pShoot, bool &pSwitch) {
+                         bool &pSquare, bool &pShoot, bool &pSwitch) {
     unsigned int btn = pd.buttons;
 
     int lx = (int)pd.leftStick.x - 128;
@@ -560,6 +594,8 @@ static void parsePadData(const OrbisPadData &pd, Input &dst,
     dst.triangle = (btn & ORBIS_PAD_BUTTON_TRIANGLE) != 0;
     dst.r1 = (btn & ORBIS_PAD_BUTTON_R1) != 0;
     dst.l1 = (btn & ORBIS_PAD_BUTTON_L1) != 0;
+    dst.l2 = ((btn & ORBIS_PAD_BUTTON_L2) != 0) || (pd.analogButtons.l2 > 40);
+    dst.r2 = ((btn & ORBIS_PAD_BUTTON_R2) != 0) || (pd.analogButtons.r2 > 40);
 
     bool shootBtn = dst.circle || dst.r1;
     bool switchBtn = dst.triangle || dst.l1;
@@ -567,19 +603,21 @@ static void parsePadData(const OrbisPadData &pd, Input &dst,
     dst.crossNew = dst.cross && !pCross;
     dst.circleNew = dst.circle && !pCircle;
     dst.optionsNew = dst.options && !pOptions;
+    dst.squareNew = dst.square && !pSquare;
     dst.shootNew = shootBtn && !pShoot;
     dst.switchNew = switchBtn && !pSwitch;
 
     pCross = dst.cross;
     pCircle = dst.circle;
     pOptions = dst.options;
+    pSquare = dst.square;
     pShoot = shootBtn;
     pSwitch = switchBtn;
 }
 
 static void readInput() {
     scePadReadState(padHandle, &padData);
-    parsePadData(padData, in, prevCross, prevCircle, prevOptions, prevShoot, prevSwitch);
+    parsePadData(padData, in, prevCross, prevCircle, prevOptions, prevSquare, prevShoot, prevSwitch);
 
     if (padHandle2 < 0 && (tick % 15) == 0)
         refreshSecondPad();
@@ -588,7 +626,7 @@ static void readInput() {
     if (padHandle2 >= 0) {
         int st = scePadReadState(padHandle2, &padData2);
         if (st == 0) {
-            parsePadData(padData2, in2, prevCross2, prevCircle2, prevOptions2, prevShoot2, prevSwitch2);
+            parsePadData(padData2, in2, prevCross2, prevCircle2, prevOptions2, prevSquare2, prevShoot2, prevSwitch2);
         } else {
             padHandle2 = -1;
         }
@@ -1133,7 +1171,7 @@ static void addEnemy(int kind, int col, int row, int minC, int maxC) {
     e.minX = (float)((baseCol + minC) * TILE + 4);
     e.maxX = (float)((baseCol + maxC) * TILE + 12);
     e.dir = 1;
-    e.vx = (kind == E_WALKER) ? 2.4f : ((kind == E_FLYER) ? 2.8f : 1.9f);
+    e.vx = (kind == E_WALKER) ? 2.5f : ((kind == E_FLYER) ? 2.9f : 2.1f);
     e.vy = 0.0f;
     e.maxHp = (kind == E_TURRET) ? 2 : 1;
     e.hp = e.maxHp;
@@ -1261,21 +1299,19 @@ static void clearLevelGrid() {
         bullets[i].active = false;
 }
 
-// Stage 0: Accessible, fun & lively Forest Adventure (close platforms, clear path to goal)
 static void buildForestStage() {
     baseCol = 0;
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
-    // Room 1: Smooth opening with safe ground & close stepping islands
     baseCol = 0 * ROOM_COLS;
     plat(15, 7, 13);
     addEnemy(E_WALKER, 10, 15, 7, 13);
     plat(14, 16, 22);
     addEnemy(E_JUMPER, 19, 14, 16, 22);
     plat(15, 25, 30);
+    addEnemy(E_WALKER, 27, 17, 24, 30);
 
-    // Room 2: Gentle step-up platforms over a narrow spike patch
     baseCol = 1 * ROOM_COLS;
     spk(16, 11, 13);
     plat(14, 15, 21);
@@ -1284,7 +1320,6 @@ static void buildForestStage() {
     addEnemy(E_WALKER, 27, 13, 24, 30);
     addCheckpoint(26, 13);
 
-    // Room 3: Friendly twin-wall climb (easy spacing between walls)
     baseCol = 2 * ROOM_COLS;
     wall(9, 8, 14);
     wall(13, 8, 16);
@@ -1293,7 +1328,6 @@ static void buildForestStage() {
     plat(13, 23, 30);
     addEnemy(E_JUMPER, 26, 13, 23, 30);
 
-    // Room 4: Bridge sequence with a single saw & turret
     baseCol = 3 * ROOM_COLS;
     plat(14, 4, 10);
     sawAt(15, 13);
@@ -1303,7 +1337,6 @@ static void buildForestStage() {
     addEnemy(E_TURRET, 29, 12, 25, 30);
     addCheckpoint(26, 12);
 
-    // Room 5: Terraced climb toward the upper grove
     baseCol = 4 * ROOM_COLS;
     plat(15, 4, 10);
     plat(13, 13, 19);
@@ -1311,7 +1344,6 @@ static void buildForestStage() {
     plat(11, 22, 30);
     addEnemy(E_JUMPER, 25, 11, 22, 30);
 
-    // Room 6: Final welcoming platforms leading straight to Goal 'G'
     baseCol = 5 * ROOM_COLS;
     plat(14, 4, 10);
     plat(12, 13, 19);
@@ -1321,7 +1353,6 @@ static void buildForestStage() {
     baseCol = 0;
 }
 
-// Stage 1: Golden Countryside Sprint & Close Farm Terraces
 static void buildCountryStage() {
     baseCol = 0;
     levelCols = COLS;
@@ -1375,7 +1406,6 @@ static void buildCountryStage() {
     baseCol = 0;
 }
 
-// Stage 2: Sandy Desert Oasis & Twin-Wall Chimneys
 static void buildDesertStage() {
     baseCol = 0;
     levelCols = COLS;
@@ -1430,7 +1460,6 @@ static void buildDesertStage() {
     baseCol = 0;
 }
 
-// Stage 3: Snowy Mountain Peaks
 static void buildSnowStage() {
     baseCol = 0;
     levelCols = COLS;
@@ -1483,7 +1512,6 @@ static void buildSnowStage() {
     baseCol = 0;
 }
 
-// Boss Arena: Multi-tiered Combat Arena with Side Wall-Jumps & Strike Switch
 static void buildBossArena(int tier) {
     baseCol = 0;
     levelCols = ROOM_COLS;
@@ -1518,7 +1546,6 @@ static void buildBossArena(int tier) {
         bossShots[i].active = false;
 }
 
-// Stages 5..11
 static void buildExtraStage(int idx) {
     baseCol = 0;
     levelCols = COLS;
@@ -1664,8 +1691,8 @@ static bool circleHit(
     return dx * dx + dy * dy < rad * rad;
 }
 
-// ---------- Blood Stains (Gradually Fade & Disappear after 1.5 Minutes) ----------
-static void addSplat(int wx, int wy, int w, int h) {
+// ---------- Flying & Grounded Enemy Blood Stains (Fade & Vanish after 1.5 Minutes) ----------
+static void addFlyingSplat(int wx, int wy, float bvx, float bvy, int w, int h) {
     if (wx < 0 || wy < 0 || wx >= levelPixelWidth)
         return;
 
@@ -1688,10 +1715,15 @@ static void addSplat(int wx, int wy, int w, int h) {
 
     Splat &s = splats[idx];
     s.room = (short)rm;
-    s.x = (short)(wx - rm * FRAME_WIDTH - w / 2);
-    s.y = (short)(wy - h / 2);
+    s.fx = (float)wx;
+    s.fy = (float)wy;
+    s.fvx = bvx;
+    s.fvy = bvy;
     s.w = (short)w;
     s.h = (short)h;
+    s.x = (short)(wx - rm * FRAME_WIDTH - w / 2);
+    s.y = (short)(wy - h / 2);
+    s.grounded = false;
     s.bornTick = tick;
     s.stage = 0;
     s.drawn[0] = false;
@@ -1700,9 +1732,42 @@ static void addSplat(int wx, int wy, int w, int h) {
     s.drawnStage[1] = 99;
 }
 
+static void addSplat(int wx, int wy, int w, int h) {
+    addFlyingSplat(wx, wy, ((float)(rnd(120) - 60)) / 15.0f, -((float)(40 + rnd(80))) / 15.0f, w, h);
+}
+
 static void updateSplatsAging() {
     for (int i = 0; i < splatCount; i++) {
         Splat &s = splats[i];
+
+        // Arc in the air and settle onto ground surface below
+        if (!s.grounded && s.stage < 4) {
+            s.fvy += 0.52f;
+            if (s.fvy > 15.0f) s.fvy = 15.0f;
+            s.fx += s.fvx;
+            s.fy += s.fvy;
+
+            if (solidAt((int)s.fx, (int)s.fy + s.h / 2)) {
+                int rTile = ((int)s.fy + s.h / 2) / TILE;
+                s.fy = (float)(rTile * TILE - s.h);
+                s.fvx = 0.0f;
+                s.fvy = 0.0f;
+                s.grounded = true;
+            } else if (s.fy >= (float)((ROWS - 1) * TILE - s.h)) {
+                s.fy = (float)((ROWS - 1) * TILE - s.h);
+                s.fvx = 0.0f;
+                s.fvy = 0.0f;
+                s.grounded = true;
+            }
+
+            int rm = (int)s.fx / FRAME_WIDTH;
+            if (rm < 0) rm = 0;
+            if (rm > LAST_ROOM) rm = LAST_ROOM;
+            s.room = (short)rm;
+            s.x = (short)((int)s.fx - rm * FRAME_WIDTH - s.w / 2);
+            s.y = (short)((int)s.fy - s.h / 2);
+        }
+
         if (s.stage >= 4)
             continue;
 
@@ -1867,7 +1932,7 @@ static void updatePlantsAndAmbient(bool p1Burst, bool p2Burst) {
     }
 }
 
-// ---------- Player & 2-Player Co-op Logic ----------
+// ---------- Player, Swords, Naruto Abilities & Smart Enemies ----------
 static void respawn() {
     px = (float)(roomIdx * FRAME_WIDTH + TILE + 8);
     py = (float)((ROWS - 1) * TILE - PH);
@@ -1978,7 +2043,7 @@ static void dieP2() {
     p2DeadTimer = 28;
 }
 
-static void spawnPlayerBullet(float bx, float by, float bvx, float bvy, int kind, int dmg, int pierce) {
+static void spawnSwordWave(float bx, float by, float bvx, float bvy, int kind, int dmg, int pierce) {
     for (int i = 0; i < MAX_BULLETS; i++) {
         if (!bullets[i].active) {
             Bullet &b = bullets[i];
@@ -1989,30 +2054,10 @@ static void spawnPlayerBullet(float bx, float by, float bvx, float bvy, int kind
             b.kind = kind;
             b.dmg = dmg;
             b.pierce = pierce;
-            b.life = (kind == W_SHOTGUN) ? 34 : 65;
+            b.life = (kind == W_SHOTGUN) ? 28 : 48;
             b.active = true;
             return;
         }
-    }
-}
-
-static void fireWeaponFrom(float sx, float sy, int dirFace, int wpn) {
-    float bx = dirFace > 0 ? (sx + PW + 4.0f) : (sx - 16.0f);
-    float by = sy + PH * 0.45f;
-    float dir = (float)dirFace;
-
-    snd(9);
-
-    if (wpn == W_BLASTER) {
-        spawnPlayerBullet(bx, by, dir * 15.0f, 0.0f, W_BLASTER, 1, 0);
-    } else if (wpn == W_SHOTGUN) {
-        spawnPlayerBullet(bx, by, dir * 14.0f, -2.4f, W_SHOTGUN, 1, 0);
-        spawnPlayerBullet(bx, by, dir * 15.0f,  0.0f, W_SHOTGUN, 1, 0);
-        spawnPlayerBullet(bx, by, dir * 14.0f,  2.4f, W_SHOTGUN, 1, 0);
-    } else if (wpn == W_SAW) {
-        spawnPlayerBullet(bx, by, dir * 12.5f, 0.0f, W_SAW, 1, 2);
-    } else {
-        spawnPlayerBullet(bx, by, dir * 11.5f, 0.0f, W_PLASMA, 2, 1);
     }
 }
 
@@ -2030,8 +2075,94 @@ static void killEnemy(Enemy &e) {
         float pvy = (float)(rnd(140) - 110) / 10.0f;
         spawnPart(ecx, ecy, pvx, pvy, 55, 6 + rnd(4), 1);
     }
-    for (int i = 0; i < 3; i++) {
-        addSplat((int)ecx + rnd(24) - 12, (int)e.y + 42, 10 + rnd(8), 6 + rnd(4));
+    // Flying blood arcs that land on the ground and vanish after 1.5 minutes
+    for (int i = 0; i < 6; i++) {
+        float bvx = ((float)(rnd(180) - 90)) / 14.0f;
+        float bvy = -((float)(60 + rnd(90))) / 14.0f;
+        addFlyingSplat((int)ecx + rnd(24) - 12, (int)ecy, bvx, bvy, 11 + rnd(7), 7 + rnd(5));
+    }
+}
+
+// Triggers character-specific Naruto / Cube special ability (30-second cooldown)
+static void activateCharacterAbility(int charId, float &x, float &y, float &svx, float &svy,
+                                     int dirFace, int &cd, int &fxTimer) {
+    if (cd > 0)
+        return;
+
+    cd = ABILITY_COOLDOWN_FRAMES;
+    fxTimer = 28;
+    hudNeed[0] = true;
+    hudNeed[1] = true;
+    snd(7);
+
+    float dir = (float)dirFace;
+    float cx = x + PW * 0.5f;
+    float cy = y + PH * 0.5f;
+
+    if (charId == CHAR_KAKASHI) {
+        // Kakashi: Lightning Dash (Chidori)
+        svx = dir * 18.5f;
+        x += dir * 64.0f;
+        spawnSwordWave(cx + dir * 24.0f, cy, dir * 16.0f, 0.0f, W_BLASTER, 3, 4);
+    } else if (charId == CHAR_MADARA) {
+        // Madara: Uchiha Fireball Blast
+        spawnSwordWave(cx + dir * 20.0f, cy - 8.0f, dir * 14.0f, -1.5f, W_PLASMA, 4, 3);
+        spawnSwordWave(cx + dir * 20.0f, cy + 8.0f, dir * 14.0f,  1.5f, W_PLASMA, 4, 3);
+    } else if (charId == CHAR_ITACHI) {
+        // Itachi: Black Flame Slash Ring
+        spawnSwordWave(cx + dir * 24.0f, cy, dir * 13.0f, 0.0f, W_SAW, 3, 5);
+        spawnSwordWave(cx - dir * 24.0f, cy, -dir * 13.0f, 0.0f, W_SAW, 3, 5);
+    } else if (charId == CHAR_PAIN) {
+        // Pain: Shinra Tensei Repulsion Wave & Lift
+        svy = -13.0f;
+        for (int i = 0; i < enemyCount; i++) {
+            Enemy &e = enemies[i];
+            if (!e.active) continue;
+            float dx = e.x - x;
+            if (dx < 0) dx = -dx;
+            if (dx < 360.0f) {
+                e.hp -= 3;
+                e.hurt = 14;
+                if (e.hp <= 0) killEnemy(e);
+            }
+        }
+        if (bossActive && bossHP > 0)
+            damageBoss(3);
+    } else if (charId == CHAR_OBITO) {
+        // Obito: Kamui Blink Forward
+        x += dir * 110.0f;
+        spawnSwordWave(x + dir * 20.0f, cy, dir * 15.0f, 0.0f, W_PLASMA, 3, 3);
+    } else {
+        // Cube variants: Power Sword Burst
+        svy = -11.5f;
+        spawnSwordWave(cx + dir * 20.0f, cy, dir * 14.5f, 0.0f, W_SHOTGUN, 2, 2);
+    }
+}
+
+static void swingSwordFrom(float sx, float sy, int dirFace, int wpn) {
+    float bx = dirFace > 0 ? (sx + PW + 4.0f) : (sx - 18.0f);
+    float by = sy + PH * 0.45f;
+    float dir = (float)dirFace;
+
+    swordSlashTimer = 14;
+    swordSlashDir = dirFace;
+    swordSlashKind = wpn;
+    snd(9);
+
+    if (wpn == W_BLASTER) {
+        // Dawn Sword: fast single blade wave
+        spawnSwordWave(bx, by, dir * 14.5f, 0.0f, W_BLASTER, 1, 0);
+    } else if (wpn == W_SHOTGUN) {
+        // Triple Gale Sword: 3-way crescent slash
+        spawnSwordWave(bx, by, dir * 13.5f, -2.5f, W_SHOTGUN, 1, 0);
+        spawnSwordWave(bx, by, dir * 14.5f,  0.0f, W_SHOTGUN, 1, 0);
+        spawnSwordWave(bx, by, dir * 13.5f,  2.5f, W_SHOTGUN, 1, 0);
+    } else if (wpn == W_SAW) {
+        // Twin Sawblade Sword: piercing spinning edge
+        spawnSwordWave(bx, by, dir * 12.5f, 0.0f, W_SAW, 2, 2);
+    } else {
+        // Crimson Flame Sword: heavy high-damage flame slash
+        spawnSwordWave(bx, by, dir * 12.0f, 0.0f, W_PLASMA, 3, 1);
     }
 }
 
@@ -2056,10 +2187,11 @@ static void updateBulletsAndEnemies() {
             if (!e.active)
                 continue;
 
-            if (rectOverlap((int)b.x - 10, (int)b.y - 10, 20, 20,
+            if (rectOverlap((int)b.x - 14, (int)b.y - 14, 28, 28,
                             (int)e.x, (int)e.y, 44, 44)) {
                 e.hp -= b.dmg;
                 e.hurt = 10;
+                e.x += (b.vx > 0 ? 10.0f : -10.0f);
                 spawnDust(b.x, b.y, 4, 2.2f);
 
                 if (e.hp <= 0)
@@ -2077,7 +2209,7 @@ static void updateBulletsAndEnemies() {
         }
 
         if (b.active && bossActive && bossHP > 0) {
-            if (rectOverlap((int)b.x - 10, (int)b.y - 10, 20, 20,
+            if (rectOverlap((int)b.x - 14, (int)b.y - 14, 28, 28,
                             (int)bossX + 6, (int)bossY + 6, bossW - 12, bossH - 12)) {
                 damageBoss(b.dmg);
                 b.active = false;
@@ -2099,21 +2231,57 @@ static void updateBulletsAndEnemies() {
             e.hurt--;
         e.timer++;
 
+        // Smarter ground AI: tracks player direction, speeds up in pursuit, and jumps over obstacles
         if (e.kind == E_WALKER) {
-            e.x += e.vx * e.dir;
-            if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; }
-            if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
+            float dxP = px - e.x;
+            float adx = dxP < 0 ? -dxP : dxP;
+            int desiredDir = e.dir;
+            float spd = e.vx;
+
+            if (adx < 340.0f) {
+                desiredDir = (px >= e.x) ? 1 : -1;
+                spd = e.vx * 1.32f;
+            }
+
+            e.dir = desiredDir;
+            float nx = e.x + spd * e.dir;
+            if (nx < e.minX) { nx = e.minX; e.dir = 1; }
+            if (nx > e.maxX) { nx = e.maxX; e.dir = -1; }
+
+            // Smart obstacle hop if a low block/spike is right ahead
+            int probeX = (int)nx + (e.dir > 0 ? 46 : -6);
+            int footY = (int)e.y + 38;
+            if (solidAt(probeX, footY) && e.y >= e.baseY - 2.0f) {
+                e.vy = -10.5f;
+            }
+
+            e.x = nx;
+            e.vy += 0.65f;
+            e.y += e.vy;
+            if (e.y >= e.baseY) {
+                e.y = e.baseY;
+                e.vy = 0.0f;
+            }
         } else if (e.kind == E_FLYER) {
+            float dxP = px - e.x;
+            float adx = dxP < 0 ? -dxP : dxP;
+            if (adx < 360.0f)
+                e.dir = (px >= e.x) ? 1 : -1;
             e.x += e.vx * e.dir;
             if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; }
             if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
             int wave = SN[(e.timer / 4) & 15];
             e.y = e.baseY + (wave * 28) / 256;
         } else if (e.kind == E_JUMPER) {
+            float dxP = px - e.x;
+            float adx = dxP < 0 ? -dxP : dxP;
+            if (adx < 320.0f)
+                e.dir = (px >= e.x) ? 1 : -1;
             e.x += e.vx * e.dir;
             if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; }
             if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
-            if (e.timer % 55 == 0 && e.y >= e.baseY - 2.0f)
+            int jumpCadence = (adx < 260.0f) ? 38 : 55;
+            if (e.timer % jumpCadence == 0 && e.y >= e.baseY - 2.0f)
                 e.vy = -12.5f;
             e.vy += 0.65f;
             e.y += e.vy;
@@ -2123,8 +2291,11 @@ static void updateBulletsAndEnemies() {
             }
         } else if (e.kind == E_TURRET) {
             e.dir = (px < e.x) ? -1 : 1;
-            if (e.timer % 95 == 0) {
-                spawnBossShot(e.x + 22.0f, e.y + 18.0f, (float)e.dir * 6.5f, 0.0f);
+            float dxP = px - e.x;
+            float adx = dxP < 0 ? -dxP : dxP;
+            int fireCadence = (adx < 340.0f) ? 68 : 95;
+            if (e.timer % fireCadence == 0) {
+                spawnBossShot(e.x + 22.0f, e.y + 18.0f, (float)e.dir * 6.8f, 0.0f);
             }
         }
 
@@ -2396,12 +2567,23 @@ static void stepPlayerPhysics(
     float &sqX, float &sqY,
     bool &grounded, int &coy, int &wLock, int &dirFace,
     int &shootCd, int &wpnSel,
+    int charId, int &abCd, int &abFx,
     bool &burstOut
 ) {
     burstOut = false;
     if (shootCd > 0)
         shootCd--;
+    if (abCd > 0)
+        abCd--;
+    if (abFx > 0)
+        abFx--;
 
+    // Character special ability on Square (30s cooldown)
+    if (src.squareNew) {
+        activateCharacterAbility(charId, x, y, svx, svy, dirFace, abCd, abFx);
+    }
+
+    // Sword switching on Triangle or L1
     if (src.switchNew && unlockedWeapons > 1) {
         wpnSel = (wpnSel + 1) % unlockedWeapons;
         hudNeed[0] = true;
@@ -2409,9 +2591,10 @@ static void stepPlayerPhysics(
         snd(0);
     }
 
+    // Sword slash on Circle or R1
     if ((src.shootNew || ((src.circle || src.r1) && shootCd == 0)) && shootCd == 0) {
-        fireWeaponFrom(x, y, dirFace, wpnSel);
-        shootCd = (wpnSel == W_BLASTER) ? 12 : ((wpnSel == W_SHOTGUN) ? 22 : ((wpnSel == W_SAW) ? 18 : 24));
+        swingSwordFrom(x, y, dirFace, wpnSel);
+        shootCd = (wpnSel == W_BLASTER) ? 12 : ((wpnSel == W_SHOTGUN) ? 20 : ((wpnSel == W_SAW) ? 16 : 22));
     }
 
     bool wasGround = grounded;
@@ -2444,14 +2627,13 @@ static void stepPlayerPhysics(
 
     bool left = dir < 0;
     bool right = dir > 0;
-    bool run = src.square;
     bool jumpHeld = src.cross;
     bool jumpNew = src.crossNew;
 
     bool wallL = rectSolid((int)x - 1, (int)y, 1, PH);
     bool wallR = rectSolid((int)x + PW, (int)y, 1, PH);
 
-    float maxSpeed = (run ? 8.4f : 6.0f) * scale;
+    float maxSpeed = 6.2f * scale;
 
     if (dir != 0)
         dirFace = dir;
@@ -2545,7 +2727,52 @@ static void update() {
     updateParts();
     updateSplatsAging();
 
-    // Player 2 joins on OPTIONS or X from second pad (or if P2 pad button is pressed)
+    if (swordSlashTimer > 0)
+        swordSlashTimer--;
+
+    // Secret Naruto Roster shortcut: L2 + R2 + X
+    if (in.l2 && in.r2 && in.crossNew) {
+        secretMenuOpen = !secretMenuOpen;
+        secretSel = (selectedChar >= CHAR_KAKASHI) ? (selectedChar - CHAR_KAKASHI) : 0;
+        uiFull[0] = true;
+        uiFull[1] = true;
+        snd(1);
+        return;
+    }
+
+    if (secretMenuOpen) {
+        if (navEvent(2, in.left)) {
+            secretSel = (secretSel + 4) % 5;
+            uiFull[0] = true;
+            uiFull[1] = true;
+            snd(0);
+        }
+        if (navEvent(3, in.right)) {
+            secretSel = (secretSel + 1) % 5;
+            uiFull[0] = true;
+            uiFull[1] = true;
+            snd(0);
+        }
+        if (in.crossNew) {
+            selectedChar = CHAR_KAKASHI + secretSel;
+            secretMenuOpen = false;
+            needFull[0] = true;
+            needFull[1] = true;
+            uiFull[0] = true;
+            uiFull[1] = true;
+            snd(1);
+        }
+        if (in.circleNew) {
+            secretMenuOpen = false;
+            needFull[0] = true;
+            needFull[1] = true;
+            uiFull[0] = true;
+            uiFull[1] = true;
+            snd(2);
+        }
+        return;
+    }
+
     bool p2AnyBtn = padHandle2 >= 0 && (in2.optionsNew || in2.crossNew || in2.circleNew || in2.square || in2.triangle || in2.left || in2.right || in2.up || in2.down);
     if (!p2Joined && p2AnyBtn) {
         p2Joined = true;
@@ -2567,7 +2794,9 @@ static void update() {
         stepPlayerPhysics(
             in, px, py, vx, vy, squashX, squashY,
             onGround, coyote, wallLock, facing,
-            shootCooldown, curWeapon, p1Burst
+            shootCooldown, curWeapon,
+            selectedChar, abilityCooldown, abilityEffectTimer,
+            p1Burst
         );
     }
 
@@ -2580,7 +2809,9 @@ static void update() {
             stepPlayerPhysics(
                 in2, p2x, p2y, p2vx, p2vy, p2SquashX, p2SquashY,
                 p2OnGround, p2Coyote, p2WallLock, p2Facing,
-                p2ShootCooldown, p2Weapon, p2Burst
+                p2ShootCooldown, p2Weapon,
+                p2Char, p2AbilityCooldown, p2AbilityEffectTimer,
+                p2Burst
             );
         }
     }
@@ -2628,79 +2859,7 @@ static void update() {
     roomIdx = nr;
 }
 
-// ---------- Game drawing (Fixed Room Camera + Lively Biome Worlds + 60 FPS Dirty Rects) ----------
-static void drawSpike(int cx, int r) {
-    int center = cx * TILE + TILE / 2;
-    int top = r * TILE + 20;
-
-    Color spCol = mk(205, 205, 215);
-    if (currentBiome == 2)
-        spCol = mk(230, 195, 145);
-    else if (currentBiome == 3)
-        spCol = mk(195, 235, 255);
-    else if (currentBiome == 4)
-        spCol = mk(255, 130, 70);
-
-    for (int j = 0; j < 40; j++) {
-        int half = (j * 26) / 39;
-
-        fillRect(
-            center - half,
-            top + j,
-            2 * half + 1,
-            1,
-            spCol
-        );
-    }
-}
-
-static void drawSaw(int cx, int cy) {
-    int a = (tick / 2) & 15;
-
-    int cc = CS[a];
-    int ss = SN[a];
-
-    for (int dy = -26; dy <= 26; dy++) {
-        for (int dx = -26; dx <= 26; dx++) {
-            int d2 = dx * dx + dy * dy;
-
-            if (d2 > 26 * 26)
-                continue;
-
-            int u = (dx * cc + dy * ss) >> 8;
-            int v = (-dx * ss + dy * cc) >> 8;
-
-            if (d2 < 36) {
-                scene->DrawPixel(cx + dx, cy + dy, mk(50, 50, 55));
-            } else if (d2 <= 20 * 20) {
-                scene->DrawPixel(cx + dx, cy + dy, mk(165, 165, 178));
-            } else if (
-                iabs(u) < 6 ||
-                iabs(v) < 6 ||
-                iabs(u - v) < 8 ||
-                iabs(u + v) < 8
-            ) {
-                scene->DrawPixel(cx + dx, cy + dy, mk(215, 215, 225));
-            }
-        }
-    }
-}
-
-static void drawFace(
-    int x, int y, int dirFace, Color eyeWhite
-) {
-    fillRect(x + 9, y + 12, 10, 14, eyeWhite);
-    fillRect(x + 25, y + 12, 10, 14, eyeWhite);
-
-    int off = dirFace > 0 ? 5 : 0;
-
-    fillRect(x + 9 + off, y + 16, 5, 8,
-             mk(0, 0, 0));
-
-    fillRect(x + 25 + off, y + 16, 5, 8,
-             mk(0, 0, 0));
-}
-
+// ---------- Pixel Art Characters (Cubes + Secret Naruto Characters) ----------
 static void drawPlayerFace(
     int dx, int dy, int dw, int dh, int dirFace
 ) {
@@ -2743,9 +2902,111 @@ static void drawPlayerFace(
     );
 }
 
+// Draws pixel-art Naruto characters inspired by the provided images (Kakashi, Madara, Itachi, Pain, Obito)
+static void drawNarutoPixelSprite(int charId, int x, int y, int dirFace, int scale) {
+    int s = scale < 1 ? 1 : scale;
+    Color outline = mk(14, 12, 18);
+    Color skin    = mk(236, 182, 146);
+    Color hairDk  = mk(24, 22, 34);
+    Color cloakBk = mk(24, 24, 30);
+    Color cloudRd = mk(186, 36, 44);
+
+    if (charId == CHAR_KAKASHI) {
+        // Kakashi: spiky silver hair, headband, dark mask, green flak vest, navy outfit
+        fillRect(x - 2 * s, y + 6 * s, 48 * s, 42 * s, outline);
+        fillRect(x + 2 * s, y, 40 * s, 14 * s, mk(215, 222, 232)); // silver spiky hair
+        fillRect(x - 4 * s, y + 3 * s, 12 * s, 7 * s, mk(215, 222, 232));
+        fillRect(x + 36 * s, y + 3 * s, 12 * s, 7 * s, mk(215, 222, 232));
+        fillRect(x + 8 * s, y + 8 * s, 28 * s, 7 * s, mk(32, 36, 48)); // headband
+        fillRect(x + 18 * s, y + 9 * s, 12 * s, 5 * s, mk(175, 182, 195));
+        fillRect(x + 10 * s, y + 15 * s, 24 * s, 7 * s, skin);
+        fillRect(x + (dirFace > 0 ? 22 : 12) * s, y + 16 * s, 8 * s, 4 * s, mk(195, 35, 45)); // sharingan eye
+        fillRect(x + 10 * s, y + 20 * s, 24 * s, 8 * s, mk(26, 28, 38)); // mask
+        fillRect(x + 8 * s, y + 28 * s, 28 * s, 12 * s, mk(96, 118, 78)); // flak vest
+        fillRect(x + 10 * s, y + 40 * s, 10 * s, 8 * s, mk(26, 28, 38));
+        fillRect(x + 24 * s, y + 40 * s, 10 * s, 8 * s, mk(26, 28, 38));
+    } else if (charId == CHAR_MADARA) {
+        // Madara: long spiky dark hair, crimson armor, red eyes
+        fillRect(x - 6 * s, y + 2 * s, 56 * s, 46 * s, hairDk);
+        fillRect(x + 2 * s, y - 2 * s, 40 * s, 12 * s, hairDk);
+        fillRect(x + 12 * s, y + 10 * s, 20 * s, 10 * s, skin);
+        fillRect(x + 14 * s, y + 13 * s, 5 * s, 4 * s, mk(225, 35, 45));
+        fillRect(x + 25 * s, y + 13 * s, 5 * s, 4 * s, mk(225, 35, 45));
+        fillRect(x + 8 * s, y + 20 * s, 28 * s, 18 * s, mk(148, 34, 42)); // crimson samurai armor
+        fillRect(x + 6 * s, y + 22 * s, 8 * s, 14 * s, mk(118, 24, 32));
+        fillRect(x + 30 * s, y + 22 * s, 8 * s, 14 * s, mk(118, 24, 32));
+        fillRect(x + 10 * s, y + 38 * s, 24 * s, 10 * s, mk(28, 26, 38));
+    } else if (charId == CHAR_ITACHI) {
+        // Itachi: dark hair, Akatsuki cloak with red cloud & collar
+        fillRect(x + 8 * s, y + 2 * s, 28 * s, 12 * s, hairDk);
+        fillRect(x + 12 * s, y + 11 * s, 20 * s, 10 * s, skin);
+        fillRect(x + 14 * s, y + 14 * s, 4 * s, 3 * s, mk(210, 35, 45));
+        fillRect(x + 26 * s, y + 14 * s, 4 * s, 3 * s, mk(210, 35, 45));
+        fillRect(x + 6 * s, y + 18 * s, 32 * s, 28 * s, cloakBk);
+        fillRect(x + 20 * s, y + 18 * s, 4 * s, 28 * s, cloudRd); // red trim
+        fillRect(x + 12 * s, y + 25 * s, 12 * s, 8 * s, cloudRd); // akatsuki cloud
+    } else if (charId == CHAR_PAIN) {
+        // Pain: spiky orange hair, Rinnegan violet-ringed eyes, Akatsuki cloak
+        fillRect(x + 8 * s, y - 2 * s, 28 * s, 14 * s, mk(235, 105, 35));
+        fillRect(x + 4 * s, y + 3 * s, 8 * s, 7 * s, mk(235, 105, 35));
+        fillRect(x + 32 * s, y + 3 * s, 8 * s, 7 * s, mk(235, 105, 35));
+        fillRect(x + 12 * s, y + 11 * s, 20 * s, 10 * s, skin);
+        fillRect(x + 14 * s, y + 14 * s, 5 * s, 4 * s, mk(155, 115, 225)); // rinnegan
+        fillRect(x + 25 * s, y + 14 * s, 5 * s, 4 * s, mk(155, 115, 225));
+        fillRect(x + 6 * s, y + 18 * s, 32 * s, 28 * s, cloakBk);
+        fillRect(x + 20 * s, y + 18 * s, 4 * s, 28 * s, cloudRd);
+        fillRect(x + 18 * s, y + 27 * s, 12 * s, 8 * s, cloudRd);
+    } else {
+        // Obito / Tobi: orange spiral mask + Akatsuki cloak
+        fillRect(x + 8 * s, y + 2 * s, 28 * s, 16 * s, hairDk);
+        fillRect(x + 11 * s, y + 4 * s, 22 * s, 16 * s, mk(238, 102, 32)); // orange mask
+        fillRect(x + 19 * s, y + 10 * s, 6 * s, 6 * s, outline);
+        fillRect(x + 6 * s, y + 19 * s, 32 * s, 27 * s, cloakBk);
+        fillRect(x + 20 * s, y + 19 * s, 4 * s, 27 * s, cloudRd);
+        fillRect(x + 12 * s, y + 26 * s, 12 * s, 8 * s, cloudRd);
+    }
+    (void)outline;
+}
+
+static void getCharPalette(int charId, Color &borderCol, Color &bodyCol, Color &gunCol) {
+    if (charId == CHAR_CUBE_GOLD) {
+        borderCol = mk(145, 92, 12);
+        bodyCol   = mk(242, 185, 35);
+        gunCol    = mk(120, 235, 255);
+    } else if (charId == CHAR_CUBE_EMERALD) {
+        borderCol = mk(16, 92, 58);
+        bodyCol   = mk(38, 198, 122);
+        gunCol    = mk(255, 215, 75);
+    } else if (charId == CHAR_KAKASHI) {
+        borderCol = mk(42, 62, 46);
+        bodyCol   = mk(96, 118, 78);
+        gunCol    = mk(125, 225, 255);
+    } else if (charId == CHAR_MADARA) {
+        borderCol = mk(85, 18, 28);
+        bodyCol   = mk(175, 35, 45);
+        gunCol    = mk(255, 110, 45);
+    } else if (charId == CHAR_ITACHI) {
+        borderCol = mk(20, 20, 28);
+        bodyCol   = mk(42, 42, 54);
+        gunCol    = mk(225, 45, 55);
+    } else if (charId == CHAR_PAIN) {
+        borderCol = mk(120, 45, 15);
+        bodyCol   = mk(225, 95, 32);
+        gunCol    = mk(175, 130, 245);
+    } else if (charId == CHAR_OBITO) {
+        borderCol = mk(130, 48, 12);
+        bodyCol   = mk(238, 102, 32);
+        gunCol    = mk(255, 175, 55);
+    } else {
+        borderCol = mk(140, 0, 15);
+        bodyCol   = mk(205, 25, 35);
+        gunCol    = mk(95, 215, 255);
+    }
+}
+
 static void drawCubeBody(
     int roomX, float xPos, float yPos, float sqX, float sqY,
-    int dirFace, int wpnSel,
+    int dirFace, int wpnSel, int charId, int abFx,
     Color borderCol, Color bodyCol, Color gunCol
 ) {
     int x = (int)xPos - roomX;
@@ -2760,19 +3021,28 @@ static void drawCubeBody(
     int dx = x + (PW - dw) / 2;
     int dy = y + (PH - dh);
 
-    fillRect(dx, dy, dw, dh, borderCol);
-    fillRect(dx + 3, dy + 3, dw - 6, dh - 6, bodyCol);
-    drawPlayerFace(dx, dy, dw, dh, dirFace);
+    if (abFx > 0) {
+        fillRect(dx - 6, dy - 6, dw + 12, dh + 12, gunCol);
+    }
 
-    Color mCol = gunCol;
-    if (wpnSel == W_SHOTGUN) mCol = mk(255, 195, 70);
-    else if (wpnSel == W_SAW) mCol = mk(140, 250, 160);
-    else if (wpnSel == W_PLASMA) mCol = mk(255, 120, 235);
+    if (charId >= CHAR_KAKASHI) {
+        drawNarutoPixelSprite(charId, dx - 2, dy - 4, dirFace, 1);
+    } else {
+        fillRect(dx, dy, dw, dh, borderCol);
+        fillRect(dx + 3, dy + 3, dw - 6, dh - 6, bodyCol);
+        drawPlayerFace(dx, dy, dw, dh, dirFace);
+    }
 
-    int gx = (dirFace > 0) ? (dx + dw - 4) : (dx - 14);
-    int gy = dy + dh / 2 - 4;
-    fillRect(gx, gy, 18, 10, mk(45, 45, 55));
-    fillRect(gx + (dirFace > 0 ? 6 : 2), gy + 2, 10, 6, mCol);
+    // Draw equipped sword blade
+    Color bladeCol = gunCol;
+    if (wpnSel == W_SHOTGUN) bladeCol = mk(255, 205, 75);
+    else if (wpnSel == W_SAW) bladeCol = mk(150, 255, 170);
+    else if (wpnSel == W_PLASMA) bladeCol = mk(255, 85, 70);
+
+    int gx = (dirFace > 0) ? (dx + dw - 2) : (dx - 22);
+    int gy = dy + dh / 2 - 3;
+    fillRect(gx, gy - 2, 6, 10, mk(195, 155, 55)); // sword guard
+    fillRect(gx + (dirFace > 0 ? 6 : -14), gy, 20, 5, bladeCol); // blade
 }
 
 static void drawTileCell(int r, int cx, char ch, bool hi) {
@@ -2919,8 +3189,8 @@ static void drawSplat(const Splat &s) {
     int ox = s.x + (s.w - dw) / 2;
     int oy = s.y + (s.h - dh) / 2;
 
-    Color c1 = mk(140 / div + 20, 10, 20);
-    Color c2 = mk(185 / div + 20, 22 / div, 34 / div);
+    Color c1 = mk(150 / div + 25, 10, 22);
+    Color c2 = mk(205 / div + 25, 22 / div, 34 / div);
 
     fillRect(ox, oy, dw, dh, c1);
     if (s.stage <= 1)
@@ -3308,14 +3578,33 @@ static void drawHUDFull(int b) {
     fillRect(1303, 25, 554, 40, mk(44, 32, 72));
     drawLabel(wTid, 1580, 25, 40, 2, wCol);
 
+    // Character Ability Cooldown Bar (30 seconds = 1800 frames)
+    int cdSec = (abilityCooldown + 59) / 60;
+    int cdBar = (abilityCooldown == 0) ? 260 : ((ABILITY_COOLDOWN_FRAMES - abilityCooldown) * 260) / ABILITY_COOLDOWN_FRAMES;
+    fillRect(1300, 74, 268, 32, mk(24, 18, 44));
+    fillRect(1304, 78, cdBar, 24, abilityCooldown == 0 ? mk(65, 225, 125) : mk(225, 145, 45));
+    if (abilityCooldown == 0) {
+        drawTextC(1434, 83, "SKILL READY [SQ]", 2, mk(255, 255, 255));
+    } else {
+        char sbuf[32];
+        char nbuf[4];
+        intToStr(cdSec, nbuf);
+        strcpy(sbuf, "SKILL CD: ");
+        strcat(sbuf, nbuf);
+        strcat(sbuf, "S");
+        drawTextC(1434, 83, sbuf, 2, mk(255, 235, 140));
+    }
+
     if (p2Joined) {
-        fillRect(1300, 74, 240, 32, mk(20, 45, 75));
-        drawTextC(1420, 82, "P2 JOINED", 2, mk(110, 225, 255));
+        fillRect(1580, 74, 280, 32, mk(20, 45, 75));
+        drawTextC(1720, 83, "P2 JOINED", 2, mk(110, 225, 255));
     }
 
     hudSq[b] = hudN;
     hudProg[b] = prog;
     hudWeap[b] = curWeapon;
+    hudChar[b] = selectedChar;
+    hudCdSec[b] = cdSec;
     hudNeed[b] = false;
 }
 
@@ -3400,8 +3689,43 @@ static void drawBossChar(int bx, int by, int bw, int bh, bool hurt) {
         fillRect(bx + 28 + k * 14, by + 70, 6, 16, coreCol);
 }
 
+static void drawSecretNarutoOverlay() {
+    fillRect(280, 180, 1360, 680, mk(18, 14, 34));
+    fillRect(286, 186, 1348, 668, mk(34, 24, 58));
+
+    drawTextC(960, 225, "SECRET NARUTO ROSTER (L2+R2+X)", 4, mk(255, 215, 75));
+    drawTextC(960, 275, "LEFT/RIGHT: PICK   X: SELECT   O: CLOSE", 2, mk(215, 205, 235));
+
+    static const char *NAMES[5] = {
+        "KAKASHI", "MADARA", "ITACHI", "PAIN", "OBITO"
+    };
+    static const char *SKILLS[5] = {
+        "LIGHTNING DASH", "FIREBALL BLAST", "BLACK FLAME", "GRAVITY PULSE", "KAMUI BLINK"
+    };
+
+    for (int i = 0; i < 5; i++) {
+        int cardX = 325 + i * 260;
+        int cardY = 340;
+        bool sel = (i == secretSel);
+
+        if (sel)
+            fillRect(cardX - 5, cardY - 5, 230, 420, mk(255, 215, 75));
+
+        fillRect(cardX, cardY, 220, 410, sel ? mk(65, 32, 52) : mk(46, 36, 72));
+        drawNarutoPixelSprite(CHAR_KAKASHI + i, cardX + 62, cardY + 55, 1, 2);
+        drawTextC(cardX + 110, cardY + 225, NAMES[i], 3, mk(255, 255, 255));
+        drawTextC(cardX + 110, cardY + 275, SKILLS[i], 2, mk(125, 235, 175));
+        drawTextC(cardX + 110, cardY + 320, "CD: 30S [SQUARE]", 2, mk(255, 195, 95));
+    }
+}
+
 static void renderGame(int b) {
     resetClip();
+
+    if (secretMenuOpen) {
+        drawSecretNarutoOverlay();
+        return;
+    }
 
     if (winTimer > 0) {
         if (needWin[b]) {
@@ -3466,7 +3790,7 @@ static void renderGame(int b) {
         for (int i = 0; i < dirtyCount[b]; i++) {
             Rect d = dirty[b][i];
 
-            if (d.y < 110)
+            if (d.y < 115)
                 hudNeed[b] = true;
 
             restoreRect(b, d.x, d.y, d.w, d.h, !trans);
@@ -3577,8 +3901,9 @@ static void renderGame(int b) {
 
         int hudN = deaths < 30 ? deaths : 30;
         int prog = progressNow();
+        int cdSec = (abilityCooldown + 59) / 60;
 
-        if (hudNeed[b] || hudWeap[b] != curWeapon) {
+        if (hudNeed[b] || hudWeap[b] != curWeapon || hudChar[b] != selectedChar || hudCdSec[b] != cdSec) {
             drawHUDFull(b);
         } else {
             for (int i = hudSq[b]; i < hudN; i++) {
@@ -3613,6 +3938,19 @@ static void renderGame(int b) {
     resetClip();
 
     int roomX = roomIdx * FRAME_WIDTH;
+
+    // Render airborne flying blood droplets before they land on the ground
+    for (int i = 0; i < splatCount; i++) {
+        Splat &s = splats[i];
+        if (s.room != roomIdx || s.grounded || s.stage >= 4)
+            continue;
+        int sx = (int)s.fx - roomX;
+        int sy = (int)s.fy;
+        if (sx < -20 || sx > FRAME_WIDTH + 20 || sy < -20 || sy > FRAME_HEIGHT + 20)
+            continue;
+        fillRect(sx - 4, sy - 4, 8, 8, mk(205, 20, 35));
+        addDirty(b, sx - 6, sy - 6, 12, 12);
+    }
 
     if (currentBiome == 0) {
         int wf = (tick * 4) % 44;
@@ -3737,21 +4075,21 @@ static void renderGame(int b) {
             continue;
 
         if (bl.kind == W_BLASTER) {
-            fillRect(sx - 10, sy - 5, 20, 10, mk(80, 220, 255));
-            fillRect(sx - 6, sy - 3, 12, 6, mk(255, 255, 255));
-            addDirty(b, sx - 12, sy - 7, 24, 14);
+            fillRect(sx - 12, sy - 10, 24, 20, mk(80, 220, 255));
+            fillRect(sx - 6, sy - 5, 14, 10, mk(255, 255, 255));
+            addDirty(b, sx - 14, sy - 12, 28, 24);
         } else if (bl.kind == W_SHOTGUN) {
-            fillRect(sx - 7, sy - 7, 14, 14, mk(255, 195, 55));
-            fillRect(sx - 4, sy - 4, 8, 8, mk(255, 255, 220));
-            addDirty(b, sx - 9, sy - 9, 18, 18);
+            fillRect(sx - 9, sy - 9, 18, 18, mk(255, 195, 55));
+            fillRect(sx - 5, sy - 5, 10, 10, mk(255, 255, 220));
+            addDirty(b, sx - 11, sy - 11, 22, 22);
         } else if (bl.kind == W_SAW) {
-            fillRect(sx - 12, sy - 12, 24, 24, mk(210, 220, 235));
-            fillRect(sx - 6, sy - 6, 12, 12, mk(80, 245, 130));
-            addDirty(b, sx - 14, sy - 14, 28, 28);
+            fillRect(sx - 14, sy - 14, 28, 28, mk(210, 220, 235));
+            fillRect(sx - 7, sy - 7, 14, 14, mk(80, 245, 130));
+            addDirty(b, sx - 16, sy - 16, 32, 32);
         } else {
-            fillRect(sx - 16, sy - 16, 32, 32, mk(235, 65, 215));
-            fillRect(sx - 10, sy - 10, 20, 20, mk(255, 220, 255));
-            addDirty(b, sx - 18, sy - 18, 36, 36);
+            fillRect(sx - 18, sy - 18, 36, 36, mk(235, 65, 55));
+            fillRect(sx - 10, sy - 10, 20, 20, mk(255, 220, 90));
+            addDirty(b, sx - 20, sy - 20, 40, 40);
         }
     }
 
@@ -3784,26 +4122,36 @@ static void renderGame(int b) {
         addDirty(b, sx - 1, sy - 1, sz + 2, sz + 2);
     }
 
-    // Player 1 (Classic Red Meat Cube)
+    // Player 1
     if (deadTimer == 0) {
+        Color bc1, pc1, gc1;
+        getCharPalette(selectedChar, bc1, pc1, gc1);
         drawCubeBody(
-            roomX, px, py, squashX, squashY, facing, curWeapon,
-            mk(140, 0, 15), mk(205, 25, 35), mk(95, 215, 255)
+            roomX, px, py, squashX, squashY, facing, curWeapon, selectedChar, abilityEffectTimer,
+            bc1, pc1, gc1
         );
+        if (swordSlashTimer > 0) {
+            int swX = (int)px - roomX + (swordSlashDir > 0 ? PW + 4 : -34);
+            int swY = (int)py - 6;
+            fillRect(swX, swY, 30, 54, gc1);
+            addDirty(b, swX - 4, swY - 4, 38, 62);
+        }
         int x1 = (int)px - roomX;
         int y1 = (int)py;
-        addDirty(b, x1 - 20, y1 - 18, PW + 40, PH + 22);
+        addDirty(b, x1 - 32, y1 - 24, PW + 64, PH + 30);
     }
 
-    // Player 2 Co-op (Distinct Cyan/Blue Meat Cube)
+    // Player 2 Co-op
     if (p2Joined && p2DeadTimer == 0) {
+        Color bc2, pc2, gc2;
+        getCharPalette(p2Char, bc2, pc2, gc2);
         drawCubeBody(
-            roomX, p2x, p2y, p2SquashX, p2SquashY, p2Facing, p2Weapon,
-            mk(15, 65, 145), mk(35, 155, 245), mk(255, 220, 75)
+            roomX, p2x, p2y, p2SquashX, p2SquashY, p2Facing, p2Weapon, p2Char, p2AbilityEffectTimer,
+            bc2, pc2, gc2
         );
         int x2 = (int)p2x - roomX;
         int y2 = (int)p2y;
-        addDirty(b, x2 - 20, y2 - 18, PW + 40, PH + 22);
+        addDirty(b, x2 - 26, y2 - 20, PW + 52, PH + 26);
     }
 }
 
@@ -3971,7 +4319,7 @@ static void drawStoryArt(int art) {
         int cy = ay + 356;
         int dw = 44, dh = 44;
         bool xOn = false;
-        const char *lbl = "O: SHOOT";
+        const char *lbl = "O: SLASH";
 
         if (cyc < 75) {
             Enemy de = {0,0,0,0,0,0,0, E_WALKER, 2,2, (cyc > 55 ? 2 : 0), t, -1, true};
@@ -3979,7 +4327,7 @@ static void drawStoryArt(int art) {
         }
         if (cyc >= 25 && cyc < 70) {
             int bx = ax + 240 + (cyc - 25) * 6;
-            fillRect(bx, ay + 372, 20, 10, mk(80, 220, 255));
+            fillRect(bx, ay + 366, 22, 18, mk(80, 220, 255));
         }
 
         if (cyc >= 110 && cyc < 160) {
@@ -4027,12 +4375,12 @@ static void drawStoryArt(int art) {
         int cy = ay + 356;
         bool sqOn = (cyc < 140);
         bool xOn = (cyc >= 50 && cyc < 85);
-        const char *lbl = "SHOTGUN";
+        const char *lbl = "GALE SWD";
 
         if (cyc >= 50 && cyc < 102) {
             int jt = cyc - 50;
             cy = ay + 356 - (jt * (52 - jt)) / 5;
-            lbl = "SPRINT+X";
+            lbl = "SLASH+X";
         }
 
         for (int i = 0; i < 8; i++) {
@@ -4115,7 +4463,7 @@ static void drawStoryArt(int art) {
         if (cx > ax + 820) cx = ax + 820;
         int cy = ay + 356;
         bool xOn = (cyc >= 50 && cyc < 80);
-        const char *lbl = "SAW GUN";
+        const char *lbl = "SAW SWD";
 
         if (cyc >= 50 && cyc < 106) {
             int jt = cyc - 50;
@@ -4295,6 +4643,10 @@ static void startLevel() {
     roomIdx = 0;
     p2Joined = false;
     p2DeadTimer = 0;
+    abilityCooldown = 0;
+    abilityEffectTimer = 0;
+    p2AbilityCooldown = 0;
+    p2AbilityEffectTimer = 0;
     respawn();
 
     deaths = 0;
@@ -4357,7 +4709,7 @@ static void endStory() {
     }
 }
 
-// ---------- Menus (Lively Animated Backdrop + Styled Panels) ----------
+// ---------- Menus (Character Selector + Secret Naruto Roster on L2+R2+X) ----------
 static const int MENU_T[4] = { T_LEVELS, T_SETTINGS, T_CREDITS, T_EXIT };
 
 static int itemCount() {
@@ -4369,29 +4721,46 @@ static int itemCount() {
 }
 
 static void paintMenuBackdrop() {
-    // Vibrant sky, sun/moon, hills & lively ground strip for menus
     fillRect(0, 0, FRAME_WIDTH, 320, mk(32, 22, 68));
     fillRect(0, 320, FRAME_WIDTH, 360, mk(48, 30, 88));
     fillRect(0, 680, FRAME_WIDTH, 260, mk(34, 78, 58));
     fillRect(0, 940, FRAME_WIDTH, 140, mk(78, 48, 30));
     fillRect(0, 940, FRAME_WIDTH, 10, mk(68, 198, 72));
 
-    // Glowing sun/orb
     fillRect(1560, 85, 110, 110, mk(255, 210, 85));
     fillRect(1576, 101, 78, 78, mk(255, 238, 140));
 
-    // Decorative background hills & pillars
     for (int i = 0; i < 4; i++) {
         int hx = i * 520 + 40;
         fillRect(hx, 580, 260, 100, mk(42, 98, 72));
         fillRect(hx + 50, 545, 160, 40, mk(42, 98, 72));
     }
 
-    // Lively grass tufts along the bottom ground of the menu
     int sway = SN[(tick / 8) & 15] / 36;
     for (int gx = 90; gx < FRAME_WIDTH - 80; gx += 75) {
         drawPlantTuft(gx, 940, 14, sway, 0, (gx / 75) % 3);
     }
+}
+
+static void drawMainMenuCharacterPicker() {
+    fillRect(1520, 380, 340, 240, mk(30, 22, 52));
+    fillRect(1524, 384, 332, 232, mk(48, 36, 78));
+
+    static const char *CHAR_LABELS[8] = {
+        "RED CUBE", "GOLD CUBE", "EMERALD CUBE",
+        "KAKASHI", "MADARA", "ITACHI", "PAIN", "OBITO"
+    };
+
+    drawTextC(1690, 402, "CHARACTER", 3, mk(255, 215, 75));
+    drawTextC(1690, 442, CHAR_LABELS[selectedChar], 2, mk(125, 235, 185));
+
+    Color bc, pc, gc;
+    getCharPalette(selectedChar, bc, pc, gc);
+    drawCubeBody(0, 1668.0f, 482.0f, 1.0f, 1.0f, 1, curWeapon, selectedChar, 0, bc, pc, gc);
+
+    drawTextC(1690, 552, "< / > TO SWITCH", 2, mk(205, 198, 225));
+    drawTextC(1690, 582, "L2+R2+X: NARUTO", 2, mk(255, 130, 155));
+    (void)bc; (void)pc; (void)gc;
 }
 
 static void drawBanner(
@@ -4436,6 +4805,7 @@ static void drawLock(int cx, int cy) {
 static void drawStatic() {
     if (state == S_MENU) {
         drawBanner(T_TITLE, 12, 140, 150, true);
+        drawMainMenuCharacterPicker();
         drawHint(T_H_SELECT);
     }
 
@@ -4610,6 +4980,12 @@ static void drawItem(int i) {
 static void drawUI(int b) {
     resetClip();
 
+    if (secretMenuOpen) {
+        paintMenuBackdrop();
+        drawSecretNarutoOverlay();
+        return;
+    }
+
     if (uiFull[b]) {
         paintMenuBackdrop();
 
@@ -4638,6 +5014,45 @@ static void drawUI(int b) {
 
 // ---------- UI input ----------
 static void updateUI() {
+    // Secret Naruto Roster trigger: L2 + R2 + X
+    if (in.l2 && in.r2 && in.crossNew) {
+        secretMenuOpen = !secretMenuOpen;
+        secretSel = (selectedChar >= CHAR_KAKASHI) ? (selectedChar - CHAR_KAKASHI) : 0;
+        uiFull[0] = true;
+        uiFull[1] = true;
+        snd(1);
+        return;
+    }
+
+    if (secretMenuOpen) {
+        if (navEvent(2, in.left)) {
+            secretSel = (secretSel + 4) % 5;
+            uiFull[0] = true;
+            uiFull[1] = true;
+            snd(0);
+        }
+        if (navEvent(3, in.right)) {
+            secretSel = (secretSel + 1) % 5;
+            uiFull[0] = true;
+            uiFull[1] = true;
+            snd(0);
+        }
+        if (in.crossNew) {
+            selectedChar = CHAR_KAKASHI + secretSel;
+            secretMenuOpen = false;
+            uiFull[0] = true;
+            uiFull[1] = true;
+            snd(1);
+        }
+        if (in.circleNew) {
+            secretMenuOpen = false;
+            uiFull[0] = true;
+            uiFull[1] = true;
+            snd(2);
+        }
+        return;
+    }
+
     bool nu = navEvent(0, in.up);
     bool nd = navEvent(1, in.down);
     bool nl = navEvent(2, in.left);
@@ -4651,6 +5066,20 @@ static void updateUI() {
 
         if (nu) menuSel = (menuSel + 3) % 4;
         if (nd) menuSel = (menuSel + 1) % 4;
+
+        // Left/Right cycles starter cube character in main menu
+        if (nl) {
+            selectedChar = (selectedChar + 2) % 3;
+            uiFull[0] = true;
+            uiFull[1] = true;
+            snd(0);
+        }
+        if (nr) {
+            selectedChar = (selectedChar + 1) % 3;
+            uiFull[0] = true;
+            uiFull[1] = true;
+            snd(0);
+        }
 
         if (menuSel != old) {
             markPend(old);
