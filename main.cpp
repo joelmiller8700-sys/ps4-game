@@ -1242,90 +1242,289 @@ static void clearLevelGrid() {
         bullets[i].active = false;
 }
 
-static void buildScrollingActionStage(int stageIdx) {
+// Redesigned Stage 0: Lush Forest Canopy & Ancient Bridges
+static void buildForestStage() {
     baseCol = 0;
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
-    plat(14, 7, 13);
-    addEnemy(E_WALKER, 10, 14, 7, 13);
+    // Room 1: Friendly opening + first patrol + spike hop
+    baseCol = 0 * ROOM_COLS;
+    plat(15, 6, 12);
+    addEnemy(E_WALKER, 9, 15, 6, 12);
+    spk(16, 14, 15);
+    plat(13, 17, 23);
+    addEnemy(E_JUMPER, 20, 13, 17, 23);
+    plat(15, 25, 30);
 
-    spk(16, 15, 18);
-    plat(12, 16, 22);
-    addEnemy(E_WALKER, 19, 12, 16, 22);
+    // Room 2: Tree-top platforms & flying forest drifters
+    baseCol = 1 * ROOM_COLS;
+    spk(16, 3, 28);
+    plat(15, 2, 7);
+    plat(12, 10, 15);
+    addEnemy(E_FLYER, 12, 8, 9, 17);
+    plat(10, 18, 23);
+    plat(13, 25, 30);
+    addEnemy(E_WALKER, 27, 13, 25, 30);
+    addCheckpoint(29, 13);
 
-    plat(14, 24, 30);
-    if (stageIdx >= 1)
-        addEnemy(E_JUMPER, 27, 14, 24, 30);
+    // Room 3: Twin-wall forest climb
+    baseCol = 2 * ROOM_COLS;
+    wall(9, 6, 14);
+    wall(12, 6, 16);
+    plat(6, 12, 19);
+    spk(16, 13, 20);
+    addEnemy(E_WALKER, 16, 6, 12, 19);
+    plat(12, 22, 29);
+    addEnemy(E_JUMPER, 25, 12, 22, 29);
 
-    addCheckpoint(31, 17);
+    // Room 4: Stepping stones over thorny undergrowth
+    baseCol = 3 * ROOM_COLS;
+    spk(16, 2, 29);
+    plat(14, 3, 7);
+    plat(11, 10, 14);
+    addEnemy(E_FLYER, 12, 7, 9, 17);
+    plat(13, 17, 21);
+    plat(10, 24, 30);
+    addEnemy(E_TURRET, 28, 10, 24, 30);
+    addCheckpoint(25, 10);
 
-    spk(16, 35, 58);
-    plat(14, 34, 41);
-    addEnemy(E_WALKER, 37, 14, 34, 41);
+    // Room 5: High canopy sprint & wall hop
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 3, 28);
+    plat(14, 3, 8);
+    plat(11, 11, 16);
+    wall(19, 5, 12);
+    plat(5, 19, 25);
+    addEnemy(E_WALKER, 22, 5, 19, 25);
+    plat(12, 27, 30);
 
-    plat(12, 44, 51);
-    addEnemy(E_FLYER, 47, 9, 42, 53);
-
-    plat(10, 54, 60);
-    if (stageIdx >= 2)
-        addEnemy(E_TURRET, 58, 10, 54, 60);
-
-    addCheckpoint(63, 17);
-
-    wall(70, 6, 14);
-    wall(73, 6, 16);
-    plat(6, 73, 82);
-    spk(16, 74, 83);
-    addEnemy(E_WALKER, 78, 6, 74, 82);
-
-    plat(11, 84, 92);
-    addEnemy(E_JUMPER, 88, 11, 84, 92);
-    if (stageIdx >= 3)
-        sawAt(10, 86);
-
-    addCheckpoint(95, 17);
-
-    spk(16, 99, 123);
-    plat(15, 98, 104);
-    sawAt(14, 106);
-    plat(13, 108, 115);
-    addEnemy(E_WALKER, 112, 13, 108, 115);
-    addEnemy(E_FLYER, 115, 8, 108, 122);
-
-    plat(11, 118, 125);
-    addEnemy(E_TURRET, 123, 11, 118, 125);
-
-    addCheckpoint(127, 17);
-
-    plat(14, 131, 136);
-    addEnemy(E_JUMPER, 134, 14, 131, 136);
-
-    wall(139, 5, 14);
-    wall(142, 5, 16);
-    plat(5, 142, 151);
-    spk(16, 143, 156);
-    addEnemy(E_WALKER, 147, 5, 143, 151);
-
-    plat(10, 153, 158);
-    if (stageIdx >= 1)
-        sawAt(9, 155);
-
-    addCheckpoint(160, 17);
-
-    spk(16, 163, 185);
-    plat(14, 162, 168);
-    addEnemy(E_WALKER, 165, 14, 162, 168);
-
-    plat(12, 171, 177);
-    addEnemy(E_FLYER, 174, 8, 169, 180);
-    if (stageIdx >= 2)
-        addEnemy(E_TURRET, 176, 12, 171, 177);
-
-    plat(10, 180, 189);
-    put(9, 187, 'G');
+    // Room 6: Ancient grove shrine & goal
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 3, 28);
+    plat(14, 3, 8);
+    plat(12, 11, 16);
+    addEnemy(E_JUMPER, 13, 12, 11, 16);
+    plat(10, 19, 24);
+    addEnemy(E_FLYER, 21, 6, 18, 26);
+    plat(8, 25, 30);
+    put(7, 28, 'G');
+    baseCol = 0;
 }
 
+// Redesigned Stage 1: Golden Countryside Sprint & Harvest Bridges
+static void buildCountryStage() {
+    baseCol = 0;
+    levelCols = COLS;
+    levelPixelWidth = WORLD_WIDTH;
+
+    // Room 1: Wide sprint gaps & wheat field patrols
+    baseCol = 0 * ROOM_COLS;
+    spk(16, 10, 13);
+    plat(14, 15, 21);
+    addEnemy(E_WALKER, 18, 14, 15, 21);
+    spk(16, 23, 26);
+    plat(15, 27, 30);
+
+    // Room 2: Rolling barn bridges
+    baseCol = 1 * ROOM_COLS;
+    spk(16, 3, 28);
+    plat(15, 2, 8);
+    plat(13, 11, 17);
+    addEnemy(E_JUMPER, 14, 13, 11, 17);
+    plat(11, 20, 26);
+    addEnemy(E_FLYER, 23, 7, 19, 28);
+    plat(14, 27, 30);
+    addCheckpoint(28, 14);
+
+    // Room 3: Twin silo wall-jump shaft
+    baseCol = 2 * ROOM_COLS;
+    wall(8, 5, 14);
+    wall(11, 5, 16);
+    plat(5, 11, 18);
+    spk(16, 12, 19);
+    addEnemy(E_TURRET, 17, 5, 11, 18);
+    plat(12, 21, 29);
+    addEnemy(E_WALKER, 24, 12, 21, 29);
+
+    // Room 4: Long sprint jump across hay pits
+    baseCol = 3 * ROOM_COLS;
+    spk(16, 2, 29);
+    plat(14, 3, 9);
+    plat(14, 14, 20);
+    addEnemy(E_WALKER, 17, 14, 14, 20);
+    plat(12, 24, 30);
+    addEnemy(E_JUMPER, 27, 12, 24, 30);
+    addCheckpoint(25, 12);
+
+    // Room 5: Windmill ridge
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(15, 3, 8);
+    plat(12, 11, 16);
+    sawAt(11, 18);
+    plat(12, 20, 25);
+    addEnemy(E_FLYER, 22, 8, 19, 27);
+    plat(10, 27, 30);
+
+    // Room 6: Golden sunset terrace
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 3, 28);
+    plat(14, 3, 9);
+    plat(11, 12, 18);
+    addEnemy(E_WALKER, 15, 11, 12, 18);
+    plat(9, 21, 29);
+    addEnemy(E_TURRET, 24, 9, 21, 26);
+    put(8, 28, 'G');
+    baseCol = 0;
+}
+
+// Redesigned Stage 2: Sandy Desert Canyons & Twin-Wall Chimneys
+static void buildDesertStage() {
+    baseCol = 0;
+    levelCols = COLS;
+    levelPixelWidth = WORLD_WIDTH;
+
+    // Room 1: First twin-wall canyon
+    baseCol = 0 * ROOM_COLS;
+    wall(10, 6, 14);
+    wall(13, 6, 16);
+    plat(6, 13, 21);
+    spk(16, 14, 21);
+    addEnemy(E_WALKER, 17, 6, 13, 21);
+    plat(13, 24, 30);
+    addEnemy(E_JUMPER, 27, 13, 24, 30);
+
+    // Room 2: Dune turret & sand leap
+    baseCol = 1 * ROOM_COLS;
+    spk(16, 3, 28);
+    plat(14, 3, 9);
+    plat(11, 12, 18);
+    addEnemy(E_TURRET, 17, 11, 12, 18);
+    plat(14, 21, 27);
+    addEnemy(E_FLYER, 24, 10, 20, 28);
+    plat(12, 28, 30);
+    addCheckpoint(29, 12);
+
+    // Room 3: Double twin-wall chimneys in one room!
+    baseCol = 2 * ROOM_COLS;
+    wall(7, 7, 14);
+    wall(10, 7, 16);
+    plat(7, 10, 15);
+    wall(18, 5, 13);
+    wall(21, 5, 15);
+    plat(5, 21, 29);
+    spk(16, 11, 20);
+    addEnemy(E_WALKER, 25, 5, 21, 29);
+
+    // Room 4: Pyramid steps & moving hazards
+    baseCol = 3 * ROOM_COLS;
+    spk(16, 2, 29);
+    plat(15, 3, 7);
+    plat(13, 10, 14);
+    sawAt(12, 16);
+    plat(13, 18, 22);
+    addEnemy(E_JUMPER, 20, 13, 18, 22);
+    plat(10, 25, 30);
+    addEnemy(E_TURRET, 29, 10, 25, 30);
+    addCheckpoint(26, 10);
+
+    // Room 5: High oasis wall shaft
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(14, 3, 8);
+    wall(11, 4, 13);
+    wall(14, 4, 15);
+    plat(4, 14, 22);
+    addEnemy(E_FLYER, 18, 1, 14, 23);
+    plat(12, 25, 30);
+
+    // Room 6: Desert temple summit
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 3, 28);
+    plat(14, 3, 8);
+    wall(12, 6, 13);
+    wall(15, 6, 15);
+    plat(6, 15, 22);
+    addEnemy(E_WALKER, 18, 6, 15, 22);
+    plat(9, 24, 30);
+    put(8, 28, 'G');
+    baseCol = 0;
+}
+
+// Redesigned Stage 3: Snowy Mountain Peaks & Saw Bridges
+static void buildSnowStage() {
+    baseCol = 0;
+    levelCols = COLS;
+    levelPixelWidth = WORLD_WIDTH;
+
+    // Room 1: Frost ledges & saw timing
+    baseCol = 0 * ROOM_COLS;
+    plat(14, 6, 12);
+    sawAt(15, 14);
+    plat(14, 16, 22);
+    addEnemy(E_WALKER, 19, 14, 16, 22);
+    plat(12, 25, 30);
+    addEnemy(E_FLYER, 27, 8, 24, 30);
+
+    // Room 2: Glacial twin-wall climb
+    baseCol = 1 * ROOM_COLS;
+    spk(16, 3, 28);
+    plat(14, 3, 8);
+    wall(11, 5, 13);
+    wall(14, 5, 15);
+    plat(5, 14, 21);
+    addEnemy(E_JUMPER, 17, 5, 14, 21);
+    plat(12, 24, 30);
+    addCheckpoint(25, 12);
+
+    // Room 3: Saw alley & snow turret
+    baseCol = 2 * ROOM_COLS;
+    spk(16, 2, 29);
+    plat(14, 3, 8);
+    sawAt(13, 10);
+    plat(14, 12, 17);
+    sawAt(13, 19);
+    plat(12, 21, 27);
+    addEnemy(E_TURRET, 26, 12, 21, 27);
+    plat(14, 28, 30);
+
+    // Room 4: Summit wind & ice platforms
+    baseCol = 3 * ROOM_COLS;
+    spk(16, 2, 29);
+    plat(15, 3, 7);
+    plat(12, 10, 14);
+    addEnemy(E_FLYER, 12, 8, 9, 16);
+    plat(9, 17, 21);
+    sawAt(8, 23);
+    plat(11, 25, 30);
+    addCheckpoint(26, 11);
+
+    // Room 5: Deep freeze wall-jump & saws
+    baseCol = 4 * ROOM_COLS;
+    spk(16, 3, 29);
+    plat(14, 3, 8);
+    wall(11, 5, 13);
+    wall(14, 5, 15);
+    plat(5, 14, 20);
+    sawAt(4, 22);
+    plat(10, 24, 30);
+    addEnemy(E_WALKER, 27, 10, 24, 30);
+
+    // Room 6: Frozen peak sanctuary
+    baseCol = 5 * ROOM_COLS;
+    spk(16, 3, 28);
+    plat(14, 3, 8);
+    plat(11, 11, 16);
+    sawAt(10, 18);
+    plat(9, 20, 25);
+    addEnemy(E_JUMPER, 22, 9, 20, 25);
+    plat(8, 26, 30);
+    put(7, 28, 'G');
+    baseCol = 0;
+}
+
+// Redesigned Boss Arena: Multi-tiered Combat Arena with Side Wall-Jumps & Strike Switch
 static void buildBossArena(int tier) {
     baseCol = 0;
     levelCols = ROOM_COLS;
@@ -1334,20 +1533,25 @@ static void buildBossArena(int tier) {
     for (int r = 0; r < ROWS; r++)
         level[r][ROOM_COLS - 1] = '#';
 
-    wall(3, 6, 13);
-    wall(28, 6, 13);
+    // Left & Right wall-jump columns
+    wall(3, 6, 14);
+    wall(28, 6, 14);
 
-    plat(12, 6, 10);
-    plat(12, 21, 25);
-
+    // Left, Center-High & Right combat platforms
+    plat(12, 5, 9);
     plat(7, 13, 18);
+    plat(12, 22, 26);
+
+    // Corner hazards on far edges so player stays in active arena
+    spk(16, 1, 2);
+    spk(16, 29, 30);
 
     bossActive = true;
     bossW = 104;
     bossH = 104;
-    bossX = (float)(22 * TILE);
+    bossX = (float)(21 * TILE);
     bossY = (float)((ROWS - 1) * TILE - bossH);
-    bossVX = (tier >= 2) ? -5.2f : -4.2f;
+    bossVX = (tier >= 2) ? -5.4f : -4.2f;
     bossVY = 0.0f;
     bossMaxHP = (tier >= 2) ? 14 : 10;
     bossHP = bossMaxHP;
@@ -1359,6 +1563,367 @@ static void buildBossArena(int tier) {
 
     for (int i = 0; i < MAX_BOSS_SHOTS; i++)
         bossShots[i].active = false;
+}
+
+// Redesigned Stages 5..11 (Distinct layouts & exciting obstacle/enemy combinations)
+static void buildExtraStage(int idx) {
+    baseCol = 0;
+    levelCols = COLS;
+    levelPixelWidth = WORLD_WIDTH;
+
+    if (idx == 5) {
+        // Stage 6: Midnight Tower Gauntlet
+        baseCol = 0 * ROOM_COLS;
+        spk(16, 8, 12);
+        plat(14, 14, 20);
+        addEnemy(E_WALKER, 17, 14, 14, 20);
+        sawAt(13, 22);
+        plat(13, 24, 30);
+
+        baseCol = 1 * ROOM_COLS;
+        spk(16, 3, 28);
+        wall(8, 5, 13);
+        wall(11, 5, 15);
+        plat(5, 11, 18);
+        addEnemy(E_FLYER, 14, 2, 11, 20);
+        plat(11, 21, 29);
+        addEnemy(E_TURRET, 27, 11, 21, 29);
+        addCheckpoint(22, 11);
+
+        baseCol = 2 * ROOM_COLS;
+        spk(16, 2, 29);
+        plat(15, 3, 7);
+        plat(12, 10, 14);
+        plat(9, 17, 21);
+        addEnemy(E_JUMPER, 19, 9, 17, 21);
+        plat(12, 24, 30);
+        sawAt(11, 26);
+
+        baseCol = 3 * ROOM_COLS;
+        spk(16, 2, 29);
+        plat(14, 3, 8);
+        sawAt(13, 10);
+        plat(12, 12, 17);
+        addEnemy(E_WALKER, 14, 12, 12, 17);
+        plat(9, 20, 25);
+        addEnemy(E_FLYER, 22, 5, 19, 27);
+        plat(11, 27, 30);
+        addCheckpoint(28, 11);
+
+        baseCol = 4 * ROOM_COLS;
+        spk(16, 3, 29);
+        wall(9, 6, 14);
+        wall(12, 6, 15);
+        plat(6, 12, 19);
+        addEnemy(E_TURRET, 18, 6, 12, 19);
+        plat(12, 22, 29);
+        addEnemy(E_JUMPER, 25, 12, 22, 29);
+
+        baseCol = 5 * ROOM_COLS;
+        spk(16, 3, 28);
+        plat(14, 3, 8);
+        plat(11, 11, 16);
+        sawAt(10, 18);
+        plat(8, 20, 29);
+        addEnemy(E_WALKER, 23, 8, 20, 26);
+        put(7, 28, 'G');
+    } else if (idx == 6) {
+        // Stage 7: Crystal Cavern Caverns
+        baseCol = 0 * ROOM_COLS;
+        spk(16, 7, 13);
+        plat(13, 15, 22);
+        addEnemy(E_FLYER, 18, 9, 14, 23);
+        plat(15, 24, 30);
+        addEnemy(E_WALKER, 27, 15, 24, 30);
+
+        baseCol = 1 * ROOM_COLS;
+        spk(16, 3, 28);
+        plat(14, 3, 8);
+        wall(11, 5, 13);
+        wall(14, 5, 15);
+        plat(5, 14, 21);
+        sawAt(4, 17);
+        plat(11, 24, 30);
+        addEnemy(E_TURRET, 28, 11, 24, 30);
+        addCheckpoint(25, 11);
+
+        baseCol = 2 * ROOM_COLS;
+        spk(16, 2, 29);
+        plat(14, 3, 8);
+        plat(11, 11, 15);
+        addEnemy(E_JUMPER, 13, 11, 11, 15);
+        plat(14, 18, 22);
+        sawAt(13, 24);
+        plat(12, 26, 30);
+
+        baseCol = 3 * ROOM_COLS;
+        spk(16, 2, 29);
+        wall(7, 6, 14);
+        wall(10, 6, 15);
+        plat(6, 10, 16);
+        addEnemy(E_WALKER, 13, 6, 10, 16);
+        plat(11, 19, 24);
+        addEnemy(E_FLYER, 21, 7, 18, 26);
+        plat(13, 26, 30);
+        addCheckpoint(27, 13);
+
+        baseCol = 4 * ROOM_COLS;
+        spk(16, 3, 29);
+        plat(15, 3, 7);
+        sawAt(14, 9);
+        plat(13, 11, 15);
+        sawAt(12, 17);
+        plat(11, 19, 23);
+        addEnemy(E_TURRET, 22, 11, 19, 23);
+        plat(13, 25, 30);
+
+        baseCol = 5 * ROOM_COLS;
+        spk(16, 3, 28);
+        plat(14, 3, 8);
+        wall(11, 5, 13);
+        wall(14, 5, 15);
+        plat(5, 14, 22);
+        addEnemy(E_JUMPER, 18, 5, 14, 22);
+        plat(9, 24, 30);
+        put(8, 28, 'G');
+    } else if (idx == 7) {
+        // Stage 8: Autumn Gale Sprint & Jumps
+        baseCol = 0 * ROOM_COLS;
+        spk(16, 9, 14);
+        plat(14, 16, 22);
+        addEnemy(E_JUMPER, 19, 14, 16, 22);
+        spk(16, 24, 27);
+        plat(14, 28, 30);
+
+        baseCol = 1 * ROOM_COLS;
+        spk(16, 3, 29);
+        plat(14, 3, 9);
+        sawAt(13, 11);
+        plat(13, 13, 19);
+        addEnemy(E_WALKER, 16, 13, 13, 19);
+        plat(11, 22, 28);
+        addEnemy(E_FLYER, 25, 7, 21, 29);
+        addCheckpoint(23, 11);
+
+        baseCol = 2 * ROOM_COLS;
+        spk(16, 2, 29);
+        plat(15, 3, 8);
+        plat(12, 11, 16);
+        addEnemy(E_TURRET, 15, 12, 11, 16);
+        plat(15, 19, 23);
+        plat(12, 26, 30);
+
+        baseCol = 3 * ROOM_COLS;
+        spk(16, 2, 29);
+        wall(9, 5, 14);
+        wall(12, 5, 16);
+        plat(5, 12, 19);
+        addEnemy(E_WALKER, 15, 5, 12, 19);
+        plat(12, 22, 29);
+        sawAt(11, 25);
+        addCheckpoint(23, 12);
+
+        baseCol = 4 * ROOM_COLS;
+        spk(16, 3, 29);
+        plat(14, 3, 8);
+        plat(11, 11, 15);
+        addEnemy(E_JUMPER, 13, 11, 11, 15);
+        plat(14, 18, 22);
+        addEnemy(E_FLYER, 20, 10, 17, 24);
+        plat(11, 25, 30);
+
+        baseCol = 5 * ROOM_COLS;
+        spk(16, 3, 28);
+        plat(14, 3, 8);
+        plat(11, 11, 17);
+        addEnemy(E_WALKER, 14, 11, 11, 17);
+        plat(9, 20, 29);
+        addEnemy(E_TURRET, 24, 9, 20, 25);
+        put(8, 28, 'G');
+    } else if (idx == 8) {
+        // Stage 9: Mystic Swamp Stepping & Chimneys
+        baseCol = 0 * ROOM_COLS;
+        spk(16, 6, 27);
+        plat(15, 5, 8);
+        plat(13, 11, 14);
+        addEnemy(E_WALKER, 12, 13, 11, 14);
+        plat(15, 17, 20);
+        plat(13, 23, 28);
+        addEnemy(E_JUMPER, 25, 13, 23, 28);
+
+        baseCol = 1 * ROOM_COLS;
+        spk(16, 3, 29);
+        wall(8, 5, 14);
+        wall(11, 5, 15);
+        plat(5, 11, 17);
+        addEnemy(E_FLYER, 14, 2, 11, 18);
+        wall(20, 6, 14);
+        wall(23, 6, 15);
+        plat(6, 23, 29);
+        addCheckpoint(24, 6);
+
+        baseCol = 2 * ROOM_COLS;
+        spk(16, 2, 29);
+        plat(14, 3, 7);
+        sawAt(13, 9);
+        plat(12, 11, 15);
+        addEnemy(E_TURRET, 14, 12, 11, 15);
+        plat(14, 18, 22);
+        plat(11, 25, 30);
+
+        baseCol = 3 * ROOM_COLS;
+        spk(16, 2, 29);
+        plat(15, 3, 7);
+        plat(12, 10, 14);
+        addEnemy(E_WALKER, 12, 12, 10, 14);
+        plat(10, 17, 21);
+        sawAt(9, 23);
+        plat(12, 25, 30);
+        addCheckpoint(26, 12);
+
+        baseCol = 4 * ROOM_COLS;
+        spk(16, 3, 29);
+        wall(9, 5, 13);
+        wall(12, 5, 15);
+        plat(5, 12, 18);
+        addEnemy(E_JUMPER, 15, 5, 12, 18);
+        plat(12, 21, 26);
+        addEnemy(E_FLYER, 23, 8, 20, 28);
+        plat(14, 27, 30);
+
+        baseCol = 5 * ROOM_COLS;
+        spk(16, 3, 28);
+        plat(14, 3, 8);
+        plat(11, 11, 16);
+        sawAt(10, 18);
+        plat(9, 20, 29);
+        addEnemy(E_WALKER, 23, 9, 20, 26);
+        put(8, 28, 'G');
+    } else if (idx == 10) {
+        // Stage 11: Sky Citadel High Climb
+        baseCol = 0 * ROOM_COLS;
+        spk(16, 6, 27);
+        plat(14, 5, 9);
+        plat(11, 12, 16);
+        addEnemy(E_FLYER, 14, 7, 11, 18);
+        plat(8, 19, 23);
+        addEnemy(E_TURRET, 22, 8, 19, 23);
+        plat(12, 26, 30);
+
+        baseCol = 1 * ROOM_COLS;
+        spk(16, 3, 29);
+        wall(8, 4, 13);
+        wall(11, 4, 15);
+        plat(4, 11, 18);
+        sawAt(3, 20);
+        plat(10, 22, 29);
+        addEnemy(E_JUMPER, 25, 10, 22, 29);
+        addCheckpoint(23, 10);
+
+        baseCol = 2 * ROOM_COLS;
+        spk(16, 2, 29);
+        plat(14, 3, 8);
+        addEnemy(E_WALKER, 5, 14, 3, 8);
+        plat(11, 11, 16);
+        sawAt(10, 18);
+        plat(13, 20, 25);
+        plat(10, 27, 30);
+
+        baseCol = 3 * ROOM_COLS;
+        spk(16, 2, 29);
+        plat(14, 3, 7);
+        wall(10, 5, 13);
+        wall(13, 5, 15);
+        plat(5, 13, 19);
+        addEnemy(E_FLYER, 16, 2, 13, 21);
+        plat(11, 22, 29);
+        addEnemy(E_TURRET, 28, 11, 22, 29);
+        addCheckpoint(23, 11);
+
+        baseCol = 4 * ROOM_COLS;
+        spk(16, 3, 29);
+        plat(15, 3, 7);
+        plat(12, 10, 14);
+        sawAt(11, 16);
+        plat(9, 18, 22);
+        addEnemy(E_JUMPER, 20, 9, 18, 22);
+        plat(12, 25, 30);
+
+        baseCol = 5 * ROOM_COLS;
+        spk(16, 3, 28);
+        plat(14, 3, 8);
+        plat(11, 11, 16);
+        addEnemy(E_WALKER, 13, 11, 11, 16);
+        plat(8, 19, 29);
+        addEnemy(E_FLYER, 23, 5, 20, 27);
+        put(7, 28, 'G');
+    } else {
+        // Stage 12: Dark Obsidian Tower Grand Finale
+        baseCol = 0 * ROOM_COLS;
+        spk(16, 6, 27);
+        plat(14, 5, 9);
+        sawAt(13, 11);
+        plat(12, 13, 17);
+        addEnemy(E_TURRET, 16, 12, 13, 17);
+        wall(20, 6, 13);
+        wall(23, 6, 15);
+        plat(6, 23, 29);
+
+        baseCol = 1 * ROOM_COLS;
+        spk(16, 3, 29);
+        plat(14, 3, 8);
+        addEnemy(E_JUMPER, 5, 14, 3, 8);
+        plat(11, 11, 16);
+        sawAt(10, 18);
+        plat(12, 20, 24);
+        addEnemy(E_FLYER, 22, 8, 19, 27);
+        plat(10, 26, 30);
+        addCheckpoint(27, 10);
+
+        baseCol = 2 * ROOM_COLS;
+        spk(16, 2, 29);
+        wall(7, 5, 13);
+        wall(10, 5, 15);
+        plat(5, 10, 16);
+        addEnemy(E_WALKER, 13, 5, 10, 16);
+        sawAt(12, 18);
+        plat(13, 20, 24);
+        plat(10, 26, 30);
+
+        baseCol = 3 * ROOM_COLS;
+        spk(16, 2, 29);
+        plat(14, 3, 8);
+        plat(11, 11, 15);
+        addEnemy(E_TURRET, 14, 11, 11, 15);
+        wall(18, 5, 13);
+        wall(21, 5, 15);
+        plat(5, 21, 29);
+        addEnemy(E_JUMPER, 25, 5, 21, 29);
+        addCheckpoint(22, 5);
+
+        baseCol = 4 * ROOM_COLS;
+        spk(16, 3, 29);
+        plat(15, 3, 7);
+        sawAt(14, 9);
+        plat(12, 11, 15);
+        addEnemy(E_FLYER, 13, 8, 10, 17);
+        plat(10, 18, 22);
+        sawAt(9, 24);
+        plat(12, 26, 30);
+
+        baseCol = 5 * ROOM_COLS;
+        spk(16, 3, 28);
+        plat(14, 3, 8);
+        wall(11, 5, 13);
+        wall(14, 5, 15);
+        plat(5, 14, 21);
+        addEnemy(E_WALKER, 17, 5, 14, 21);
+        plat(8, 24, 30);
+        addEnemy(E_TURRET, 26, 8, 24, 27);
+        put(7, 28, 'G');
+    }
+
+    baseCol = 0;
 }
 
 static void buildLevel() {
@@ -1378,18 +1943,28 @@ static void buildLevel() {
     }
 
     int idx = currentLevel % 12;
-    if (idx == 0)      currentBiome = 0;
-    else if (idx == 1) currentBiome = 1;
-    else if (idx == 2) currentBiome = 2;
-    else if (idx == 3) currentBiome = 3;
-    else if (idx == 5) currentBiome = 5;
-    else if (idx == 6) currentBiome = 3;
-    else if (idx == 7) currentBiome = 1;
-    else if (idx == 8) currentBiome = 0;
-    else if (idx == 10)currentBiome = 2;
-    else               currentBiome = 4;
+    if (idx == 0) {
+        currentBiome = 0;
+        buildForestStage();
+    } else if (idx == 1) {
+        currentBiome = 1;
+        buildCountryStage();
+    } else if (idx == 2) {
+        currentBiome = 2;
+        buildDesertStage();
+    } else if (idx == 3) {
+        currentBiome = 3;
+        buildSnowStage();
+    } else {
+        if (idx == 5)      currentBiome = 5;
+        else if (idx == 6) currentBiome = 3;
+        else if (idx == 7) currentBiome = 1;
+        else if (idx == 8) currentBiome = 0;
+        else if (idx == 10)currentBiome = 2;
+        else               currentBiome = 4;
+        buildExtraStage(idx);
+    }
 
-    buildScrollingActionStage(currentLevel);
     populateLevelPlants();
     initAmbientParticles();
 }
@@ -1668,8 +2243,8 @@ static void updatePlantsAndAmbient(bool p1Burst, bool p2Burst) {
 
 // ---------- Player & 2-Player Co-op Logic ----------
 static void respawn() {
-    px = (float)(roomIdx * FRAME_WIDTH + TILE + 8);
-    py = (float)((ROWS - 1) * TILE - PH);
+    px = checkpointX;
+    py = checkpointY;
 
     vx = 0;
     vy = 0;
@@ -1695,7 +2270,7 @@ static void respawn() {
     }
 
     if (bossActive && bossHP > 0) {
-        bossX = (float)(22 * TILE);
+        bossX = (float)(21 * TILE);
         bossY = (float)((ROWS - 1) * TILE - bossH);
         for (int i = 0; i < MAX_BOSS_SHOTS; i++)
             bossShots[i].active = false;
