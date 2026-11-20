@@ -373,11 +373,11 @@ static const Page PAGES[11] = {
 
     {10, 3, {"STAGE 1: LIVING FOREST - JUMP AND SHOOT",
              "PRESS X TO JUMP, PRESS O OR R1 TO SHOOT ENEMIES.",
-             "BEAT STAGES TO UNLOCK WEAPONS AND SWITCH WITH TRIANGLE!"},
+             "P2 CAN JOIN WITH OPTIONS! TRIANGLE SWITCHES WEAPONS."},
      {AR(T1L0), AR(T1L1), AR(T1L2)}},
     {11, 3, {"STAGE 2: COUNTRYSIDE - SPRINT AND SHOTGUN",
              "HOLD SQUARE TO SPRINT AND FIRE YOUR SPREAD SHOTGUN.",
-             "STOMP ENEMIES OR BLAST THEM ACROSS WIDE GAPS!"},
+             "STOMP ENEMIES OR BLAST THEM ACROSS BRIDGES!"},
      {AR(T2L0), AR(T2L1), AR(T2L2)}},
     {12, 3, {"STAGE 3: GOLDEN DESERT - TWO-WALL JUMP",
              "ENTER BETWEEN TWO WALLS AND SLIDE SLOWLY.",
@@ -463,7 +463,17 @@ static bool isBossStage(int lvl) {
     return ((lvl + 1) % 5) == 0;
 }
 
-// ---------- Controller & Multi-Account Support ----------
+// ---------- Controller & Multi-Account Co-op Support ----------
+static void tryOpenPad2Slot(int uid, int slot) {
+    if (padHandle2 >= 0 || uid < 0)
+        return;
+    int h = scePadOpen(uid, slot, 0, NULL);
+    if (h >= 0 && h != padHandle) {
+        padUserID2 = uid;
+        padHandle2 = h;
+    }
+}
+
 static void refreshSecondPad() {
     if (padHandle2 >= 0)
         return;
@@ -474,18 +484,23 @@ static void refreshSecondPad() {
         for (int i = 0; i < ORBIS_USER_SERVICE_MAX_LOGIN_USERS; i++) {
             int uid = loginList.userId[i];
             if (uid > 0 && uid != padUserID) {
-                padUserID2 = uid;
-                padHandle2 = scePadOpen(padUserID2, 0, 0, NULL);
+                tryOpenPad2Slot(uid, 0);
+                tryOpenPad2Slot(uid, 1);
                 if (padHandle2 >= 0)
                     return;
             }
         }
     }
 
+    // Check common PS4 user IDs (1..8) and secondary pad slots
+    for (int uid = 1; uid <= 8 && padHandle2 < 0; uid++) {
+        if (uid != padUserID)
+            tryOpenPad2Slot(uid, 0);
+    }
     if (padHandle2 < 0)
-        padHandle2 = scePadOpen(padUserID, 1, 0, NULL);
+        tryOpenPad2Slot(padUserID, 1);
     if (padHandle2 < 0)
-        padHandle2 = scePadOpen(padUserID + 1, 0, 0, NULL);
+        tryOpenPad2Slot(0xFF, 0);
 }
 
 static bool initPad() {
@@ -566,13 +581,17 @@ static void readInput() {
     scePadReadState(padHandle, &padData);
     parsePadData(padData, in, prevCross, prevCircle, prevOptions, prevShoot, prevSwitch);
 
-    if (padHandle2 < 0 && (tick % 30) == 0)
+    if (padHandle2 < 0 && (tick % 15) == 0)
         refreshSecondPad();
 
     memset(&in2, 0, sizeof(in2));
     if (padHandle2 >= 0) {
-        scePadReadState(padHandle2, &padData2);
-        parsePadData(padData2, in2, prevCross2, prevCircle2, prevOptions2, prevShoot2, prevSwitch2);
+        int st = scePadReadState(padHandle2, &padData2);
+        if (st == 0) {
+            parsePadData(padData2, in2, prevCross2, prevCircle2, prevOptions2, prevShoot2, prevSwitch2);
+        } else {
+            padHandle2 = -1;
+        }
     }
 }
 
@@ -1114,9 +1133,9 @@ static void addEnemy(int kind, int col, int row, int minC, int maxC) {
     e.minX = (float)((baseCol + minC) * TILE + 4);
     e.maxX = (float)((baseCol + maxC) * TILE + 12);
     e.dir = 1;
-    e.vx = (kind == E_WALKER) ? 2.6f : ((kind == E_FLYER) ? 3.2f : 2.0f);
+    e.vx = (kind == E_WALKER) ? 2.4f : ((kind == E_FLYER) ? 2.8f : 1.9f);
     e.vy = 0.0f;
-    e.maxHp = (kind == E_TURRET) ? 3 : 2;
+    e.maxHp = (kind == E_TURRET) ? 2 : 1;
     e.hp = e.maxHp;
     e.hurt = 0;
     e.timer = (col * 17) & 63;
@@ -1242,261 +1261,225 @@ static void clearLevelGrid() {
         bullets[i].active = false;
 }
 
-// Stage 0: Lush Forest Canopy & Ancient Bridges
+// Stage 0: Accessible, fun & lively Forest Adventure (close platforms, clear path to goal)
 static void buildForestStage() {
     baseCol = 0;
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
+    // Room 1: Smooth opening with safe ground & close stepping islands
     baseCol = 0 * ROOM_COLS;
-    plat(15, 6, 12);
-    addEnemy(E_WALKER, 9, 15, 6, 12);
-    spk(16, 14, 15);
-    plat(13, 17, 23);
-    addEnemy(E_JUMPER, 20, 13, 17, 23);
+    plat(15, 7, 13);
+    addEnemy(E_WALKER, 10, 15, 7, 13);
+    plat(14, 16, 22);
+    addEnemy(E_JUMPER, 19, 14, 16, 22);
     plat(15, 25, 30);
 
+    // Room 2: Gentle step-up platforms over a narrow spike patch
     baseCol = 1 * ROOM_COLS;
-    spk(16, 3, 28);
-    plat(15, 2, 7);
-    plat(12, 10, 15);
-    addEnemy(E_FLYER, 12, 8, 9, 17);
-    plat(10, 18, 23);
-    plat(13, 25, 30);
-    addEnemy(E_WALKER, 27, 13, 25, 30);
-    addCheckpoint(29, 13);
+    spk(16, 11, 13);
+    plat(14, 15, 21);
+    addEnemy(E_FLYER, 18, 10, 15, 22);
+    plat(13, 24, 30);
+    addEnemy(E_WALKER, 27, 13, 24, 30);
+    addCheckpoint(26, 13);
 
+    // Room 3: Friendly twin-wall climb (easy spacing between walls)
     baseCol = 2 * ROOM_COLS;
-    wall(9, 6, 14);
-    wall(12, 6, 16);
-    plat(6, 12, 19);
-    spk(16, 13, 20);
-    addEnemy(E_WALKER, 16, 6, 12, 19);
-    plat(12, 22, 29);
-    addEnemy(E_JUMPER, 25, 12, 22, 29);
+    wall(9, 8, 14);
+    wall(13, 8, 16);
+    plat(8, 13, 20);
+    addEnemy(E_WALKER, 16, 8, 13, 20);
+    plat(13, 23, 30);
+    addEnemy(E_JUMPER, 26, 13, 23, 30);
 
+    // Room 4: Bridge sequence with a single saw & turret
     baseCol = 3 * ROOM_COLS;
-    spk(16, 2, 29);
-    plat(14, 3, 7);
-    plat(11, 10, 14);
-    addEnemy(E_FLYER, 12, 7, 9, 17);
-    plat(13, 17, 21);
-    plat(10, 24, 30);
-    addEnemy(E_TURRET, 28, 10, 24, 30);
-    addCheckpoint(25, 10);
+    plat(14, 4, 10);
+    sawAt(15, 13);
+    plat(14, 16, 22);
+    addEnemy(E_FLYER, 19, 10, 16, 23);
+    plat(12, 25, 30);
+    addEnemy(E_TURRET, 29, 12, 25, 30);
+    addCheckpoint(26, 12);
 
+    // Room 5: Terraced climb toward the upper grove
     baseCol = 4 * ROOM_COLS;
-    spk(16, 3, 28);
-    plat(14, 3, 8);
-    plat(11, 11, 16);
-    wall(19, 5, 12);
-    plat(5, 19, 25);
-    addEnemy(E_WALKER, 22, 5, 19, 25);
-    plat(12, 27, 30);
+    plat(15, 4, 10);
+    plat(13, 13, 19);
+    addEnemy(E_WALKER, 16, 13, 13, 19);
+    plat(11, 22, 30);
+    addEnemy(E_JUMPER, 25, 11, 22, 30);
 
+    // Room 6: Final welcoming platforms leading straight to Goal 'G'
     baseCol = 5 * ROOM_COLS;
-    spk(16, 3, 28);
-    plat(14, 3, 8);
-    plat(12, 11, 16);
-    addEnemy(E_JUMPER, 13, 12, 11, 16);
-    plat(10, 19, 24);
-    addEnemy(E_FLYER, 21, 6, 18, 26);
-    plat(8, 25, 30);
-    put(7, 28, 'G');
+    plat(14, 4, 10);
+    plat(12, 13, 19);
+    addEnemy(E_FLYER, 16, 8, 13, 20);
+    plat(10, 22, 30);
+    put(9, 27, 'G');
     baseCol = 0;
 }
 
-// Stage 1: Golden Countryside Sprint & Harvest Bridges
+// Stage 1: Golden Countryside Sprint & Close Farm Terraces
 static void buildCountryStage() {
     baseCol = 0;
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
     baseCol = 0 * ROOM_COLS;
-    spk(16, 10, 13);
-    plat(14, 15, 21);
-    addEnemy(E_WALKER, 18, 14, 15, 21);
-    spk(16, 23, 26);
-    plat(15, 27, 30);
+    plat(15, 7, 13);
+    addEnemy(E_WALKER, 10, 15, 7, 13);
+    spk(16, 15, 17);
+    plat(14, 20, 26);
+    addEnemy(E_JUMPER, 23, 14, 20, 26);
+    plat(15, 28, 30);
 
     baseCol = 1 * ROOM_COLS;
-    spk(16, 3, 28);
-    plat(15, 2, 8);
-    plat(13, 11, 17);
-    addEnemy(E_JUMPER, 14, 13, 11, 17);
-    plat(11, 20, 26);
-    addEnemy(E_FLYER, 23, 7, 19, 28);
-    plat(14, 27, 30);
-    addCheckpoint(28, 14);
+    plat(14, 4, 10);
+    plat(12, 13, 19);
+    addEnemy(E_FLYER, 16, 8, 13, 20);
+    plat(14, 22, 30);
+    addEnemy(E_WALKER, 25, 14, 22, 30);
+    addCheckpoint(24, 14);
 
     baseCol = 2 * ROOM_COLS;
-    wall(8, 5, 14);
-    wall(11, 5, 16);
-    plat(5, 11, 18);
-    spk(16, 12, 19);
-    addEnemy(E_TURRET, 17, 5, 11, 18);
-    plat(12, 21, 29);
-    addEnemy(E_WALKER, 24, 12, 21, 29);
+    wall(9, 8, 14);
+    wall(13, 8, 16);
+    plat(8, 13, 20);
+    addEnemy(E_TURRET, 19, 8, 13, 20);
+    plat(13, 23, 30);
+    addEnemy(E_JUMPER, 26, 13, 23, 30);
 
     baseCol = 3 * ROOM_COLS;
-    spk(16, 2, 29);
-    plat(14, 3, 9);
-    plat(14, 14, 20);
-    addEnemy(E_WALKER, 17, 14, 14, 20);
-    plat(12, 24, 30);
-    addEnemy(E_JUMPER, 27, 12, 24, 30);
-    addCheckpoint(25, 12);
+    plat(14, 4, 10);
+    sawAt(15, 13);
+    plat(14, 16, 22);
+    addEnemy(E_WALKER, 19, 14, 16, 22);
+    plat(12, 25, 30);
+    addCheckpoint(26, 12);
 
     baseCol = 4 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(15, 3, 8);
-    plat(12, 11, 16);
-    sawAt(11, 18);
-    plat(12, 20, 25);
-    addEnemy(E_FLYER, 22, 8, 19, 27);
-    plat(10, 27, 30);
+    plat(15, 4, 10);
+    plat(12, 13, 19);
+    addEnemy(E_FLYER, 16, 8, 13, 20);
+    plat(10, 22, 30);
+    addEnemy(E_JUMPER, 25, 10, 22, 30);
 
     baseCol = 5 * ROOM_COLS;
-    spk(16, 3, 28);
-    plat(14, 3, 9);
-    plat(11, 12, 18);
-    addEnemy(E_WALKER, 15, 11, 12, 18);
-    plat(9, 21, 29);
-    addEnemy(E_TURRET, 24, 9, 21, 26);
-    put(8, 28, 'G');
+    plat(14, 4, 10);
+    plat(12, 13, 19);
+    addEnemy(E_WALKER, 16, 12, 13, 19);
+    plat(10, 22, 30);
+    put(9, 27, 'G');
     baseCol = 0;
 }
 
-// Stage 2: Sandy Desert Canyons & Twin-Wall Chimneys
+// Stage 2: Sandy Desert Oasis & Twin-Wall Chimneys
 static void buildDesertStage() {
     baseCol = 0;
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
     baseCol = 0 * ROOM_COLS;
-    wall(10, 6, 14);
-    wall(13, 6, 16);
-    plat(6, 13, 21);
-    spk(16, 14, 21);
-    addEnemy(E_WALKER, 17, 6, 13, 21);
-    plat(13, 24, 30);
-    addEnemy(E_JUMPER, 27, 13, 24, 30);
+    wall(9, 8, 14);
+    wall(13, 8, 16);
+    plat(8, 13, 20);
+    addEnemy(E_WALKER, 16, 8, 13, 20);
+    plat(13, 23, 30);
+    addEnemy(E_JUMPER, 26, 13, 23, 30);
 
     baseCol = 1 * ROOM_COLS;
-    spk(16, 3, 28);
-    plat(14, 3, 9);
-    plat(11, 12, 18);
-    addEnemy(E_TURRET, 17, 11, 12, 18);
-    plat(14, 21, 27);
-    addEnemy(E_FLYER, 24, 10, 20, 28);
-    plat(12, 28, 30);
-    addCheckpoint(29, 12);
+    plat(14, 4, 10);
+    plat(11, 13, 19);
+    addEnemy(E_TURRET, 18, 11, 13, 19);
+    plat(14, 22, 30);
+    addEnemy(E_FLYER, 25, 10, 22, 30);
+    addCheckpoint(24, 14);
 
     baseCol = 2 * ROOM_COLS;
-    wall(7, 7, 14);
-    wall(10, 7, 16);
-    plat(7, 10, 15);
-    wall(18, 5, 13);
-    wall(21, 5, 15);
-    plat(5, 21, 29);
-    spk(16, 11, 20);
-    addEnemy(E_WALKER, 25, 5, 21, 29);
+    wall(8, 8, 14);
+    wall(12, 8, 16);
+    plat(8, 12, 18);
+    plat(13, 21, 30);
+    addEnemy(E_WALKER, 25, 13, 21, 30);
 
     baseCol = 3 * ROOM_COLS;
-    spk(16, 2, 29);
-    plat(15, 3, 7);
-    plat(13, 10, 14);
-    sawAt(12, 16);
-    plat(13, 18, 22);
-    addEnemy(E_JUMPER, 20, 13, 18, 22);
-    plat(10, 25, 30);
-    addEnemy(E_TURRET, 29, 10, 25, 30);
-    addCheckpoint(26, 10);
+    plat(14, 4, 10);
+    sawAt(15, 13);
+    plat(13, 16, 22);
+    addEnemy(E_JUMPER, 19, 13, 16, 22);
+    plat(11, 25, 30);
+    addEnemy(E_TURRET, 29, 11, 25, 30);
+    addCheckpoint(26, 11);
 
     baseCol = 4 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(14, 3, 8);
-    wall(11, 4, 13);
-    wall(14, 4, 15);
-    plat(4, 14, 22);
-    addEnemy(E_FLYER, 18, 1, 14, 23);
+    plat(15, 4, 10);
+    wall(12, 7, 13);
+    wall(16, 7, 15);
+    plat(7, 16, 22);
+    addEnemy(E_FLYER, 19, 4, 16, 23);
     plat(12, 25, 30);
 
     baseCol = 5 * ROOM_COLS;
-    spk(16, 3, 28);
-    plat(14, 3, 8);
-    wall(12, 6, 13);
-    wall(15, 6, 15);
-    plat(6, 15, 22);
-    addEnemy(E_WALKER, 18, 6, 15, 22);
-    plat(9, 24, 30);
-    put(8, 28, 'G');
+    plat(14, 4, 10);
+    plat(12, 13, 19);
+    addEnemy(E_WALKER, 16, 12, 13, 19);
+    plat(10, 22, 30);
+    put(9, 27, 'G');
     baseCol = 0;
 }
 
-// Stage 3: Snowy Mountain Peaks & Saw Bridges
+// Stage 3: Snowy Mountain Peaks
 static void buildSnowStage() {
     baseCol = 0;
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
     baseCol = 0 * ROOM_COLS;
-    plat(14, 6, 12);
-    sawAt(15, 14);
-    plat(14, 16, 22);
-    addEnemy(E_WALKER, 19, 14, 16, 22);
-    plat(12, 25, 30);
-    addEnemy(E_FLYER, 27, 8, 24, 30);
+    plat(14, 7, 13);
+    sawAt(15, 15);
+    plat(14, 18, 24);
+    addEnemy(E_WALKER, 21, 14, 18, 24);
+    plat(12, 26, 30);
 
     baseCol = 1 * ROOM_COLS;
-    spk(16, 3, 28);
-    plat(14, 3, 8);
-    wall(11, 5, 13);
-    wall(14, 5, 15);
-    plat(5, 14, 21);
-    addEnemy(E_JUMPER, 17, 5, 14, 21);
-    plat(12, 24, 30);
-    addCheckpoint(25, 12);
+    plat(14, 4, 10);
+    wall(12, 7, 13);
+    wall(16, 7, 15);
+    plat(7, 16, 22);
+    addEnemy(E_JUMPER, 19, 7, 16, 22);
+    plat(12, 25, 30);
+    addCheckpoint(26, 12);
 
     baseCol = 2 * ROOM_COLS;
-    spk(16, 2, 29);
-    plat(14, 3, 8);
-    sawAt(13, 10);
-    plat(14, 12, 17);
-    sawAt(13, 19);
-    plat(12, 21, 27);
-    addEnemy(E_TURRET, 26, 12, 21, 27);
-    plat(14, 28, 30);
+    plat(14, 4, 10);
+    sawAt(15, 12);
+    plat(13, 15, 21);
+    addEnemy(E_TURRET, 20, 13, 15, 21);
+    plat(14, 24, 30);
 
     baseCol = 3 * ROOM_COLS;
-    spk(16, 2, 29);
-    plat(15, 3, 7);
-    plat(12, 10, 14);
-    addEnemy(E_FLYER, 12, 8, 9, 16);
-    plat(9, 17, 21);
-    sawAt(8, 23);
-    plat(11, 25, 30);
-    addCheckpoint(26, 11);
+    plat(14, 4, 10);
+    plat(12, 13, 19);
+    addEnemy(E_FLYER, 16, 8, 13, 20);
+    plat(11, 22, 30);
+    addCheckpoint(23, 11);
 
     baseCol = 4 * ROOM_COLS;
-    spk(16, 3, 29);
-    plat(14, 3, 8);
-    wall(11, 5, 13);
-    wall(14, 5, 15);
-    plat(5, 14, 20);
-    sawAt(4, 22);
-    plat(10, 24, 30);
-    addEnemy(E_WALKER, 27, 10, 24, 30);
+    plat(14, 4, 10);
+    wall(12, 7, 13);
+    wall(16, 7, 15);
+    plat(7, 16, 22);
+    plat(11, 25, 30);
+    addEnemy(E_WALKER, 27, 11, 25, 30);
 
     baseCol = 5 * ROOM_COLS;
-    spk(16, 3, 28);
-    plat(14, 3, 8);
-    plat(11, 11, 16);
-    sawAt(10, 18);
-    plat(9, 20, 25);
-    addEnemy(E_JUMPER, 22, 9, 20, 25);
-    plat(8, 26, 30);
-    put(7, 28, 'G');
+    plat(14, 4, 10);
+    plat(12, 13, 19);
+    addEnemy(E_JUMPER, 16, 12, 13, 19);
+    plat(10, 22, 30);
+    put(9, 27, 'G');
     baseCol = 0;
 }
 
@@ -1509,24 +1492,21 @@ static void buildBossArena(int tier) {
     for (int r = 0; r < ROWS; r++)
         level[r][ROOM_COLS - 1] = '#';
 
-    wall(3, 6, 14);
-    wall(28, 6, 14);
+    wall(3, 7, 14);
+    wall(28, 7, 14);
 
     plat(12, 5, 9);
     plat(7, 13, 18);
     plat(12, 22, 26);
-
-    spk(16, 1, 2);
-    spk(16, 29, 30);
 
     bossActive = true;
     bossW = 104;
     bossH = 104;
     bossX = (float)(21 * TILE);
     bossY = (float)((ROWS - 1) * TILE - bossH);
-    bossVX = (tier >= 2) ? -5.4f : -4.2f;
+    bossVX = (tier >= 2) ? -5.0f : -3.8f;
     bossVY = 0.0f;
-    bossMaxHP = (tier >= 2) ? 14 : 10;
+    bossMaxHP = (tier >= 2) ? 12 : 8;
     bossHP = bossMaxHP;
     bossHurt = 0;
     bossState = 0;
@@ -1544,353 +1524,32 @@ static void buildExtraStage(int idx) {
     levelCols = COLS;
     levelPixelWidth = WORLD_WIDTH;
 
-    if (idx == 5) {
-        baseCol = 0 * ROOM_COLS;
-        spk(16, 8, 12);
-        plat(14, 14, 20);
-        addEnemy(E_WALKER, 17, 14, 14, 20);
-        sawAt(13, 22);
-        plat(13, 24, 30);
+    for (int rm = 0; rm < TOTAL_ROOMS; rm++) {
+        baseCol = rm * ROOM_COLS;
+        plat(14, 5, 11);
+        plat(12, 14, 20);
+        plat(14, 23, 29);
 
-        baseCol = 1 * ROOM_COLS;
-        spk(16, 3, 28);
-        wall(8, 5, 13);
-        wall(11, 5, 15);
-        plat(5, 11, 18);
-        addEnemy(E_FLYER, 14, 2, 11, 20);
-        plat(11, 21, 29);
-        addEnemy(E_TURRET, 27, 11, 21, 29);
-        addCheckpoint(22, 11);
+        if (rm == 1 || rm == 3) {
+            wall(9, 8, 13);
+            wall(13, 8, 14);
+            addCheckpoint(25, 14);
+        }
 
-        baseCol = 2 * ROOM_COLS;
-        spk(16, 2, 29);
-        plat(15, 3, 7);
-        plat(12, 10, 14);
-        plat(9, 17, 21);
-        addEnemy(E_JUMPER, 19, 9, 17, 21);
-        plat(12, 24, 30);
-        sawAt(11, 26);
-
-        baseCol = 3 * ROOM_COLS;
-        spk(16, 2, 29);
-        plat(14, 3, 8);
-        sawAt(13, 10);
-        plat(12, 12, 17);
-        addEnemy(E_WALKER, 14, 12, 12, 17);
-        plat(9, 20, 25);
-        addEnemy(E_FLYER, 22, 5, 19, 27);
-        plat(11, 27, 30);
-        addCheckpoint(28, 11);
-
-        baseCol = 4 * ROOM_COLS;
-        spk(16, 3, 29);
-        wall(9, 6, 14);
-        wall(12, 6, 15);
-        plat(6, 12, 19);
-        addEnemy(E_TURRET, 18, 6, 12, 19);
-        plat(12, 22, 29);
-        addEnemy(E_JUMPER, 25, 12, 22, 29);
-
-        baseCol = 5 * ROOM_COLS;
-        spk(16, 3, 28);
-        plat(14, 3, 8);
-        plat(11, 11, 16);
-        sawAt(10, 18);
-        plat(8, 20, 29);
-        addEnemy(E_WALKER, 23, 8, 20, 26);
-        put(7, 28, 'G');
-    } else if (idx == 6) {
-        baseCol = 0 * ROOM_COLS;
-        spk(16, 7, 13);
-        plat(13, 15, 22);
-        addEnemy(E_FLYER, 18, 9, 14, 23);
-        plat(15, 24, 30);
-        addEnemy(E_WALKER, 27, 15, 24, 30);
-
-        baseCol = 1 * ROOM_COLS;
-        spk(16, 3, 28);
-        plat(14, 3, 8);
-        wall(11, 5, 13);
-        wall(14, 5, 15);
-        plat(5, 14, 21);
-        sawAt(4, 17);
-        plat(11, 24, 30);
-        addEnemy(E_TURRET, 28, 11, 24, 30);
-        addCheckpoint(25, 11);
-
-        baseCol = 2 * ROOM_COLS;
-        spk(16, 2, 29);
-        plat(14, 3, 8);
-        plat(11, 11, 15);
-        addEnemy(E_JUMPER, 13, 11, 11, 15);
-        plat(14, 18, 22);
-        sawAt(13, 24);
-        plat(12, 26, 30);
-
-        baseCol = 3 * ROOM_COLS;
-        spk(16, 2, 29);
-        wall(7, 6, 14);
-        wall(10, 6, 15);
-        plat(6, 10, 16);
-        addEnemy(E_WALKER, 13, 6, 10, 16);
-        plat(11, 19, 24);
-        addEnemy(E_FLYER, 21, 7, 18, 26);
-        plat(13, 26, 30);
-        addCheckpoint(27, 13);
-
-        baseCol = 4 * ROOM_COLS;
-        spk(16, 3, 29);
-        plat(15, 3, 7);
-        sawAt(14, 9);
-        plat(13, 11, 15);
-        sawAt(12, 17);
-        plat(11, 19, 23);
-        addEnemy(E_TURRET, 22, 11, 19, 23);
-        plat(13, 25, 30);
-
-        baseCol = 5 * ROOM_COLS;
-        spk(16, 3, 28);
-        plat(14, 3, 8);
-        wall(11, 5, 13);
-        wall(14, 5, 15);
-        plat(5, 14, 22);
-        addEnemy(E_JUMPER, 18, 5, 14, 22);
-        plat(9, 24, 30);
-        put(8, 28, 'G');
-    } else if (idx == 7) {
-        baseCol = 0 * ROOM_COLS;
-        spk(16, 9, 14);
-        plat(14, 16, 22);
-        addEnemy(E_JUMPER, 19, 14, 16, 22);
-        spk(16, 24, 27);
-        plat(14, 28, 30);
-
-        baseCol = 1 * ROOM_COLS;
-        spk(16, 3, 29);
-        plat(14, 3, 9);
-        sawAt(13, 11);
-        plat(13, 13, 19);
-        addEnemy(E_WALKER, 16, 13, 13, 19);
-        plat(11, 22, 28);
-        addEnemy(E_FLYER, 25, 7, 21, 29);
-        addCheckpoint(23, 11);
-
-        baseCol = 2 * ROOM_COLS;
-        spk(16, 2, 29);
-        plat(15, 3, 8);
-        plat(12, 11, 16);
-        addEnemy(E_TURRET, 15, 12, 11, 16);
-        plat(15, 19, 23);
-        plat(12, 26, 30);
-
-        baseCol = 3 * ROOM_COLS;
-        spk(16, 2, 29);
-        wall(9, 5, 14);
-        wall(12, 5, 16);
-        plat(5, 12, 19);
-        addEnemy(E_WALKER, 15, 5, 12, 19);
-        plat(12, 22, 29);
-        sawAt(11, 25);
-        addCheckpoint(23, 12);
-
-        baseCol = 4 * ROOM_COLS;
-        spk(16, 3, 29);
-        plat(14, 3, 8);
-        plat(11, 11, 15);
-        addEnemy(E_JUMPER, 13, 11, 11, 15);
-        plat(14, 18, 22);
-        addEnemy(E_FLYER, 20, 10, 17, 24);
-        plat(11, 25, 30);
-
-        baseCol = 5 * ROOM_COLS;
-        spk(16, 3, 28);
-        plat(14, 3, 8);
-        plat(11, 11, 17);
-        addEnemy(E_WALKER, 14, 11, 11, 17);
-        plat(9, 20, 29);
-        addEnemy(E_TURRET, 24, 9, 20, 25);
-        put(8, 28, 'G');
-    } else if (idx == 8) {
-        baseCol = 0 * ROOM_COLS;
-        spk(16, 6, 27);
-        plat(15, 5, 8);
-        plat(13, 11, 14);
-        addEnemy(E_WALKER, 12, 13, 11, 14);
-        plat(15, 17, 20);
-        plat(13, 23, 28);
-        addEnemy(E_JUMPER, 25, 13, 23, 28);
-
-        baseCol = 1 * ROOM_COLS;
-        spk(16, 3, 29);
-        wall(8, 5, 14);
-        wall(11, 5, 15);
-        plat(5, 11, 17);
-        addEnemy(E_FLYER, 14, 2, 11, 18);
-        wall(20, 6, 14);
-        wall(23, 6, 15);
-        plat(6, 23, 29);
-        addCheckpoint(24, 6);
-
-        baseCol = 2 * ROOM_COLS;
-        spk(16, 2, 29);
-        plat(14, 3, 7);
-        sawAt(13, 9);
-        plat(12, 11, 15);
-        addEnemy(E_TURRET, 14, 12, 11, 15);
-        plat(14, 18, 22);
-        plat(11, 25, 30);
-
-        baseCol = 3 * ROOM_COLS;
-        spk(16, 2, 29);
-        plat(15, 3, 7);
-        plat(12, 10, 14);
-        addEnemy(E_WALKER, 12, 12, 10, 14);
-        plat(10, 17, 21);
-        sawAt(9, 23);
-        plat(12, 25, 30);
-        addCheckpoint(26, 12);
-
-        baseCol = 4 * ROOM_COLS;
-        spk(16, 3, 29);
-        wall(9, 5, 13);
-        wall(12, 5, 15);
-        plat(5, 12, 18);
-        addEnemy(E_JUMPER, 15, 5, 12, 18);
-        plat(12, 21, 26);
-        addEnemy(E_FLYER, 23, 8, 20, 28);
-        plat(14, 27, 30);
-
-        baseCol = 5 * ROOM_COLS;
-        spk(16, 3, 28);
-        plat(14, 3, 8);
-        plat(11, 11, 16);
-        sawAt(10, 18);
-        plat(9, 20, 29);
-        addEnemy(E_WALKER, 23, 9, 20, 26);
-        put(8, 28, 'G');
-    } else if (idx == 10) {
-        baseCol = 0 * ROOM_COLS;
-        spk(16, 6, 27);
-        plat(14, 5, 9);
-        plat(11, 12, 16);
-        addEnemy(E_FLYER, 14, 7, 11, 18);
-        plat(8, 19, 23);
-        addEnemy(E_TURRET, 22, 8, 19, 23);
-        plat(12, 26, 30);
-
-        baseCol = 1 * ROOM_COLS;
-        spk(16, 3, 29);
-        wall(8, 4, 13);
-        wall(11, 4, 15);
-        plat(4, 11, 18);
-        sawAt(3, 20);
-        plat(10, 22, 29);
-        addEnemy(E_JUMPER, 25, 10, 22, 29);
-        addCheckpoint(23, 10);
-
-        baseCol = 2 * ROOM_COLS;
-        spk(16, 2, 29);
-        plat(14, 3, 8);
-        addEnemy(E_WALKER, 5, 14, 3, 8);
-        plat(11, 11, 16);
-        sawAt(10, 18);
-        plat(13, 20, 25);
-        plat(10, 27, 30);
-
-        baseCol = 3 * ROOM_COLS;
-        spk(16, 2, 29);
-        plat(14, 3, 7);
-        wall(10, 5, 13);
-        wall(13, 5, 15);
-        plat(5, 13, 19);
-        addEnemy(E_FLYER, 16, 2, 13, 21);
-        plat(11, 22, 29);
-        addEnemy(E_TURRET, 28, 11, 22, 29);
-        addCheckpoint(23, 11);
-
-        baseCol = 4 * ROOM_COLS;
-        spk(16, 3, 29);
-        plat(15, 3, 7);
-        plat(12, 10, 14);
-        sawAt(11, 16);
-        plat(9, 18, 22);
-        addEnemy(E_JUMPER, 20, 9, 18, 22);
-        plat(12, 25, 30);
-
-        baseCol = 5 * ROOM_COLS;
-        spk(16, 3, 28);
-        plat(14, 3, 8);
-        plat(11, 11, 16);
-        addEnemy(E_WALKER, 13, 11, 11, 16);
-        plat(8, 19, 29);
-        addEnemy(E_FLYER, 23, 5, 20, 27);
-        put(7, 28, 'G');
-    } else {
-        baseCol = 0 * ROOM_COLS;
-        spk(16, 6, 27);
-        plat(14, 5, 9);
-        sawAt(13, 11);
-        plat(12, 13, 17);
-        addEnemy(E_TURRET, 16, 12, 13, 17);
-        wall(20, 6, 13);
-        wall(23, 6, 15);
-        plat(6, 23, 29);
-
-        baseCol = 1 * ROOM_COLS;
-        spk(16, 3, 29);
-        plat(14, 3, 8);
-        addEnemy(E_JUMPER, 5, 14, 3, 8);
-        plat(11, 11, 16);
-        sawAt(10, 18);
-        plat(12, 20, 24);
-        addEnemy(E_FLYER, 22, 8, 19, 27);
-        plat(10, 26, 30);
-        addCheckpoint(27, 10);
-
-        baseCol = 2 * ROOM_COLS;
-        spk(16, 2, 29);
-        wall(7, 5, 13);
-        wall(10, 5, 15);
-        plat(5, 10, 16);
-        addEnemy(E_WALKER, 13, 5, 10, 16);
-        sawAt(12, 18);
-        plat(13, 20, 24);
-        plat(10, 26, 30);
-
-        baseCol = 3 * ROOM_COLS;
-        spk(16, 2, 29);
-        plat(14, 3, 8);
-        plat(11, 11, 15);
-        addEnemy(E_TURRET, 14, 11, 11, 15);
-        wall(18, 5, 13);
-        wall(21, 5, 15);
-        plat(5, 21, 29);
-        addEnemy(E_JUMPER, 25, 5, 21, 29);
-        addCheckpoint(22, 5);
-
-        baseCol = 4 * ROOM_COLS;
-        spk(16, 3, 29);
-        plat(15, 3, 7);
-        sawAt(14, 9);
-        plat(12, 11, 15);
-        addEnemy(E_FLYER, 13, 8, 10, 17);
-        plat(10, 18, 22);
-        sawAt(9, 24);
-        plat(12, 26, 30);
-
-        baseCol = 5 * ROOM_COLS;
-        spk(16, 3, 28);
-        plat(14, 3, 8);
-        wall(11, 5, 13);
-        wall(14, 5, 15);
-        plat(5, 14, 21);
-        addEnemy(E_WALKER, 17, 5, 14, 21);
-        plat(8, 24, 30);
-        addEnemy(E_TURRET, 26, 8, 24, 27);
-        put(7, 28, 'G');
+        if (rm % 2 == 0) {
+            addEnemy(E_WALKER, 8, 14, 5, 11);
+            addEnemy(E_JUMPER, 17, 12, 14, 20);
+        } else {
+            addEnemy(E_FLYER, 17, 8, 14, 21);
+            addEnemy(E_TURRET, 28, 14, 23, 29);
+        }
     }
 
+    baseCol = 5 * ROOM_COLS;
+    plat(10, 22, 30);
+    put(9, 27, 'G');
     baseCol = 0;
+    (void)idx;
 }
 
 static void buildLevel() {
@@ -2792,7 +2451,7 @@ static void stepPlayerPhysics(
     bool wallL = rectSolid((int)x - 1, (int)y, 1, PH);
     bool wallR = rectSolid((int)x + PW, (int)y, 1, PH);
 
-    float maxSpeed = (run ? 8.2f : 5.6f) * scale;
+    float maxSpeed = (run ? 8.4f : 6.0f) * scale;
 
     if (dir != 0)
         dirFace = dir;
@@ -2800,7 +2459,7 @@ static void stepPlayerPhysics(
     if (wLock > 0) {
         wLock--;
     } else if (dir != 0) {
-        float acc = grounded ? 1.2f : 0.7f;
+        float acc = grounded ? 1.3f : 0.75f;
         svx += dir * acc;
         if (svx > maxSpeed) svx = maxSpeed;
         if (svx < -maxSpeed) svx = -maxSpeed;
@@ -2829,7 +2488,7 @@ static void stepPlayerPhysics(
 
     if (jumpNew) {
         if (coy > 0) {
-            svy = -17.0f;
+            svy = -17.5f;
             coy = 0;
             sqX = 0.72f;
             sqY = 1.30f;
@@ -2837,8 +2496,8 @@ static void stepPlayerPhysics(
             burstOut = true;
             snd(4);
         } else if (wallL || wallR) {
-            svy = -16.0f;
-            svx = wallL ? 8.0f : -8.0f;
+            svy = -16.5f;
+            svx = wallL ? 8.2f : -8.2f;
             wLock = 9;
             dirFace = wallL ? 1 : -1;
             sqX = 0.72f;
@@ -2886,7 +2545,9 @@ static void update() {
     updateParts();
     updateSplatsAging();
 
-    if (!p2Joined && (in2.optionsNew || (padHandle2 >= 0 && in2.crossNew))) {
+    // Player 2 joins on OPTIONS or X from second pad (or if P2 pad button is pressed)
+    bool p2AnyBtn = padHandle2 >= 0 && (in2.optionsNew || in2.crossNew || in2.circleNew || in2.square || in2.triangle || in2.left || in2.right || in2.up || in2.down);
+    if (!p2Joined && p2AnyBtn) {
         p2Joined = true;
         p2Weapon = curWeapon;
         hudNeed[0] = true;
@@ -3149,7 +2810,6 @@ static void drawTileCell(int r, int cx, char ch, bool hi) {
 
         if (hi) {
             fillRect(x, y, TILE, 8, topC);
-            // Scalloped grass/turf lip for lively platform look
             fillRect(x + 4, y + 8, 10, 4, topC);
             fillRect(x + 22, y + 8, 12, 5, topC);
             fillRect(x + 42, y + 8, 12, 4, topC);
@@ -3175,7 +2835,6 @@ static void drawTileCell(int r, int cx, char ch, bool hi) {
 
 static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style) {
     if (biome == 0) {
-        // Biome 0: Lush green grass + cheerful wildflower blossoms
         Color dark = mk(34, 142, 48);
         Color mid  = mk(78, 218, 76);
         Color bud  = (style == 0) ? mk(255, 105, 145) : ((style == 1) ? mk(255, 235, 80) : mk(245, 245, 255));
@@ -3200,7 +2859,6 @@ static void drawPlantTuft(int bx, int by, int h, int bend, int biome, int style)
             fillRect(ox - 2 + (bend / 2) + b, by - bh - 4, 4, 5, mk(255, 232, 115));
         }
     } else if (biome == 2) {
-        // Biome 2: Desert scrub & mini cactus
         Color scrub = mk(82, 168, 56);
         Color thorn = mk(255, 125, 145);
         int s1 = bend / 2;
@@ -3278,15 +2936,12 @@ static bool starDim(int i, int phase) {
     return ((phase + i) % 4) == 0;
 }
 
-// Helper to draw a distant castle with towers & flags (inspired by vibrant platform worlds)
 static void drawDistantCastle(int cx, int baseY, Color wallCol, Color roofCol, Color flagCol) {
-    // Main keep & side towers
     fillRect(cx - 65, baseY - 120, 130, 120, wallCol);
     fillRect(cx - 105, baseY - 155, 44, 155, wallCol);
     fillRect(cx + 61, baseY - 155, 44, 155, wallCol);
     fillRect(cx - 26, baseY - 175, 52, 175, wallCol);
 
-    // Pointed roofs
     for (int j = 0; j < 26; j++) {
         int half = (j * 28) / 25 + 4;
         fillRect(cx - half, baseY - 200 + j, half * 2 + 1, 1, roofCol);
@@ -3294,20 +2949,16 @@ static void drawDistantCastle(int cx, int baseY, Color wallCol, Color roofCol, C
         fillRect(cx + 83 - (j / 2), baseY - 175 + j, j + 10, 1, roofCol);
     }
 
-    // Castle gate & windows
     fillRect(cx - 18, baseY - 52, 36, 52, mk(45, 32, 48));
     fillRect(cx - 45, baseY - 95, 16, 22, mk(250, 215, 90));
     fillRect(cx + 29, baseY - 95, 16, 22, mk(250, 215, 90));
 
-    // Banners on top
     fillRect(cx, baseY - 216, 18, 10, flagCol);
     fillRect(cx - 83, baseY - 190, 14, 8, flagCol);
     fillRect(cx + 83, baseY - 190, 14, 8, flagCol);
 }
 
-// Helper to draw a desert oasis temple & palm trees
 static void drawDesertTempleAndPalms(int tx, int baseY, Color sandWall, Color trimCol) {
-    // Stepped desert palace/temple
     fillRect(tx - 95, baseY - 110, 190, 110, sandWall);
     fillRect(tx - 65, baseY - 155, 130, 45, sandWall);
     fillRect(tx - 30, baseY - 185, 60, 30, trimCol);
@@ -3315,7 +2966,6 @@ static void drawDesertTempleAndPalms(int tx, int baseY, Color sandWall, Color tr
     fillRect(tx - 80, baseY - 95, 18, 32, mk(195, 45, 35));
     fillRect(tx + 62, baseY - 95, 18, 32, mk(195, 45, 35));
 
-    // Palm tree next to temple
     int px0 = tx - 170;
     fillRect(px0 - 7, baseY - 135, 14, 135, mk(118, 72, 36));
     fillRect(px0 - 34, baseY - 144, 34, 10, mk(58, 168, 52));
@@ -3325,10 +2975,8 @@ static void drawDesertTempleAndPalms(int tx, int baseY, Color sandWall, Color tr
     fillRect(px0 - 12, baseY - 166, 24, 9, mk(110, 215, 78));
 }
 
-// Lively Multi-Element Biome Backgrounds (Sun, Distant Castle, Waterfall, Pyramids, Oasis, Aurora & Volcanoes)
 static void paintBackground() {
     if (currentBiome == 0) {
-        // Biome 0: Lively Sunlit Forest with Distant Castle & Waterfall
         Color sky1  = mk(52, 162, 238);
         Color sky2  = mk(125, 215, 250);
         Color hill1 = mk(58, 155, 92);
@@ -3341,11 +2989,9 @@ static void paintBackground() {
         fillRect(0, 610, FRAME_WIDTH, 130, hill2);
         fillRect(0, 740, FRAME_WIDTH, 340, lush);
 
-        // Bright Sun with outer halo
         fillRect(1540, 72, 136, 136, mk(255, 242, 155));
         fillRect(1556, 88, 104, 104, mk(255, 224, 72));
 
-        // Fluffy clouds
         for (int i = 0; i < 4; i++) {
             int cx = 150 + i * 380;
             int cy = 115 + (i & 1) * 48;
@@ -3353,17 +2999,14 @@ static void paintBackground() {
             fillRect(cx + 28, cy - 20, 105, 24, mk(248, 253, 255));
         }
 
-        // Distant Castle on hilltop
         drawDistantCastle(1260, 500, mk(218, 212, 224), mk(195, 55, 65), mk(255, 215, 65));
 
-        // Scenic Waterfall & Blue Lake in the background
         fillRect(360, 430, 96, 250, mk(72, 178, 245));
         fillRect(376, 430, 64, 250, mk(145, 224, 255));
         fillRect(394, 430, 28, 250, mk(225, 248, 255));
         fillRect(260, 655, 420, 65, mk(62, 165, 235));
         fillRect(310, 670, 310, 28, mk(135, 218, 252));
 
-        // Lush background trees
         for (int i = 0; i < 6; i++) {
             int x = i * 320 + 40;
             fillRect(x + 42, 580, 26, 95, mk(92, 56, 32));
@@ -3374,7 +3017,6 @@ static void paintBackground() {
     }
 
     if (currentBiome == 1) {
-        // Biome 1: Golden Countryside with Warm Sun, Distant Castle & Rolling Hills
         Color sky1 = mk(198, 96, 72);
         Color sky2 = mk(246, 162, 86);
         Color farC = mk(142, 86, 52);
@@ -3404,7 +3046,6 @@ static void paintBackground() {
     }
 
     if (currentBiome == 2) {
-        // Biome 2: Lively Desert Oasis with Sun, Pyramids, Temple & Palm Trees
         Color sky1 = mk(68, 168, 238);
         Color sky2 = mk(185, 228, 248);
         Color farC = mk(218, 165, 86);
@@ -3415,11 +3056,9 @@ static void paintBackground() {
         fillRect(0, 520, FRAME_WIDTH, 140, farC);
         fillRect(0, 660, FRAME_WIDTH, 420, nearC);
 
-        // Desert sun
         fillRect(1495, 82, 132, 132, mk(255, 242, 165));
         fillRect(1511, 98, 100, 100, mk(255, 225, 95));
 
-        // Pyramids in distance
         for (int p = 0; p < 2; p++) {
             int px0 = 1120 + p * 360;
             for (int step = 0; step < 9; step++) {
@@ -3428,10 +3067,8 @@ static void paintBackground() {
             }
         }
 
-        // Desert Temple & Palms
         drawDesertTempleAndPalms(520, 560, mk(216, 162, 88), mk(242, 198, 105));
 
-        // Desert Oasis lake
         fillRect(760, 625, 310, 58, mk(62, 175, 235));
         fillRect(800, 638, 220, 24, mk(142, 222, 252));
         return;
@@ -3977,7 +3614,6 @@ static void renderGame(int b) {
 
     int roomX = roomIdx * FRAME_WIDTH;
 
-    // Animated waterfall foam & birds in lively biomes
     if (currentBiome == 0) {
         int wf = (tick * 4) % 44;
         for (int k = 0; k < 5; k++) {
@@ -4721,7 +4357,7 @@ static void endStory() {
     }
 }
 
-// ---------- Menus ----------
+// ---------- Menus (Lively Animated Backdrop + Styled Panels) ----------
 static const int MENU_T[4] = { T_LEVELS, T_SETTINGS, T_CREDITS, T_EXIT };
 
 static int itemCount() {
@@ -4732,6 +4368,32 @@ static int itemCount() {
     return 0;
 }
 
+static void paintMenuBackdrop() {
+    // Vibrant sky, sun/moon, hills & lively ground strip for menus
+    fillRect(0, 0, FRAME_WIDTH, 320, mk(32, 22, 68));
+    fillRect(0, 320, FRAME_WIDTH, 360, mk(48, 30, 88));
+    fillRect(0, 680, FRAME_WIDTH, 260, mk(34, 78, 58));
+    fillRect(0, 940, FRAME_WIDTH, 140, mk(78, 48, 30));
+    fillRect(0, 940, FRAME_WIDTH, 10, mk(68, 198, 72));
+
+    // Glowing sun/orb
+    fillRect(1560, 85, 110, 110, mk(255, 210, 85));
+    fillRect(1576, 101, 78, 78, mk(255, 238, 140));
+
+    // Decorative background hills & pillars
+    for (int i = 0; i < 4; i++) {
+        int hx = i * 520 + 40;
+        fillRect(hx, 580, 260, 100, mk(42, 98, 72));
+        fillRect(hx + 50, 545, 160, 40, mk(42, 98, 72));
+    }
+
+    // Lively grass tufts along the bottom ground of the menu
+    int sway = SN[(tick / 8) & 15] / 36;
+    for (int gx = 90; gx < FRAME_WIDTH - 80; gx += 75) {
+        drawPlantTuft(gx, 940, 14, sway, 0, (gx / 75) % 3);
+    }
+}
+
 static void drawBanner(
     int tid,
     int scale,
@@ -4739,10 +4401,10 @@ static void drawBanner(
     int h,
     bool cubes
 ) {
-    fillRect(460, y, 1000, h,
-             mk(35,25,55));
+    fillRect(456, y - 4, 1008, h + 8, mk(245, 190, 65));
+    fillRect(460, y, 1000, h, mk(35, 25, 55));
 
-    drawLabel(tid, 960, y, h, scale, mk(225,40,100));
+    drawLabel(tid, 960, y, h, scale, mk(255, 75, 115));
 
     if (cubes) {
         drawBigCube(500, y + (h - 88) / 2);
@@ -4753,10 +4415,10 @@ static void drawBanner(
 static void drawHint(int tid) {
     int w = labelWidth(tid, 3) + 80;
 
-    fillRect(960 - w / 2, 980, w, 60,
-             mk(35,25,55));
+    fillRect(960 - w / 2 - 3, 977, w + 6, 66, mk(235, 185, 65));
+    fillRect(960 - w / 2, 980, w, 60, mk(35, 25, 55));
 
-    drawLabel(tid, 960, 980, 60, 3, mk(200,190,220));
+    drawLabel(tid, 960, 980, 60, 3, mk(220, 212, 238));
 }
 
 static void drawLock(int cx, int cy) {
@@ -4785,10 +4447,10 @@ static void drawStatic() {
     else if (state == S_SETTINGS) {
         drawBanner(T_B_SETTINGS, 8, 130, 110, false);
 
-        fillRect(610, 740, 700, 60,
-                 mk(35,25,55));
+        fillRect(607, 737, 706, 66, mk(235, 185, 65));
+        fillRect(610, 740, 700, 60, mk(35, 25, 55));
 
-        drawLabel(T_TIP, 960, 740, 60, 3, mk(200,190,220));
+        drawLabel(T_TIP, 960, 740, 60, 3, mk(220, 212, 238));
 
         drawHint(T_H_BACK);
     }
@@ -4796,13 +4458,13 @@ static void drawStatic() {
     else if (state == S_CREDITS) {
         drawBanner(T_B_CREDITS, 8, 130, 110, false);
 
-        fillRect(460, 300, 1000, 540,
-                 mk(35,25,55));
+        fillRect(456, 296, 1008, 548, mk(235, 185, 65));
+        fillRect(460, 300, 1000, 540, mk(35, 25, 55));
 
-        drawLabel(T_DESIGNERS, 960, 340, 60, 5, mk(200,190,220));
-        drawLabel(T_KAREEM, 960, 450, 110, 10, mk(225,40,100));
-        drawLabel(T_CLAUDE, 960, 580, 110, 10, mk(225,40,100));
-        drawLabel(T_GAME, 960, 740, 60, 4, mk(140,140,155));
+        drawLabel(T_DESIGNERS, 960, 340, 60, 5, mk(220, 212, 238));
+        drawLabel(T_KAREEM, 960, 450, 110, 10, mk(255, 75, 115));
+        drawLabel(T_CLAUDE, 960, 580, 110, 10, mk(255, 75, 115));
+        drawLabel(T_GAME, 960, 740, 60, 4, mk(165, 165, 185));
 
         drawHint(T_H_BACK);
     }
@@ -4818,14 +4480,17 @@ static void drawItem(int i) {
 
         bool sel = (i == menuSel);
 
+        if (sel)
+            fillRect(x - 4, y - 4, 708, 98, mk(255, 210, 85));
+
         fillRect(
             x, y, 700, 90,
-            sel ? mk(205,25,35) : mk(45,35,62)
+            sel ? mk(215, 30, 45) : mk(48, 36, 68)
         );
 
         drawLabel(
             MENU_T[i], 960, y, 90, 6,
-            sel ? mk(255,255,255) : mk(200,190,215)
+            sel ? mk(255,255,255) : mk(215,205,230)
         );
     }
 
@@ -4918,9 +4583,12 @@ static void drawItem(int i) {
 
         bool sel = (i == settingsSel);
 
+        if (sel)
+            fillRect(x - 4, y - 4, 908, 98, mk(255, 210, 85));
+
         fillRect(
             x, y, 900, 90,
-            sel ? mk(205,25,35) : mk(45,35,62)
+            sel ? mk(215, 30, 45) : mk(48, 36, 68)
         );
 
         int tid;
@@ -4934,7 +4602,7 @@ static void drawItem(int i) {
 
         drawLabel(
             tid, 960, y, 90, 6,
-            sel ? mk(255,255,255) : mk(200,190,215)
+            sel ? mk(255,255,255) : mk(215,205,230)
         );
     }
 }
@@ -4943,7 +4611,7 @@ static void drawUI(int b) {
     resetClip();
 
     if (uiFull[b]) {
-        scene->FrameBufferClear();
+        paintMenuBackdrop();
 
         drawStatic();
 
