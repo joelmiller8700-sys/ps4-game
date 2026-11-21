@@ -11,7 +11,6 @@
 
 extern "C" {
     int sceKernelUsleep(unsigned int microseconds);
-    int scePadSetVibration(int handle, const void *param);
 #ifndef NO_AUDIO
     int sceAudioOutInit(void);
     int sceAudioOutOpen(int userId, int type, int index, unsigned int len, unsigned int freq, unsigned int param);
@@ -40,7 +39,7 @@ extern "C" {
 #define PW 44
 #define PH 44
 
-#define TOTAL_STAGES 16   // 8 Worlds x 2 Stages (Action/Puzzle/Escape + Boss/Challenge)
+#define TOTAL_STAGES 16
 #define MAX_ENEMIES 64
 #define MAX_SHOTS 28
 #define MAX_PBULLETS 20
@@ -72,20 +71,13 @@ static int audioHandle = -1;
 // ---------- Persistent Settings System (/data/meat_cube_settings.dat) ----------
 struct SettingsData {
     unsigned int magic;
-    // Graphics (0=Very Low, 1=Low, 2=Medium, 3=Ultra)
     int grassDensity, worldDetails, waterAnim, bloodParts, grassAnim;
     int lightingQual, shadowQual, particleFx, ambientFx;
-    // Video
-    int fpsLimit;     // 30 or 60
-    int brightness;   // 50..150 (default 100)
-    // Audio (0..100 independent channels)
+    int fpsLimit, brightness;
     int masterVol, musicVol, sfxVol, ambVol, playerVol, enemyVol;
     int muteAll, muteMusic, muteSfx;
-    // Language (0=AR, 1=EN, 2=FR, 3=ES, 4=DE, 5=TR)
     int lang;
-    // Gameplay
     int camShake, rumble, showDmgNum, showDmgInd, difficulty, showHints, ngPlus;
-    // Controls (0=Analog, 1=Arrows; button scheme 0=Default, 1=Alt)
     int moveMode, btnScheme;
 };
 
@@ -107,7 +99,7 @@ static void resetDefaultSettings() {
     cfg.fpsLimit = 60; cfg.brightness = 100;
     cfg.masterVol = 85; cfg.musicVol = 75; cfg.sfxVol = 85; cfg.ambVol = 70; cfg.playerVol = 85; cfg.enemyVol = 85;
     cfg.muteAll = 0; cfg.muteMusic = 0; cfg.muteSfx = 0;
-    cfg.lang = 0; // Arabic default
+    cfg.lang = 0;
     cfg.camShake = 1; cfg.rumble = 1; cfg.showDmgNum = 1; cfg.showDmgInd = 1; cfg.difficulty = 1; cfg.showHints = 1; cfg.ngPlus = 0;
     cfg.moveMode = 0; cfg.btnScheme = 0;
     rebuildBrightnessLUT();
@@ -135,10 +127,10 @@ struct SaveData {
     unsigned int magic;
     int unlockedStages, coins, xp, charLevel, skillPoints;
     int upHp, upDash, upMagnet, upSlam;
-    unsigned int skillMask;    // Bit0=DoubleDash, Bit1=FireBlade, Bit2=Vampiric, Bit3=ShieldStart
+    unsigned int skillMask;
     unsigned int skinsOwned;
-    int selectedSkin;          // 0..4=Cubes, 5..9=Secret Naruto HD
-    unsigned int achMask;      // 6 achievements
+    int selectedSkin;
+    unsigned int achMask;
     int bestTime[TOTAL_STAGES];
     int secretsFound, enemiesKilled, ngPlusUnlocked;
 };
@@ -173,7 +165,7 @@ static float px, py, vx, vy, squashX = 1.0f, squashY = 1.0f, cpX = 80.0f, cpY = 
 static int roomIdx = 0, levelCols = COLS, levelPW = WW, curStage = 0, curWorld = 0;
 static int hp = 3, maxHp = 3, invulnTimer = 0, jumpsLeft = 2, dashTimer = 0, dashCd = 0;
 static bool slamActive = false, onGround = false, inWater = false, timeTrialMode = false, gateOpen = false;
-static int curWeapon = 0, atkCd = 0; // 0=Stomp/Pulse, 1=Energy Bolt, 2=Fire Wave
+static int curWeapon = 0, atkCd = 0;
 static int slamShockTimer = 0, shieldTimer = 0, speedTimer = 0, animTick = 0, vibeTimer = 0;
 static int coyote = 0, wallLock = 0, facing = 1, winTimer = 0, deadTimer = 0, tick = 0, frameID = 0;
 static int stageTimeFrames = 0, escapeTimer = 0, shakeTimer = 0, shakeMag = 0;
@@ -190,7 +182,6 @@ static DmgNum dmgNums[MAX_DMGNUM];
 static int checkC[MAX_CHECKS], checkR[MAX_CHECKS], checkCount = 0;
 static bool checkAct[MAX_CHECKS];
 
-// 6 Radically Distinct Enemies
 enum { E_SPIDER = 0, E_BEETLE = 1, E_GHOST = 2, E_LIZARD = 3, E_DRONE = 4, E_MIMIC = 5 };
 struct Enemy {
     float x, y, vx, vy, minX, maxX, baseY;
@@ -199,7 +190,6 @@ struct Enemy {
 };
 static Enemy enemies[MAX_ENEMIES]; static int enemyCount = 0;
 
-// 4 Unique 3-Phase Bosses: 0=Spider King, 1=Lava Titan, 2=Ice Dragon, 3=Cursed Knight
 static bool bossActive = false;
 static int bossType = 0, bossPhase = 1, bossW = 128, bossH = 116, bossHP = 12, bossMaxHP = 12;
 static int bossHurt = 0, bossTimer = 0, bossIntro = 0, bossSwCd = 0;
@@ -259,10 +249,10 @@ static const int SN[16] = {0,98,181,237,256,237,181,98,0,-98,-181,-237,-256,-237
 // ---------- UI State ----------
 enum { S_MENU = 0, S_LEVELS = 1, S_SKILLS = 2, S_SHOP = 3, S_SKINS = 4, S_ACH = 5, S_SETTINGS = 6, S_CREDITS = 7, S_PLAY = 8, S_SECRET = 9 };
 static int state = S_MENU, menuSel = 0, levelSel = 0, skillSel = 0, shopSel = 0, skinSel = 0, secretSel = 0;
-static int setTab = 0, setRow = 0; // Pro Settings: 6 Tabs (0..5) + Row inside Tab
+static int setTab = 0, setRow = 0;
 static bool uiFull[2] = {true, true}, pend[2][64];
 
-// ---------- 6-Language Localization Table (0=AR via Bitmap, 1=EN, 2=FR, 3=ES, 4=DE, 5=TR) ----------
+// ---------- 6-Language Localization Table ----------
 #define TEXT_LIST \
     X(T_TITLE,"MEAT CUBE","MEAT CUBE","MEAT CUBE","MEAT CUBE","MEAT CUBE",AR(TITLE)) \
     X(T_PLAY,"PLAY ADVENTURE","JOUER","JUGAR","SPIELEN","OYNA",AR(PLAY)) \
@@ -410,7 +400,10 @@ static inline bool isBossStage(int s) { return (s & 1) == 1; }
 
 static void triggerRumble(int frames, unsigned char lg, unsigned char sm) {
     if (!cfg.rumble || padHandle < 0) return;
-    struct { unsigned char large, small; } vp = {lg, sm};
+    OrbisPadVibeParam vp;
+    memset(&vp, 0, sizeof(vp));
+    unsigned char raw[2] = {lg, sm};
+    memcpy(&vp, raw, sizeof(raw) <= sizeof(vp) ? sizeof(raw) : sizeof(vp));
     scePadSetVibration(padHandle, &vp);
     if (frames > vibeTimer) vibeTimer = frames;
 }
@@ -446,7 +439,7 @@ static void readInput() {
     in.triNew = in.triangle && !pTri; in.optionsNew = in.options && !pOpt; in.dashNew = dashBtn && !pDash;
     in.l1New = in.l1 && !pL1; in.r1New = in.r1 && !pR1;
     pCross = in.cross; pCircle = in.circle; pSquare = in.square; pTri = in.triangle; pOpt = in.options; pDash = dashBtn; pL1 = in.l1; pR1 = in.r1;
-    if (vibeTimer > 0 && --vibeTimer == 0 && padHandle >= 0) { struct { unsigned char l, s; } z = {0, 0}; scePadSetVibration(padHandle, &z); }
+    if (vibeTimer > 0 && --vibeTimer == 0 && padHandle >= 0) { OrbisPadVibeParam z; memset(&z, 0, sizeof(z)); scePadSetVibration(padHandle, &z); }
 }
 
 static bool navEvent(int i, bool p) {
@@ -455,7 +448,6 @@ static bool navEvent(int i, bool p) {
 }
 
 // ---------- 6-Channel Independent Halal Audio Engine ----------
-// Channels: Master, Music, SFX, Ambient (wind/water), Player, Enemy
 static int curSfx = -1, sfxChan = 0, sfxPos = 0, sfxLen = 0, sfxPhase = 0, bgmSample = 0, humP1 = 0, humP2 = 0, duffP = 0;
 static unsigned int noiseRng = 987654321u;
 
@@ -491,7 +483,6 @@ static void initAudio() {
 #endif
 }
 
-// sfxChan: 0=general SFX, 1=Player, 2=Enemy
 static void snd(int k, int chan = 0) {
     if (state != S_PLAY) {
         if (k == 0) playToneImmediate(880, 20, 15000);
@@ -669,7 +660,7 @@ static void spawnDmgNum(float x, float y, int val, Color col) {
     for (int i = 0; i < MAX_DMGNUM; i++) if (dmgNums[i].life <= 0) { dmgNums[i] = {x, y, -2.0f, val, 36, col}; return; }
 }
 
-// ---------- 8-World Stage Builder (Bridges '=', Water '~', Switches 'S', Gates 'D', Caves, Puzzles) ----------
+// ---------- 8-World Stage Builder ----------
 static int baseCol = 0;
 static void put(int r, int c, char ch) { int g = baseCol + c; if (r >= 0 && r < ROWS && g >= 0 && g < COLS) level[r][g] = ch; }
 static void plat(int r, int a, int b) { for (int c = a; c <= b; c++) put(r, c, '#'); }
@@ -745,40 +736,33 @@ static void buildStage(int st) {
         initWorldDetails(); return;
     }
 
-    // Room 0: World-themed terrain (Arched Bridges, Water Pools, Rocky Steps, NPC & Secret High Room)
     baseCol = 0 * RCOLS;
     addNPC(4, 17, T_NPC0 + (curWorld & 3));
     if (curWorld == 0 || curWorld == 7) { waterPool(15, 16, 9, 20); bridge(14, 8, 21); addCoinRow(13, 10, 19); }
     else { plat(14, 7, 14); addCoinRow(13, 8, 13); plat(12, 17, 23); }
     addE(E_SPIDER, 13, 6, 9, 20); addE(E_BEETLE, 18, 14, 15, 23);
-    plat(6, 4, 9); addChest(6, 6, true); addCoinRow(5, 5, 8); // Secret upper ledge!
+    plat(6, 4, 9); addChest(6, 6, true); addCoinRow(5, 5, 8);
 
-    // Room 1: Moving & Disappearing Bridges + Mimic Ambush + Ghost
     baseCol = 1 * RCOLS;
     if (curWorld == 1 || curWorld == 5) spk(16, 6, 25); else waterPool(15, 16, 6, 25);
     plat(14, 2, 6); addMPlat(13, 8, 14, 3, 2.2f); addDPlat(12, 18, 3); addDPlat(12, 22, 3);
-    addE(E_GHOST, 15, 9, 8, 22);
-    plat(13, 26, 30); addE(E_MIMIC, 28, 13, 26, 30); addCP(27, 13);
+    addE(E_GHOST, 15, 9, 8, 22); plat(13, 26, 30); addE(E_MIMIC, 28, 13, 26, 30); addCP(27, 13);
 
-    // Room 2: Environmental Puzzle (Switch 'S' opens Gate 'D') + Wall Jump Cave
     baseCol = 2 * RCOLS;
     wall(9, 6, 14); wall(13, 6, 16); plat(6, 13, 20); put(5, 18, 'S'); addCoinRow(5, 14, 17);
     plat(6, 2, 7); addChest(4, 6, true);
-    wall(24, 1, 12); for (int r = 13; r <= 16; r++) put(r, 24, 'D'); // Locked gate!
+    wall(24, 1, 12); for (int r = 13; r <= 16; r++) put(r, 24, 'D');
     addE(E_LIZARD, 16, 17, 14, 22); addPU(26, 17, PU_HEART);
 
-    // Room 3: Mechanical/Cave/Sky Gauntlet with Flying Drones & Saws
     baseCol = 3 * RCOLS;
-    if (curWorld == 5) escapeTimer = 1800; // 30s Escape Sequence in Factory!
+    if (curWorld == 5) escapeTimer = 1800;
     plat(14, 2, 8); bridge(12, 10, 17); sawAt(11, 13); addE(E_DRONE, 15, 7, 8, 24);
     addDPlat(11, 19, 3); plat(13, 24, 30); addE(E_BEETLE, 27, 13, 24, 30); addCP(25, 13);
 
-    // Room 4: Rocky Cavern / Water Ruin Climb + Fire Lizard + Chest
     baseCol = 4 * RCOLS;
     waterPool(15, 16, 4, 26); plat(14, 3, 8); bridge(12, 10, 16); addE(E_LIZARD, 14, 12, 10, 16);
     addMPlat(10, 18, 23, 3, 2.4f); plat(10, 25, 30); addChest(28, 10, false); addE(E_GHOST, 20, 7, 12, 26);
 
-    // Room 5: Final Bridge & Goal 'G'
     baseCol = 5 * RCOLS;
     plat(14, 3, 9); bridge(12, 11, 21); addCoinRow(11, 12, 20);
     addE(E_SPIDER, 16, 6, 11, 21); addE(E_DRONE, 18, 8, 11, 24);
@@ -974,7 +958,6 @@ static void update() {
             else if (vy < 0) py = (float)((((int)py) / TILE + 1) * TILE);
             vy = 0;
         }
-        // One-way Bridges '='
         if (vy >= 0 && !in.down) {
             int brR = (int)(py + PH) / TILE;
             if (brR >= 0 && brR < ROWS && (tileAt(brR, (int)(px + 8) / TILE) == '=' || tileAt(brR, (int)(px + PW - 8) / TILE) == '=')) {
@@ -994,7 +977,6 @@ static void update() {
         } else if (onGround && !wasG && vy > 4.0f) { squashY = 0.72f; squashX = 1.32f; spawnDust(px + 22, py + PH, 6, 3.5f); burst = true; }
     }
 
-    // Living Grass (Respects Grass Animation setting!), Leaves & Fireflies
     float pcx = px - roomIdx * FW + PW * 0.5f, pby = py + PH;
     if (cfg.grassAnim > 0) {
         for (int i = 0; i < plantCount; i++) {
@@ -1014,12 +996,11 @@ static void update() {
     if (deadTimer > 0) return;
 
     int rmX = roomIdx * FW;
-    // Player Bullets
     for (int i = 0; i < MAX_PBULLETS; i++) if (pbullets[i].active) {
         PBullet &b = pbullets[i]; b.x += b.vx; b.y += b.vy;
         if (--b.life <= 0 || solidAt((int)b.x, (int)b.y)) { b.active = false; continue; }
         for (int j = 0; j < enemyCount; j++) if (enemies[j].active && rectOverlap((int)b.x - 8, (int)b.y - 8, 16, 16, (int)enemies[j].x, (int)enemies[j].y, 44, 44)) {
-            if (enemies[j].kind == E_BEETLE && (b.vx * enemies[j].dir < 0)) { snd(3, 2); b.active = false; break; } // Armored front blocks!
+            if (enemies[j].kind == E_BEETLE && (b.vx * enemies[j].dir < 0)) { snd(3, 2); b.active = false; break; }
             enemies[j].hp -= b.dmg; enemies[j].hurt = 10; spawnDmgNum(enemies[j].x, enemies[j].y, b.dmg, mk(125,245,255));
             if (enemies[j].hp <= 0) killEnemy(enemies[j]); else snd(7, 2);
             b.active = false; break;
@@ -1027,7 +1008,6 @@ static void update() {
         if (b.active && bossActive && bossHP > 0 && rectOverlap((int)b.x - 8, (int)b.y - 8, 16, 16, (int)bossX, (int)bossY, bossW, bossH)) { damageBoss(b.dmg); b.active = false; }
     }
 
-    // Checkpoints, Coins, Chests, Powerups, NPCs & Puzzle Switch 'S'
     for (int i = 0; i < checkCount; i++) if (!checkAct[i] && (int)px + PW >= checkC[i] * TILE) { checkAct[i] = true; cpX = (float)(checkC[i] * TILE); cpY = (float)(checkR[i] * TILE - PH); snd(1, 0); }
     int magRad = save.upMagnet ? 160 : 36;
     for (int i = 0; i < coinCount; i++) if (coins[i].active && coins[i].room == roomIdx) {
@@ -1049,32 +1029,25 @@ static void update() {
         npcDialogTid = npcs[i].dialogTid; npcDialogTimer = 240; snd(0, 0); hudNeed[0] = hudNeed[1] = true;
     }
 
-    // 6 Distinct Enemy AI Behaviors
     int rmX0 = rmX - 240, rmX1 = rmX + FW + 240;
     for (int i = 0; i < enemyCount; i++) {
         Enemy &e = enemies[i]; if (!e.active || (int)e.x < rmX0 || (int)e.x > rmX1) continue;
         if (e.hurt > 0) e.hurt--; e.timer++;
         float dx = px - e.x, adx = fabsf(dx), ady = fabsf(py - e.y);
         if (e.kind == E_SPIDER) {
-            // Climbs/drops from ceiling on silk web thread when player walks underneath!
             if (adx < 160 && e.y < e.baseY + 260) e.y += 4.5f; else if (e.y > e.baseY) e.y -= 2.2f;
         } else if (e.kind == E_BEETLE) {
-            // Armored Beetle: patrols steadily; front shell blocks attacks, weak from above/slam/behind
             e.x += e.vx * e.dir; if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; } else if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
         } else if (e.kind == E_GHOST) {
-            // Ghost: fades invisible & phases toward player
-            e.state = ((e.timer / 75) & 1); // 0=visible, 1=faded
+            e.state = ((e.timer / 75) & 1);
             e.dir = dx >= 0 ? 1 : -1; e.x += e.dir * 1.4f; e.y = e.baseY + (SN[(e.timer / 5) & 15] * 36) / 256;
         } else if (e.kind == E_LIZARD) {
-            // Fire Lizard: spits fireballs at player
             e.dir = dx >= 0 ? 1 : -1;
             if (e.timer % 85 == 0 && adx < 520) spawnShot(e.x + 22, e.y + 18, e.dir * 6.5f, -1.2f, 0);
         } else if (e.kind == E_DRONE) {
-            // Flying Drone: patrols high & drops laser shots from above
             e.x += e.vx * e.dir; if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; } else if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
             if (adx < 90 && e.timer % 48 == 0) spawnShot(e.x + 22, e.y + 38, 0, 7.2f, 2);
         } else if (e.kind == E_MIMIC) {
-            // Mimic: disguised as treasure chest until player gets close, then lunges!
             if (e.state == 0 && adx < 170 && ady < 100) { e.state = 1; snd(6, 2); }
             if (e.state == 1) {
                 e.dir = dx >= 0 ? 1 : -1; e.x = iclamp((int)(e.x + e.dir * 3.0f), (int)e.minX, (int)e.maxX);
@@ -1082,7 +1055,7 @@ static void update() {
                 e.vy += 0.65f; e.y += e.vy; if (e.y >= e.baseY) { e.y = e.baseY; e.vy = 0; }
             }
         }
-        if (e.kind == E_GHOST && e.state == 1) continue; // Intangible when faded
+        if (e.kind == E_GHOST && e.state == 1) continue;
         if (rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8, (int)e.x + 4, (int)e.y + 4, 36, 36)) {
             if ((vy > 0 && py + PH < e.y + 30) || dashTimer > 0 || slamActive) {
                 if (vy > 0 && !slamActive) { py = e.y - PH; vy = -15.5f; jumpsLeft = 1; squashX = 0.72f; squashY = 1.28f; }
@@ -1097,19 +1070,18 @@ static void update() {
         if (rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8, (int)s.x - 14, (int)s.y - 14, 28, 28)) { s.active = false; hurtPlayer(1); return; }
     }
 
-    // 4 Unique 3-Phase Bosses (Spider King, Lava Titan, Ice Dragon, Cursed Knight)
     if (bossActive && bossHP > 0) {
         if (bossIntro > 0) { bossIntro--; triggerShake(2, 3); return; }
         if (bossHurt > 0) bossHurt--; if (bossSwCd > 0) bossSwCd--; bossTimer++;
         float floorY = (float)((ROWS - 1) * TILE - bossH), pSpd = 0.9f + bossPhase * 0.28f;
-        if (bossType == 0) { // Spider King: Phase1 ceiling drop, Phase2 web spread, Phase3 rapid swoop
+        if (bossType == 0) {
             bossX += bossVX * pSpd; if (bossX < 4 * TILE) { bossX = 4 * TILE; bossVX = 4.2f; } else if (bossX > 24 * TILE) { bossX = 24 * TILE; bossVX = -4.2f; }
             bossY = 230.0f + (SN[(bossTimer / (6 - bossPhase)) & 15] * (120 + bossPhase * 30)) / 256;
             if (bossTimer % (78 - bossPhase * 12) == 0) {
                 spawnShot(bossX + 64, bossY + bossH, (px < bossX ? -5.0f : 5.0f), 3.0f, 1);
                 if (bossPhase >= 2) spawnShot(bossX + 64, bossY + bossH, 0, 5.5f, 1);
             }
-        } else if (bossType == 1) { // Lava Titan: Phase1 stomps, Phase2 lava arcs, Phase3 meteor rain
+        } else if (bossType == 1) {
             bossX += bossVX * (pSpd * 0.85f); if (bossX < 4 * TILE) { bossX = 4 * TILE; bossVX = 3.8f; } else if (bossX > 24 * TILE) { bossX = 24 * TILE; bossVX = -3.8f; }
             if (bossTimer % (95 - bossPhase * 10) == 20 && bossY >= floorY - 2) { bossVY = -15.5f; triggerShake(10, 6); }
             bossVY += 0.65f; bossY += bossVY; if (bossY >= floorY) { bossY = floorY; bossVY = 0; }
@@ -1117,11 +1089,11 @@ static void update() {
                 spawnShot(bossX + 64, bossY + 20, (px < bossX ? -6.2f : 6.2f), -3.5f, 1);
                 if (bossPhase == 3) spawnShot((float)(TILE * (6 + rnd(20))), 80, 0, 6.2f, 0);
             }
-        } else if (bossType == 2) { // Ice Dragon: Phase1 high swoops, Phase2 frost breath, Phase3 dive blitz
+        } else if (bossType == 2) {
             bossX += bossVX * (pSpd * 1.1f); if (bossX < 3 * TILE) { bossX = 3 * TILE; bossVX = 4.8f; } else if (bossX > 25 * TILE) { bossX = 25 * TILE; bossVX = -4.8f; }
             bossY = (bossPhase == 3 && (bossTimer % 100 > 65)) ? floorY - 40 : 210.0f + (SN[(bossTimer / 5) & 15] * 90) / 256;
             if (bossTimer % (68 - bossPhase * 10) == 0) spawnShot(bossX + 64, bossY + 56, (px < bossX ? -7.5f : 7.5f), 1.8f, 2);
-        } else { // Cursed Knight: Phase1 dash slash, Phase2 shadow clones/shots, Phase3 teleport strike
+        } else {
             if (bossPhase == 3 && bossTimer % 110 == 0) { bossX = iclamp((int)px + (px > 960 ? -260 : 260), 4 * TILE, 24 * TILE); }
             bossX += bossVX * pSpd; if (bossX < 4 * TILE) { bossX = 4 * TILE; bossVX = 4.6f; } else if (bossX > 24 * TILE) { bossX = 24 * TILE; bossVX = -4.6f; }
             bossVY += 0.65f; bossY += bossVY; if (bossY >= floorY) { bossY = floorY; bossVY = 0; }
@@ -1152,8 +1124,8 @@ static void update() {
     }
     roomIdx = iclamp(((int)px + PW / 2) / FW, 0, ROOMS - 1);
 }
-// ====== نهاية الجزء 1 (الصق الجزء 2 أسفل هذا السطر مباشرة) ======
-// ====== بداية الجزء 2: الجرافيكس، القائمة السرية، واجهة Settings الاحترافية و main() ======
+
+// ---------- Graphics, Secret Menu, Pro Settings UI & main() ----------
 static void drawNarutoHD(int idx, int x, int y, int ps, int dirFace) {
     static const char *SPR[5][32] = {
         { "......KKKKKKKK......",".....KNNNNNNNNK.....","....KNNKOOOOOKNK....","....KNKOoYYoOOKK....","...KNNKOoKKoOOKK....","...KNNKOYOOoOOKK....","....KNKOoOOoOOKK....",".....KKOOOOOOKK.....",
@@ -1231,11 +1203,9 @@ static void drawTileCell(int r, int cx, char ch, bool hi) {
         }
         if (cfg.shadowQual >= 2) fillRect(x, y + TILE - 6, TILE, 6, mk(MC[w][0] / 2, MC[w][1] / 2, MC[w][2] / 2));
     } else if (ch == '=') {
-        // Arched Ornamental Bridge (Inspired by Image 4!)
         fillRect(x, y, TILE, 12, mk(118, 82, 52)); fillRect(x, y, TILE, 4, mk(168, 124, 82));
         if (cfg.worldDetails >= 2) { fillRect(x + 6, y - 14, 5, 14, mk(72, 58, 48)); fillRect(x + 48, y - 14, 5, 14, mk(72, 58, 48)); fillRect(x, y - 14, TILE, 4, mk(98, 82, 68)); }
     } else if (ch == '~') {
-        // Water Zone
         fillRect(x, y, TILE, TILE, mk(32, 128, 175));
         if (r > 0 && tileAt(r - 1, cx) != '~') fillRect(x, y, TILE, 7, mk(115, 225, 245));
     } else if (ch == 'S') {
@@ -1268,10 +1238,9 @@ static void drawSplat(const Splat &s) {
     fillRect(s.x + (s.w - dw) / 2, s.y + (s.h - dh) / 2, dw, dh, mk(140 / div + 20, 10, 20));
 }
 
-// 8 Distinct World Backgrounds (Respects World Details & Lighting Quality!)
 static void paintBackground() {
     int pFar = roomIdx * 85, pNear = roomIdx * 170;
-    if (curWorld == 0) { // Haunted Forest (Image 1 & 4 style: moon, purple mist, gnarled trees)
+    if (curWorld == 0) {
         fillRect(0,0,FW,280,mk(38,44,78)); fillRect(0,280,FW,260,mk(78,64,108)); fillRect(0,540,FW,540,mk(44,32,58));
         if (cfg.lightingQual >= 1) fillCircle(1480, 160, 74, mk(225,238,242));
         if (cfg.worldDetails >= 1) for (int i = 0; i < 6; i++) {
@@ -1279,30 +1248,30 @@ static void paintBackground() {
             fillRect(tx, 160, 56, 600, mk(52,32,64)); fillRect(tx + 10, 160, 14, 600, mk(78,52,92));
             if (cfg.worldDetails >= 2) { fillRect(tx - 40, 240, 120, 16, mk(52,32,64)); fillRect(tx + 35, 320, 90, 14, mk(52,32,64)); }
         }
-    } else if (curWorld == 1) { // Volcano
+    } else if (curWorld == 1) {
         fillRect(0,0,FW,280,mk(42,14,24)); fillRect(0,280,FW,260,mk(86,26,32)); fillRect(0,540,FW,540,mk(38,14,20));
         if (cfg.worldDetails >= 1) for (int i = 0; i < 4; i++) { int x = ((i * 520 - pFar) % FW + FW) % FW; fillRect(x, 360, 200, 360, mk(54,18,26)); fillRect(x + 88, 380, 24, 340, mk(242,88,28)); }
-    } else if (curWorld == 2) { // Ice
+    } else if (curWorld == 2) {
         fillRect(0,0,FW,280,mk(26,48,88)); fillRect(0,280,FW,260,mk(56,94,142)); fillRect(0,540,FW,540,mk(48,78,120));
         if (cfg.lightingQual >= 2) for (int i = 0; i < 6; i++) fillRect(i * 320 + 20, 120 + (i & 1) * 24, 240, 18, mk(72,224,182));
         if (cfg.worldDetails >= 1) for (int i = 0; i < 4; i++) { int x = ((i * 510 - pFar) % FW + FW) % FW; fillRect(x + 40, 390, 210, 330, mk(86,126,172)); fillRect(x + 70, 350, 150, 50, mk(236,248,255)); }
-    } else if (curWorld == 3) { // Dark Castle
+    } else if (curWorld == 3) {
         fillRect(0,0,FW,300,mk(22,12,48)); fillRect(0,300,FW,780,mk(34,18,68));
         if (cfg.worldDetails >= 1) for (int i = 0; i < 6; i++) { int x = ((i * 340 - pNear) % FW + FW) % FW; fillRect(x, 220, 68, 680, mk(46,32,74)); fillRect(x + 140, 330, 56, 100, mk(145,58,185)); }
-    } else if (curWorld == 4) { // Crystal Caves (Image 3 style: dark purple cavern + glowing teal crystals!)
+    } else if (curWorld == 4) {
         fillRect(0,0,FW,300,mk(22,16,38)); fillRect(0,300,FW,300,mk(42,24,68)); fillRect(0,600,FW,480,mk(28,18,46));
         if (cfg.worldDetails >= 1) for (int i = 0; i < 5; i++) {
             int cx = ((i * 420 - pFar) % FW + FW) % FW;
             fillRect(cx + 20, 320, 38, 220, mk(58,205,175)); fillRect(cx + 28, 320, 14, 220, mk(155,255,235));
             if (cfg.worldDetails >= 2) { fillRect(cx - 10, 400, 28, 140, mk(42,165,145)); fillRect(cx + 62, 380, 28, 160, mk(48,185,155)); }
         }
-    } else if (curWorld == 5) { // Mechanical Factory
+    } else if (curWorld == 5) {
         fillRect(0,0,FW,300,mk(38,42,50)); fillRect(0,300,FW,780,mk(28,32,38));
         if (cfg.worldDetails >= 1) for (int i = 0; i < 6; i++) { int x = ((i * 340 - pNear) % FW + FW) % FW; fillRect(x, 100, 48, 800, mk(62,68,78)); fillCircle(x + 160, 360, 58, mk(98,86,62)); fillCircle(x + 160, 360, 28, mk(28,32,38)); }
-    } else if (curWorld == 6) { // Floating Sky Islands
+    } else if (curWorld == 6) {
         fillRect(0,0,FW,400,mk(52,158,238)); fillRect(0,400,FW,680,mk(145,224,252));
         if (cfg.worldDetails >= 1) for (int i = 0; i < 5; i++) { int x = ((i * 410 - pFar) % FW + FW) % FW; fillRect(x, 260 + (i & 1) * 90, 180, 42, mk(105,74,48)); fillRect(x, 260 + (i & 1) * 90, 180, 12, mk(82,215,86)); }
-    } else { // Water World & Sunken Arches (Image 2 style: teal pillars, arched ruins, waterfalls!)
+    } else {
         fillRect(0,0,FW,320,mk(18,52,68)); fillRect(0,320,FW,760,mk(24,78,92));
         if (cfg.worldDetails >= 1) for (int i = 0; i < 5; i++) {
             int x = ((i * 410 - pNear) % FW + FW) % FW;
@@ -1334,14 +1303,13 @@ static inline void addDirty(int b, int x, int y, int w, int h) { if (dirtyCnt[b]
 static void drawEnemyChar(const Enemy &e, int sx, int sy) {
     bool fl = cfg.showDmgInd && ((e.hurt & 2) != 0);
     if (e.kind == E_SPIDER) {
-        fillRect(sx + 21, 60, 2, sy - 50, mk(220,225,235)); // Silk web thread!
+        fillRect(sx + 21, 60, 2, sy - 50, mk(220,225,235));
         int lg = ((tick / 5) & 1) ? 4 : -4;
         fillRect(sx - 10, sy + 20 + lg, 14, 5, mk(32,36,44)); fillRect(sx + 40, sy + 20 - lg, 14, 5, mk(32,36,44));
         fillCircle(sx + 22, sy + 22, 16, fl ? mk(255,255,255) : mk(148,88,42)); fillRect(sx + 14, sy + 24, 6, 6, mk(235,24,36)); fillRect(sx + 24, sy + 24, 6, 6, mk(235,24,36));
     } else if (e.kind == E_BEETLE) {
-        fillRect(sx, sy + 12, 44, 32, fl ? mk(255,255,255) : mk(78,92,135)); fillRect(sx + 4, sy + 6, 36, 12, mk(145,165,215)); // Heavy shell
-        fillRect(e.dir > 0 ? sx + 38 : sx - 6, sy + 20, 10, 6, mk(235,195,75)); // Horn
-        drawFace(sx, sy + 8, e.dir, mk(255,235,90));
+        fillRect(sx, sy + 12, 44, 32, fl ? mk(255,255,255) : mk(78,92,135)); fillRect(sx + 4, sy + 6, 36, 12, mk(145,165,215));
+        fillRect(e.dir > 0 ? sx + 38 : sx - 6, sy + 20, 10, 6, mk(235,195,75)); drawFace(sx, sy + 8, e.dir, mk(255,235,90));
     } else if (e.kind == E_GHOST) {
         if (e.state == 1) { fillRect(sx + 10, sy + 10, 24, 24, mk(135,145,185)); return; }
         fillCircle(sx + 22, sy + 20, 18, fl ? mk(255,255,255) : mk(225,235,255)); fillRect(sx + 4, sy + 20, 36, 22, mk(215,225,248));
@@ -1352,7 +1320,7 @@ static void drawEnemyChar(const Enemy &e, int sx, int sy) {
     } else if (e.kind == E_DRONE) {
         fillRect(sx - 10, sy + 8, 64, 8, mk(115,125,145)); fillCircle(sx + 22, sy + 24, 15, fl ? mk(255,255,255) : mk(68,78,96));
         fillCircle(sx + 22, sy + 24, 7, mk(245,45,65));
-    } else { // Mimic
+    } else {
         fillRect(sx, sy + 10, 44, 34, fl ? mk(255,255,255) : mk(168,104,42)); fillRect(sx, sy + 22, 44, 5, mk(245,195,55));
         if (e.state == 1) { fillRect(sx + 4, sy + 20, 36, 12, mk(185,22,42)); fillRect(sx + 8, sy + 20, 6, 6, mk(255,255,255)); fillRect(sx + 30, sy + 20, 6, 6, mk(255,255,255)); }
     }
@@ -1361,19 +1329,19 @@ static void drawEnemyChar(const Enemy &e, int sx, int sy) {
 static void drawBossChar(int bx, int by, int bw, int bh, bool hurt) {
     Color aura = bossPhase == 3 ? mk(255,55,75) : (bossPhase == 2 ? mk(255,185,45) : mk(95,215,145));
     if (cfg.lightingQual >= 2) fillRect(bx - 6, by - 6, bw + 12, bh + 12, aura);
-    if (bossType == 0) { // Spider King
+    if (bossType == 0) {
         int lg = ((tick / 5) & 1) ? 8 : -8;
         for (int k = 0; k < 3; k++) { fillRect(bx - 24, by + 20 + k * 28 + lg, 32, 8, mk(36,42,52)); fillRect(bx + bw - 8, by + 20 + k * 28 - lg, 32, 8, mk(36,42,52)); }
         fillCircle(bx + bw / 2, by + 72, 44, hurt ? mk(255,255,255) : mk(168,104,56)); fillCircle(bx + bw / 2, by + 32, 30, mk(118,178,42));
         fillCircle(bx + bw / 2 - 14, by + 30, 9, mk(225,22,38)); fillCircle(bx + bw / 2 + 14, by + 30, 9, mk(225,22,38));
-    } else if (bossType == 1) { // Lava Titan
+    } else if (bossType == 1) {
         fillRect(bx, by, bw, bh, hurt ? mk(255,255,255) : mk(78,24,22)); fillRect(bx + 12, by + 12, bw - 24, bh - 24, mk(235,88,28));
         fillRect(bx + 24, by + 28, 24, 18, mk(255,235,85)); fillRect(bx + bw - 48, by + 28, 24, 18, mk(255,235,85));
-    } else if (bossType == 2) { // Ice Dragon
+    } else if (bossType == 2) {
         fillRect(bx - 26, by + 24, 34, 48, mk(115,195,245)); fillRect(bx + bw - 8, by + 24, 34, 48, mk(115,195,245));
         fillCircle(bx + bw / 2, by + bh / 2, 52, hurt ? mk(255,255,255) : mk(82,165,235));
         fillRect(bx + 32, by + 30, 18, 16, mk(255,255,255)); fillRect(bx + bw - 50, by + 30, 18, 16, mk(255,255,255));
-    } else { // Cursed Knight
+    } else {
         fillRect(bx + 12, by, bw - 24, bh, hurt ? mk(255,255,255) : mk(42,24,68));
         fillRect(bx + 24, by + 14, bw - 48, 32, mk(115,42,155)); fillRect(bx + 32, by + 24, 18, 10, mk(255,55,95)); fillRect(bx + bw - 50, by + 24, 18, 10, mk(255,55,95));
     }
@@ -1437,7 +1405,6 @@ static void renderGame(int b) {
     }
 
     resetClip(); int roomX = roomIdx * FW;
-    // Water Surface Animation (Respects waterAnim 0..3!)
     if (cfg.waterAnim > 0) {
         int stepC = cfg.waterAnim == 1 ? 4 : (cfg.waterAnim == 2 ? 2 : 1);
         for (int c = 0; c < RCOLS; c += stepC) if (bufGrid[b][15][c] == '~') {
@@ -1477,14 +1444,14 @@ static void renderGame(int b) {
         int x = (int)px - roomX + shkX, y = (int)py + shkY, dw = iclamp((int)(PW * squashX), 20, 80), dh = iclamp((int)(PH * squashY), 20, 80);
         int dx = x + (PW - dw) / 2, dy = y + (PH - dh) + ((onGround && iabs((int)vx) > 1 && ((animTick / 6) & 1)) ? -3 : 0);
         if (cfg.shadowQual >= 1 && onGround) fillRect(dx + 4, y + PH - 3, dw - 8, 6, mk(18,16,28));
-        if (cfg.lightingQual >= 3 && curWorld == 4) fillCircle(dx + dw / 2, dy + dh / 2, 54, mk(98,84,48)); // Cave torch halo!
+        if (cfg.lightingQual >= 3 && curWorld == 4) fillCircle(dx + dw / 2, dy + dh / 2, 54, mk(98,84,48));
         if (shieldTimer > 0) fillCircle(dx + dw / 2, dy + dh / 2, 34, mk(85,195,255));
         drawSkinCube(dx, dy, dw, dh, facing, save.selectedSkin);
         addDirty(b, x - 58, y - 58, PW + 116, PH + 116);
     }
 }
 
-// ---------- Pro 6-Tab Settings UI (Graphics + Live Preview, Video, Audio, Language, Gameplay, Controls) ----------
+// ---------- Pro 6-Tab Settings UI ----------
 static void drawSlider(int x, int y, int w, int val, int maxV, Color fillC) {
     fillRect(x, y, w, 18, mk(26,20,44));
     int fw = (iclamp(val, 0, maxV) * (w - 4)) / maxV;
@@ -1495,7 +1462,6 @@ static void drawSlider(int x, int y, int w, int val, int maxV, Color fillC) {
 static void drawProSettings() {
     fillRect(0, 0, FW, FH, mk(18, 16, 34));
     fillRect(40, 34, 1840, 82, mk(34, 24, 58)); drawLabel(T_B_SETTINGS, 960, 34, 82, 5, mk(255, 212, 72));
-    // Left Sidebar (6 Categories)
     fillRect(40, 140, 340, 810, mk(26, 20, 46));
     for (int t = 0; t < 6; t++) {
         int ty = 165 + t * 115; bool sel = (t == setTab);
@@ -1503,10 +1469,9 @@ static void drawProSettings() {
         fillRect(56, ty, 308, 86, sel ? mk(198,36,54) : mk(42,32,66));
         drawLabel(T_TAB_GFX + t, 210, ty, 86, 3, mk(255,255,255));
     }
-    // Right Content Panel
     fillRect(410, 140, 1470, 810, mk(28, 22, 48));
 
-    if (setTab == 0) { // GRAPHICS (9 Options x 4 Levels + Live Visual Preview + Apply/Restore)
+    if (setTab == 0) {
         int *vals[9] = {&cfg.grassDensity,&cfg.worldDetails,&cfg.waterAnim,&cfg.bloodParts,&cfg.grassAnim,&cfg.lightingQual,&cfg.shadowQual,&cfg.particleFx,&cfg.ambientFx};
         for (int i = 0; i < 9; i++) {
             int ry = 160 + i * 68; bool sel = (setRow == i);
@@ -1514,13 +1479,11 @@ static void drawProSettings() {
             drawLabel(T_G_GRASSD + i, 670, ry, 58, 2, mk(255,255,255));
             drawLabel(T_VLOW + iclamp(*vals[i], 0, 3), 1160, ry, 58, 2, mk(255,228,110));
         }
-        // Apply & Restore buttons
         for (int b = 0; b < 2; b++) {
             int ry = 795, rx = 435 + b * 470; bool sel = (setRow == 9 + b);
             fillRect(rx, ry, 440, 62, sel ? mk(48,165,92) : mk(52,42,78));
             drawLabel(b == 0 ? T_APPLY : T_RESTORE, rx + 220, ry, 62, 2, mk(255,255,255));
         }
-        // Live Graphics Preview Box (Shows real-time effect of Grass/World/Water/Light/Shadow!)
         int px0 = 1390, py0 = 180;
         fillRect(px0 - 4, py0 - 4, 468, 428, mk(245,195,65));
         fillRect(px0, py0, 460, 240, mk(46,148,225)); fillRect(px0, py0 + 240, 460, 180, mk(28,88,52));
@@ -1531,7 +1494,7 @@ static void drawProSettings() {
         if (cfg.waterAnim > 0) { fillRect(px0 + 250, py0 + 320, 180, 100, mk(32,128,175)); fillRect(px0 + 260 + ((tick * cfg.waterAnim) % 40), py0 + 324, 48, 5, mk(185,245,255)); }
         for (int g = 0; g < cfg.grassDensity * 5; g++) drawPlantTuft(px0 + 20 + g * 16, py0 + 320, 14, cfg.grassAnim > 0 ? SN[(tick/6 + g)&15]/28 : 0, 0, g % 3);
         drawTextC(px0 + 230, py0 + 448, "LIVE PREVIEW", 3, mk(255,225,110));
-    } else if (setTab == 1) { // VIDEO
+    } else if (setTab == 1) {
         int ry = 190;
         fillRect(460, ry, 1360, 78, setRow == 0 ? mk(198,36,54) : mk(42,32,66));
         drawLabel(T_V_FPS, 780, ry, 78, 3, mk(255,255,255));
@@ -1541,10 +1504,9 @@ static void drawProSettings() {
         drawLabel(T_V_BRIGHT, 780, ry, 78, 3, mk(255,255,255));
         drawSlider(1180, ry + 30, 420, cfg.brightness - 50, 100, mk(255,215,75));
         char bb[12]; sprintf(bb, "%d%%", cfg.brightness); drawTextC(1700, ry + 28, bb, 3, mk(255,255,255));
-        // Honest hardware status rows (non-fake!)
         fillRect(460, 420, 1360, 72, mk(36,30,56)); drawLabel(T_V_RES, 1140, 420, 72, 3, mk(185,215,235));
         fillRect(460, 515, 1360, 72, mk(36,30,56)); drawLabel(T_V_VSYNC, 1140, 515, 72, 3, mk(185,215,235));
-    } else if (setTab == 2) { // AUDIO (6 Independent Sliders + Mute Buttons + Restore)
+    } else if (setTab == 2) {
         int *av[6] = {&cfg.masterVol,&cfg.musicVol,&cfg.sfxVol,&cfg.ambVol,&cfg.playerVol,&cfg.enemyVol};
         for (int i = 0; i < 6; i++) {
             int ry = 165 + i * 82; bool sel = (setRow == i);
@@ -1561,14 +1523,14 @@ static void drawProSettings() {
         }
         fillRect(460, 795, 1360, 64, setRow == 9 ? mk(48,165,92) : mk(52,42,78));
         drawLabel(T_RESTORE, 1140, 795, 64, 3, mk(255,255,255));
-    } else if (setTab == 3) { // LANGUAGE (6 Languages)
+    } else if (setTab == 3) {
         static const char *LNAMES[6] = {"ARABIC (RTL)", "ENGLISH", "FRANCAIS", "ESPANOL", "DEUTSCH", "TURKCE"};
         for (int i = 0; i < 6; i++) {
             int ry = 185 + i * 105; bool sel = (setRow == i), act = (cfg.lang == i);
             fillRect(520, ry, 1240, 82, sel ? mk(198,36,54) : (act ? mk(48,125,78) : mk(42,32,66)));
             drawTextC(1140, ry + 28, LNAMES[i], 4, mk(255,255,255));
         }
-    } else if (setTab == 4) { // GAMEPLAY
+    } else if (setTab == 4) {
         int *gv[7] = {&cfg.camShake,&cfg.rumble,&cfg.showDmgNum,&cfg.showDmgInd,&cfg.difficulty,&cfg.showHints,&cfg.ngPlus};
         for (int i = 0; i < 7; i++) {
             int ry = 175 + i * 86; bool sel = (setRow == i);
@@ -1579,7 +1541,7 @@ static void drawProSettings() {
         }
         fillRect(460, 795, 1360, 64, setRow == 7 ? mk(48,165,92) : mk(52,42,78));
         drawLabel(T_RESTORE_ALL, 1140, 795, 64, 3, mk(255,255,255));
-    } else { // CONTROLS (PS4 Controller Mapping + Custom Scheme)
+    } else {
         fillRect(460, 185, 1360, 78, setRow == 0 ? mk(198,36,54) : mk(42,32,66));
         drawTextC(1140, 212, cfg.moveMode == 0 ? "MOVEMENT: ANALOG STICK" : "MOVEMENT: D-PAD ARROWS", 3, mk(255,255,255));
         fillRect(460, 285, 1360, 78, setRow == 1 ? mk(198,36,54) : mk(42,32,66));
@@ -1597,7 +1559,6 @@ static void drawProSettings() {
     drawTextC(960, 998, "L1/R1: SWITCH TAB   |   UP/DOWN: SELECT   |   LEFT/RIGHT/X: CHANGE   |   O: SAVE & BACK", 2, mk(215,215,238));
 }
 
-// ---------- Menus & Main Loop ----------
 static void drawBanner(int tid, int sc, int y, int h, bool cubes) {
     fillRect(456, y - 4, 1008, h + 8, mk(245,190,65)); fillRect(460, y, 1000, h, mk(35,25,55));
     drawLabel(tid, 960, y, h, sc, mk(255,75,115));
@@ -1812,4 +1773,3 @@ int main(void) {
     }
     return 0;
 }
-// ====== نهاية الجزء 2 ======
