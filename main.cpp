@@ -38,7 +38,7 @@ extern "C" {
 #define PW 44
 #define PH 44
 
-#define TOTAL_STAGES 17   // 4 Worlds x 4 Stages (3 Action + 1 Boss) + 1 Secret Stage
+#define TOTAL_STAGES 17
 #define MAX_ENEMIES 64
 #define MAX_SHOTS 20
 #define MAX_COINS 96
@@ -68,11 +68,10 @@ static int audioHandle = -1;
 // ---------- Save Data & Progression ----------
 struct SaveData {
     unsigned int magic;
-    int unlockedStages;
-    int coins;
+    int unlockedStages, coins;
     int upHp, upDash, upMagnet, upSlam;
     unsigned int skinsOwned;
-    int selectedSkin;
+    int selectedSkin; // 0..4 = Meat Cubes, 5..9 = Secret Naruto Roster
     unsigned int achMask;
     int bestTime[TOTAL_STAGES];
     int secretsFound;
@@ -114,25 +113,17 @@ static int stageTimeFrames = 0, shakeTimer = 0, shakeMag = 0;
 static int toastTid = -1, toastTimer = 0, npcDialogTid = -1, npcDialogTimer = 0;
 static unsigned int rng = 12345;
 
-// Afterimages for Dash & Slam
 struct Ghost { float x, y; int life, dir; };
 static Ghost ghosts[8];
 
-// Checkpoints
 static int checkC[MAX_CHECKS], checkR[MAX_CHECKS], checkCount = 0;
 static bool checkAct[MAX_CHECKS];
 
-// Enemies: Spider, Bat, Mushroom Monster, Elite Guard
 enum { E_SPIDER = 0, E_BAT = 1, E_MUSHROOM = 2, E_ELITE = 3 };
-struct Enemy {
-    float x, y, vx, vy, minX, maxX, baseY;
-    int kind, hp, maxHp, hurt, timer, dir, state; // Mushroom state: 0=hidden, 1=popped
-    bool active;
-};
+struct Enemy { float x, y, vx, vy, minX, maxX, baseY; int kind, hp, maxHp, hurt, timer, dir, state; bool active; };
 static Enemy enemies[MAX_ENEMIES];
 static int enemyCount = 0;
 
-// Bosses: 0=King Frogus (Forest), 1=Giant Spider (Volcano), 2=Frost Devourer (Ice), 3=Dark Overlord (Castle)
 static bool bossActive = false;
 static int bossType = 0, bossW = 120, bossH = 112, bossHP = 10, bossMaxHP = 10;
 static int bossHurt = 0, bossTimer = 0, bossState = 0, bossTongueLen = 0, bossSwCd = 0;
@@ -141,43 +132,33 @@ static float bossX, bossY, bossVX, bossVY;
 struct Shot { float x, y, vx, vy; int kind; bool active; };
 static Shot shots[MAX_SHOTS];
 
-// Interactive Entities: Coins, Treasure Chests, Power-ups, NPCs, Moving/Disappearing Platforms
 struct Coin { short room, x, y; bool active; };
-static Coin coins[MAX_COINS];
-static int coinCount = 0;
+static Coin coins[MAX_COINS]; static int coinCount = 0;
 
 struct Chest { short room, x, y; bool opened, secret; };
-static Chest chests[MAX_CHESTS];
-static int chestCount = 0;
+static Chest chests[MAX_CHESTS]; static int chestCount = 0;
 
 enum { PU_HEART = 0, PU_SHIELD = 1, PU_SPEED = 2 };
 struct PowerUp { short room, x, y; int kind; bool active; };
-static PowerUp powerups[MAX_POWERUPS];
-static int puCount = 0;
+static PowerUp powerups[MAX_POWERUPS]; static int puCount = 0;
 
 struct MPlat { short room; float x, y, minX, maxX, vx; short w; };
-static MPlat mplats[MAX_MPLAT];
-static int mplatCount = 0;
+static MPlat mplats[MAX_MPLAT]; static int mplatCount = 0;
 
-struct DPlat { short room, x, y, w; int timer, state; }; // 0=solid, 1=shaking, 2=gone
-static DPlat dplats[MAX_DPLAT];
-static int dplatCount = 0;
+struct DPlat { short room, x, y, w; int timer, state; };
+static DPlat dplats[MAX_DPLAT]; static int dplatCount = 0;
 
 struct NPC { short room, x, y; int dialogTid; };
-static NPC npcs[MAX_NPCS];
-static int npcCount = 0;
+static NPC npcs[MAX_NPCS]; static int npcCount = 0;
 
-// Living World Details
 struct Splat { short room, x, y, w, h; int born; unsigned char stage, dStage[2]; bool drawn[2]; };
-static Splat splats[MAX_SPLATS];
-static int splatCount = 0;
+static Splat splats[MAX_SPLATS]; static int splatCount = 0;
 
 struct Part { float x, y, vx, vy; short life, maxLife; unsigned char kind, size; };
 static Part parts[MAX_PARTS];
 
 struct Plant { short room, x, y; float angle, vel; unsigned char h, style, seed; signed char dBend[2]; bool drawn[2]; };
-static Plant plants[MAX_PLANTS];
-static int plantCount = 0;
+static Plant plants[MAX_PLANTS]; static int plantCount = 0;
 
 struct Leaf { float x, y, vx, vy; unsigned char sz, seed; };
 static Leaf leaves[MAX_LEAVES];
@@ -185,10 +166,9 @@ static Leaf leaves[MAX_LEAVES];
 struct Firefly { float x, y, vx, vy; unsigned char phase; };
 static Firefly flies[MAX_FIREFLIES];
 
-// Dirty-Rectangle Framebuffer Tracking (60 FPS Engine)
 struct Rect { int x, y, w, h; };
 static Rect dirty[2][MAX_DIRTY];
-static int dirtyCnt[2] = {0, 0}, bufRoom[2] = {0, 0}, bufStar[2] = {0, 0};
+static int dirtyCnt[2] = {0, 0}, bufRoom[2] = {0, 0};
 static bool needFull[2] = {true, true}, needWin[2] = {false, false}, hudNeed[2] = {false, false};
 static char bufGrid[2][ROWS][RCOLS];
 static bool bufHi[2][ROWS][RCOLS];
@@ -198,9 +178,9 @@ static const int CS[16] = {256,237,181,98,0,-98,-181,-237,-256,-237,-181,-98,0,9
 static const int SN[16] = {0,98,181,237,256,237,181,98,0,-98,-181,-237,-256,-237,-181,-98};
 
 // ---------- UI & Menus State ----------
-enum { S_MENU = 0, S_LEVELS = 1, S_SHOP = 2, S_SKINS = 3, S_ACH = 4, S_SETTINGS = 5, S_CREDITS = 6, S_PLAY = 7, S_STORY = 8 };
-static int state = S_MENU, menuSel = 0, levelSel = 0, shopSel = 0, skinSel = 0, settingsSel = 0;
-static int controlMode = 1, lang = 1; // Default Arabic (1), switchable to English (0)
+enum { S_MENU = 0, S_LEVELS = 1, S_SHOP = 2, S_SKINS = 3, S_ACH = 4, S_SETTINGS = 5, S_CREDITS = 6, S_PLAY = 7, S_STORY = 8, S_SECRET = 9 };
+static int state = S_MENU, menuSel = 0, levelSel = 0, shopSel = 0, skinSel = 0, settingsSel = 0, secretSel = 0;
+static int controlMode = 1, lang = 1;
 static bool introSeen = false, uiFull[2] = {true, true}, pend[2][64];
 static int storyId = 0, storyPage = 0, typed = 0, storyAnimTick = 0, storyDrawnPage[2] = {-1, -1}, storyShown[2] = {0, 0};
 static bool storyBgDone[2] = {false, false};
@@ -265,10 +245,10 @@ static const Page PAGES[5] = {
 };
 static const int STORY_FIRST[2] = {0, 3}, STORY_LAST[2] = {3, 5};
 
-// ---------- Input ----------
+// ---------- Input (With L2 + R2 + L1 + X Secret Combo) ----------
 struct Input {
     bool up, down, left, right, dleft, dright;
-    bool cross, circle, square, triangle, options, r1, l1;
+    bool cross, circle, square, triangle, options, r1, l1, l2, r2;
     bool crossNew, circleNew, squareNew, triNew, optionsNew, dashNew;
     float ana;
 };
@@ -310,6 +290,8 @@ static void readInput() {
     in.square = (b & ORBIS_PAD_BUTTON_SQUARE) != 0; in.triangle = (b & ORBIS_PAD_BUTTON_TRIANGLE) != 0;
     in.options = (b & ORBIS_PAD_BUTTON_OPTIONS) != 0;
     in.r1 = (b & ORBIS_PAD_BUTTON_R1) != 0; in.l1 = (b & ORBIS_PAD_BUTTON_L1) != 0;
+    in.l2 = ((b & ORBIS_PAD_BUTTON_L2) != 0) || (padData.analogButtons.l2 > 35);
+    in.r2 = ((b & ORBIS_PAD_BUTTON_R2) != 0) || (padData.analogButtons.r2 > 35);
     bool dashBtn = in.circle || in.r1;
     in.crossNew = in.cross && !pCross; in.circleNew = in.circle && !pCircle;
     in.squareNew = in.square && !pSquare; in.triNew = in.triangle && !pTri;
@@ -365,7 +347,6 @@ static void initAudio() {
 #endif
 }
 
-// 0=cursor, 1=ok, 2=back, 3=err, 4=jump, 5=dash, 6=hurt/die, 7=stomp/hit, 8=win, 9=coin, 10=slam, 11=step
 static void snd(int k) {
     if (state != S_PLAY) {
         if (k == 0) playToneImmediate(880, 22, 15000);
@@ -382,19 +363,11 @@ static void updateGameplayAudio() {
 #ifndef NO_AUDIO
     if (audioHandle < 0 || state != S_PLAY) return;
     static short outBuf[512];
-    // Distinct Halal Vocal-Hum Harmonies & Percussion Tempos per World + Boss
-    static const int W_HB[5][4] = {
-        {110,130,146,130}, {98,116,130,110}, {130,146,165,146}, {92,104,116,98}, {123,146,165,138}
-    };
-    static const int W_HH[5][4] = {
-        {165,195,220,195}, {146,174,195,165}, {195,220,247,220}, {138,155,174,146}, {185,220,247,207}
-    };
+    static const int W_HB[5][4] = {{110,130,146,130},{98,116,130,110},{130,146,165,146},{92,104,116,98},{123,146,165,138}};
+    static const int W_HH[5][4] = {{165,195,220,195},{146,174,195,165},{195,220,247,220},{138,155,174,146},{185,220,247,207}};
     static const unsigned char PAT[5][16] = {
-        {1,0,3,2,1,0,2,0,1,1,3,2,0,2,3,2}, // Forest
-        {1,1,2,0,1,0,2,2,1,1,2,0,1,2,3,2}, // Volcano
-        {1,0,3,0,2,0,3,0,1,0,3,2,0,3,2,0}, // Ice
-        {1,0,2,1,0,2,1,0,1,2,0,2,1,1,2,2}, // Castle
-        {1,3,2,3,1,2,3,2,1,1,2,3,1,2,2,3}  // Secret
+        {1,0,3,2,1,0,2,0,1,1,3,2,0,2,3,2},{1,1,2,0,1,0,2,2,1,1,2,0,1,2,3,2},
+        {1,0,3,0,2,0,3,0,1,0,3,2,0,3,2,0},{1,0,2,1,0,2,1,0,1,2,0,2,1,1,2,2},{1,3,2,3,1,2,3,2,1,1,2,3,1,2,2,3}
     };
     int w = iclamp(curWorld, 0, 4);
     int stepS = bossActive ? 4800 : (w == 1 ? 5600 : (w == 2 ? 7000 : 6200));
@@ -411,8 +384,7 @@ static void updateGameplayAudio() {
                     if ((duffP += 66 + (env >> 6)) >= 48000) duffP -= 48000;
                     mix += ((duffP < 24000 ? duffP - 12000 : 36000 - duffP) * env) / 4200;
                 } else if (hit == 2 && inS < 1300) {
-                    int env = 1300 - inS;
-                    noiseRng = noiseRng * 1664525u + 1013904223u;
+                    int env = 1300 - inS; noiseRng = noiseRng * 1664525u + 1013904223u;
                     int nz = ((int)(noiseRng >> 20) & 511) - 256;
                     if ((duffP += 290) >= 48000) duffP -= 48000;
                     mix += ((nz + (duffP < 24000 ? 260 : -260)) * env) / 300;
@@ -559,62 +531,110 @@ static int labelWidth(int tid, int sc) { return (useAr() && TXT_AR[tid] >= 0) ? 
 
 static void unlockAch(int idx) {
     if (idx < 0 || idx >= 6) return;
-    if (!(save.achMask & (1u << idx))) {
-        save.achMask |= (1u << idx);
-        toastTid = T_ACH_UNL; toastTimer = 180;
-        writeSave(); snd(1);
+    if (!(save.achMask & (1u << idx))) { save.achMask |= (1u << idx); toastTid = T_ACH_UNL; toastTimer = 180; writeSave(); snd(1); }
+}
+
+// ---------- High-Resolution 20x32 Pixel-Art Secret Naruto Characters ----------
+static void drawNarutoHD(int idx, int x, int y, int ps, int dirFace) {
+    // 0=OBITO, 1=PAIN, 2=ITACHI, 3=MADARA, 4=KAKASHI
+    static const char *SPR[5][32] = {
+        { // 0: OBITO (Orange Spiral Mask + Akatsuki Cloak)
+            "......KKKKKKKK......",".....KNNNNNNNNK.....","....KNNKOOOOOKNK....","....KNKOoYYoOOKK....",
+            "...KNNKOoKKoOOKK....","...KNNKOYOOoOOKK....","....KNKOoOOoOOKK....",".....KKOOOOOOKK.....",
+            "......KKKKKKKK......",".....KNNNRRNNNK.....","....KNNNNRRNNNNK....","...KNNnNNRRNNnNNK...",
+            "...KNNnNNRRNNnNNK...","..KNNnNWWWWWNNnNNK..","..KNNnWRRRRRWNnNNK..",".KNNnNWRRRRRWNnNNK..",".KNNnNNWWWWWNNnNNK..",
+            ".KRRnNNNNRRNNNNnNK..",".KNNnNNNNRRNNNNnNK..",".KNNnNNNNRRNNWWNnK..","..KNnNNNNRRNWRRNnK..","..KNnNNWWWRNWRRNnK..",
+            "..KnnNWRRRRNWWNnK...","..KnnNWRRRRNNNnNK...","..KNNNNWWWNNNNnNK...","...KNNNKKKKNNnNK....","....KKK....KKKK.....",
+            ".....KWWK..KWWK.....",".....KWWK..KWWK.....","....KNNNK..KNNNK....","....KSSSK..KSSSK....","....KKKKK..KKKKK...."
+        },
+        { // 1: PAIN (Spiky Orange Hair + Rinnegan + Akatsuki Cloak)
+            ".......K..K..K......","......KOKKOKKOK.....",".....KOOOKOOOKOK....","....KOOYOOOYOOOK....",
+            "...KOOYOOOOOOYOOK...","....KOOOOOOOOOOK....","....KKBBBBBBBBKK....","....KKSBKBBKBSKK....",
+            "....KSSPPSSPPSSK....",".....KSSKSSKSSK.....","......KSSSSSSK......",".....KNNNRRNNNK.....",
+            "....KNNNNRRNNNNK....","...KNNnNNRRNNnNNK...","...KNNnNNRRNNnNNK...","..KNNnNWWWWWNNnNNK..",
+            "..KNNnWRRRRRWNnNNK..",".KNNnNWRRRRRWNnNNK..",".KRRnNNWWWWWNNnNNK..",".KNNnNNNNRRNNNNnNK..",
+            "..KNnNNNNRRNNWWNnK..","..KNnNNWWWRNWRRNnK..","..KnnNWRRRRNWWNnK...","..KnnNWRRRRNNNnNK...",
+            "..KNNNNWWWNNNNnNK...","...KNNNKKKKNNnNK....","....KKK....KKKK.....",".....KWWK..KWWK.....",
+            ".....KWWK..KWWK.....","....KNNNK..KNNNK....","....KSSSK..KSSSK....","....KKKKK..KKKKK...."
+        },
+        { // 2: ITACHI (Dark Parted Hair + Sharingan + Akatsuki Cloak)
+            "......KKKKKKKK......",".....KNNNNNNNNK.....","....KNNnNNNNnNNK....","....KNNBBBBBBNNK....",
+            "...KNNnBKBBKBnNNK...","...KNNKSSSSSSKNNK...","...KNNKSRSSRSKNNK...","...KNNKSSSSSSKNNK...",
+            "....KNKKSSSSKKNK....",".....KNNNRRNNNK.....","....KNNNNRRNNNNK....","...KNNnNNRRNNnNNK...",
+            "...KNNnNNRRNNnNNK...","..KNNnNWWWWWNNnNNK..","..KNNnWRRRRRWNnNNK..",".KNNnNWRRRRRWNnNNK..",
+            ".KRRnNNWWWWWNNnNNK..",".KSSnNNNNRRNNNNnNK..",".KKKnNNNNRRNNWWNnK..","..KNnNNNNRRNWRRNnK..",
+            "..KNnNNWWWRNWRRNnK..","..KnnNWRRRRNWWNnK...","..KnnNWRRRRNNNnNK...","..KNNNNWWWNNNNnNK...",
+            "...KNNNKKKKNNnNK....","....KKK....KKKK.....",".....KWWK..KWWK.....",".....KWWK..KWWK.....",
+            ".....KWWK..KWWK.....","....KNNNK..KNNNK....","....KSSSK..KSSSK....","....KKKKK..KKKKK...."
+        },
+        { // 3: MADARA (Wild Long Spiky Black Hair + Red Samurai Armor + Sharingan)
+            ".....K..KKKK..K.....","....KNKNNNNNNKNK....","...KNNNNNNNNNNNNK...","..KNNnNNNNNNNNnNNK..",
+            ".KNNnNNKSSSSKNNnNNK.","..KNNnKSRSSRSKnNNK..",".KNNnNKSSSSSSKnNNK..","..KNNnKKSSSSKKnNNK..",
+            ".KNNnKMMMMMMMMKnNK..","..KNnKMmMMMMmMKnNK..",".KNNnKMMMMMMMMKnNK..","..KNnKMMKMMKMMKnNK..",
+            ".KNNnKMMMMMMMMKnNK..","..KNnKNNMMMMNNKnNK..",".KNNnKSKMMMMKKnNNK..","..KNnKKKmmmmKKnNNK..",
+            ".KNNnKMMMMMMMMKnNK..","..KNnKMmMMMMmMKnNK..","..KNNKMMMMMMMMKNNK..","...KKKMmMMMMmMKKK...",
+            "....KKMMMMMMMMKK....","....KNNKMMMMKNNK....","....KNNKmmmmKNNK....","....KNNK.KK.KNNK....",
+            "....KNNK....KNNK....","....KNNK....KNNK....",".....KWWK..KWWK.....",".....KWWK..KWWK.....",
+            ".....KWWK..KWWK.....","....KNNNK..KNNNK....","....KSSSK..KSSSK....","....KKKKK..KKKKK...."
+        },
+        { // 4: KAKASHI (Spiky Silver Hair + Tilted Headband + Mask + Olive Jonin Vest)
+            "........K..K........","......KWKWWKWK......",".....KWWWWWWWWK.....","....KWWwWWWWwWWK....",
+            "...KWWWWWWWWWWWWK...","....KwwWWWWWWwwK....","....KKNNNNBBBBKK....","....KNKSSKBBKBNK....",
+            "....KNKSSKNNNNNK....",".....KKNNNNNNNKK....",".....KGGGGGGGGGK....","....KGGgGGGGgGGGK...",
+            "...KNNKGGGGGGGKNNK..","..KNRRKGGKKGGKKNNK..","..KNRRKGgKKgGGKNNK..","..KNNNKGGGGGGGKNNK..",
+            "..KNNNKGGggGGGKNNK..","..KNNNKGGGGGGGKNNK..","...KSSKNNNNNNNKSSK..","....KKKNNNNNNNKKK...",
+            "......KNNNNNNNK.....",".....KNNWWWWWNNK....",".....KNNNNNNNNNK....",".....KNNWWWWWNNK....",
+            ".....KNNKK..KNNK....",".....KNNK....KNNK...",".....KWWK....KWWK...",".....KWWK....KWWK...",
+            ".....KWWK....KWWK...","....KNNNK....KNNNK..","....KSSSK....KSSSK..","....KKKKK....KKKKK.."
+        }
+    };
+    int id = iclamp(idx, 0, 4);
+    for (int r = 0; r < 32; r++) {
+        const char *ln = SPR[id][r];
+        for (int c = 0; c < 20; c++) {
+            char ch = ln[c]; if (ch == '.') continue;
+            int dc = (dirFace >= 0) ? c : (19 - c);
+            Color col = mk(255, 255, 255);
+            switch (ch) {
+                case 'K': col = mk(12, 12, 16); break;
+                case 'N': col = mk(24, 26, 38); break;
+                case 'n': col = mk(44, 48, 66); break;
+                case 'W': col = mk(228, 232, 244); break;
+                case 'w': col = mk(168, 174, 192); break;
+                case 'B': col = mk(182, 190, 206); break;
+                case 'S': col = mk(238, 188, 152); break;
+                case 's': col = mk(196, 144, 112); break;
+                case 'R': col = mk(206, 36, 44); break;
+                case 'r': col = mk(136, 22, 30); break;
+                case 'M': col = mk(164, 34, 42); break;
+                case 'm': col = mk(112, 22, 28); break;
+                case 'O': col = mk(242, 112, 24); break;
+                case 'o': col = mk(188, 62, 16); break;
+                case 'Y': col = mk(255, 178, 52); break;
+                case 'P': col = mk(168, 124, 224); break;
+                case 'G': col = mk(98, 118, 82); break;
+                case 'g': col = mk(68, 84, 56); break;
+            }
+            fillRect(x + dc * ps, y + r * ps, ps, ps, col);
+        }
     }
 }
-// ====== نهاية الجزء 1 (الصق الجزء 2 أسفل هذا السطر مباشرة) ======
-// ====== بداية الجزء 2: العوالم، المراحل الـ 17، الفيزياء، الأعداء والزعماء ======
+
+// ---------- World & Stage Builders ----------
 static int baseCol = 0;
 static void put(int r, int c, char ch) { int g = baseCol + c; if (r >= 0 && r < ROWS && g >= 0 && g < COLS) level[r][g] = ch; }
 static void plat(int r, int a, int b) { for (int c = a; c <= b; c++) put(r, c, '#'); }
 static void wall(int c, int r0, int r1) { for (int r = r0; r <= r1; r++) put(r, c, '#'); }
 static void spk(int r, int a, int b) { for (int c = a; c <= b; c++) put(r, c, '^'); }
 static void sawAt(int r, int c) { put(r, c, 'O'); }
-
-static void addCP(int c, int r) {
-    if (checkCount < MAX_CHECKS) { checkC[checkCount] = baseCol + c; checkR[checkCount] = r; checkAct[checkCount++] = false; }
-}
-static void addCoin(int c, int r) {
-    if (coinCount < MAX_COINS) {
-        int g = baseCol + c;
-        coins[coinCount++] = {(short)(g / RCOLS), (short)((g % RCOLS) * TILE + 30), (short)(r * TILE + 26), true};
-    }
-}
+static void addCP(int c, int r) { if (checkCount < MAX_CHECKS) { checkC[checkCount] = baseCol + c; checkR[checkCount] = r; checkAct[checkCount++] = false; } }
+static void addCoin(int c, int r) { if (coinCount < MAX_COINS) { int g = baseCol + c; coins[coinCount++] = {(short)(g / RCOLS), (short)((g % RCOLS) * TILE + 30), (short)(r * TILE + 26), true}; } }
 static void addCoinRow(int r, int a, int b) { for (int c = a; c <= b; c += 2) addCoin(c, r); }
-static void addChest(int c, int r, bool sec) {
-    if (chestCount < MAX_CHESTS) {
-        int g = baseCol + c;
-        chests[chestCount++] = {(short)(g / RCOLS), (short)((g % RCOLS) * TILE + 8), (short)(r * TILE - 34), false, sec};
-    }
-}
-static void addPU(int c, int r, int kind) {
-    if (puCount < MAX_POWERUPS) {
-        int g = baseCol + c;
-        powerups[puCount++] = {(short)(g / RCOLS), (short)((g % RCOLS) * TILE + 18), (short)(r * TILE - 32), kind, true};
-    }
-}
-static void addMPlat(int r, int a, int b, int wTiles, float spd) {
-    if (mplatCount < MAX_MPLAT) {
-        int g = baseCol + a;
-        mplats[mplatCount++] = {(short)(g / RCOLS), (float)((g % RCOLS) * TILE), (float)(r * TILE),
-                                (float)((g % RCOLS) * TILE), (float)(((baseCol + b) % RCOLS) * TILE), spd, (short)(wTiles * TILE)};
-    }
-}
-static void addDPlat(int r, int c, int wTiles) {
-    if (dplatCount < MAX_DPLAT) {
-        int g = baseCol + c;
-        dplats[dplatCount++] = {(short)(g / RCOLS), (short)((g % RCOLS) * TILE), (short)(r * TILE), (short)(wTiles * TILE), 0, 0};
-    }
-}
-static void addNPC(int c, int r, int tid) {
-    if (npcCount < MAX_NPCS) {
-        int g = baseCol + c;
-        npcs[npcCount++] = {(short)(g / RCOLS), (short)((g % RCOLS) * TILE + 10), (short)(r * TILE - 48), tid};
-    }
-}
+static void addChest(int c, int r, bool sec) { if (chestCount < MAX_CHESTS) { int g = baseCol + c; chests[chestCount++] = {(short)(g / RCOLS), (short)((g % RCOLS) * TILE + 8), (short)(r * TILE - 34), false, sec}; } }
+static void addPU(int c, int r, int kind) { if (puCount < MAX_POWERUPS) { int g = baseCol + c; powerups[puCount++] = {(short)(g / RCOLS), (short)((g % RCOLS) * TILE + 18), (short)(r * TILE - 32), kind, true}; } }
+static void addMPlat(int r, int a, int b, int wT, float spd) { if (mplatCount < MAX_MPLAT) { int g = baseCol + a; mplats[mplatCount++] = {(short)(g / RCOLS), (float)((g % RCOLS) * TILE), (float)(r * TILE), (float)((g % RCOLS) * TILE), (float)(((baseCol + b) % RCOLS) * TILE), spd, (short)(wT * TILE)}; } }
+static void addDPlat(int r, int c, int wT) { if (dplatCount < MAX_DPLAT) { int g = baseCol + c; dplats[dplatCount++] = {(short)(g / RCOLS), (short)((g % RCOLS) * TILE), (short)(r * TILE), (short)(wT * TILE), 0, 0}; } }
+static void addNPC(int c, int r, int tid) { if (npcCount < MAX_NPCS) { int g = baseCol + c; npcs[npcCount++] = {(short)(g / RCOLS), (short)((g % RCOLS) * TILE + 10), (short)(r * TILE - 48), tid}; } }
 static void addE(int k, int c, int r, int a, int b) {
     if (enemyCount >= MAX_ENEMIES) return;
     Enemy &e = enemies[enemyCount++];
@@ -626,50 +646,31 @@ static void addE(int k, int c, int r, int a, int b) {
 
 static void initWorldDetails() {
     plantCount = 0;
-    for (int r = 2; r < ROWS; r++) {
-        for (int c = 1; c < levelCols - 1; c++) {
-            if (level[r][c] != '#' || level[r - 1][c] != '.') continue;
-            bool skip = false;
-            for (int dr = -2; dr <= 0 && !skip; dr++)
-                for (int dc = -1; dc <= 1; dc++)
-                    if (r + dr >= 0 && c + dc >= 0 && c + dc < COLS && (level[r + dr][c + dc] == 'O' || level[r + dr][c + dc] == 'G')) skip = true;
-            if (skip) continue;
-            for (int s = 0; s < 2 && plantCount < MAX_PLANTS; s++) {
-                Plant &p = plants[plantCount++];
-                p.room = (short)(c / RCOLS); p.x = (short)((c % RCOLS) * TILE + 14 + s * 28 + ((c * 5 + r * 3 + s * 7) % 7));
-                p.y = (short)(r * TILE); p.angle = p.vel = 0; p.h = (unsigned char)(12 + ((c * 3 + r * 7 + s * 5) % 7));
-                p.style = (unsigned char)((c + r + s) % 3); p.seed = (unsigned char)((c * 5 + r * 9 + s * 11) & 15);
-                p.drawn[0] = p.drawn[1] = false; p.dBend[0] = p.dBend[1] = 99;
-            }
+    for (int r = 2; r < ROWS; r++) for (int c = 1; c < levelCols - 1; c++) {
+        if (level[r][c] != '#' || level[r - 1][c] != '.') continue;
+        bool skip = false;
+        for (int dr = -2; dr <= 0 && !skip; dr++)
+            for (int dc = -1; dc <= 1; dc++)
+                if (r + dr >= 0 && c + dc >= 0 && c + dc < COLS && (level[r + dr][c + dc] == 'O' || level[r + dr][c + dc] == 'G')) skip = true;
+        if (skip) continue;
+        for (int s = 0; s < 2 && plantCount < MAX_PLANTS; s++) {
+            Plant &p = plants[plantCount++];
+            p.room = (short)(c / RCOLS); p.x = (short)((c % RCOLS) * TILE + 14 + s * 28 + ((c * 5 + r * 3 + s * 7) % 7));
+            p.y = (short)(r * TILE); p.angle = p.vel = 0; p.h = (unsigned char)(12 + ((c * 3 + r * 7 + s * 5) % 7));
+            p.style = (unsigned char)((c + r + s) % 3); p.seed = (unsigned char)((c * 5 + r * 9 + s * 11) & 15);
+            p.drawn[0] = p.drawn[1] = false; p.dBend[0] = p.dBend[1] = 99;
         }
     }
-    static const float LVX[5] = {0.7f, -0.4f, -0.8f, 0.3f, 0.5f};
-    static const float LVY[5] = {0.9f, -1.4f, 1.5f, -0.5f, -0.8f};
+    static const float LVX[5] = {0.7f, -0.4f, -0.8f, 0.3f, 0.5f}, LVY[5] = {0.9f, -1.4f, 1.5f, -0.5f, -0.8f};
     for (int i = 0; i < MAX_LEAVES; i++) {
         leaves[i].x = (float)((i * 173 + 47) % FW); leaves[i].y = (float)(100 + ((i * 113 + 31) % (FH - 240)));
         leaves[i].vx = LVX[curWorld] + (i % 3) * 0.25f; leaves[i].vy = LVY[curWorld] + (i % 2) * (curWorld == 1 ? -0.35f : 0.35f);
         leaves[i].sz = (unsigned char)(5 + (i % 3)); leaves[i].seed = (unsigned char)i;
     }
     for (int i = 0; i < MAX_FIREFLIES; i++) {
-        flies[i].x = (float)((i * 211 + 83) % (FW - 80) + 40);
-        flies[i].y = (float)(220 + ((i * 139 + 41) % 620));
-        flies[i].vx = ((i & 1) ? 0.5f : -0.5f); flies[i].vy = ((i & 2) ? 0.3f : -0.3f);
-        flies[i].phase = (unsigned char)(i * 3);
+        flies[i].x = (float)((i * 211 + 83) % (FW - 80) + 40); flies[i].y = (float)(220 + ((i * 139 + 41) % 620));
+        flies[i].vx = ((i & 1) ? 0.5f : -0.5f); flies[i].vy = ((i & 2) ? 0.3f : -0.3f); flies[i].phase = (unsigned char)(i * 3);
     }
-}
-
-static void buildBossArena(int bType) {
-    levelCols = RCOLS; levelPW = FW; bossActive = true; bossType = bType;
-    for (int r = 0; r < ROWS; r++) level[r][RCOLS - 1] = '#';
-    wall(2, 6, 14); wall(29, 6, 14);
-    plat(12, 5, 9); plat(7, 13, 18); plat(12, 22, 26);
-    if (bType == 1) { plat(10, 6, 10); plat(10, 21, 25); }
-    addPU(7, 12, PU_HEART); addPU(24, 12, PU_SHIELD);
-    bossW = (bType == 1) ? 136 : 120; bossH = (bType == 1) ? 124 : 112;
-    bossX = (float)(21 * TILE); bossY = (float)((ROWS - 1) * TILE - bossH);
-    bossVX = -3.8f - bType * 0.5f; bossVY = 0; bossMaxHP = bossHP = 8 + bType * 3;
-    bossHurt = bossTimer = bossState = bossTongueLen = bossSwCd = 0;
-    for (int i = 0; i < MAX_SHOTS; i++) shots[i].active = false;
 }
 
 static void buildStage(int st) {
@@ -680,63 +681,38 @@ static void buildStage(int st) {
     curWorld = st >= 16 ? 4 : (st / 4);
     cpX = (float)(TILE + 16); cpY = (float)((ROWS - 1) * TILE - PH);
 
-    if (isBossStage(st)) { buildBossArena(curWorld); initWorldDetails(); return; }
+    if (isBossStage(st)) {
+        levelCols = RCOLS; levelPW = FW; bossActive = true; bossType = curWorld;
+        for (int r = 0; r < ROWS; r++) level[r][RCOLS - 1] = '#';
+        wall(2, 6, 14); wall(29, 6, 14); plat(12, 5, 9); plat(7, 13, 18); plat(12, 22, 26);
+        if (bossType == 1) { plat(10, 6, 10); plat(10, 21, 25); }
+        addPU(7, 12, PU_HEART); addPU(24, 12, PU_SHIELD);
+        bossW = (bossType == 1) ? 136 : 120; bossH = (bossType == 1) ? 124 : 112;
+        bossX = (float)(21 * TILE); bossY = (float)((ROWS - 1) * TILE - bossH);
+        bossVX = -3.8f - bossType * 0.5f; bossVY = 0; bossMaxHP = bossHP = 8 + bossType * 3;
+        bossHurt = bossTimer = bossState = bossTongueLen = bossSwCd = 0;
+        for (int i = 0; i < MAX_SHOTS; i++) shots[i].active = false;
+        initWorldDetails(); return;
+    }
 
-    int sub = st % 4; // 0, 1, 2 within each world (or secret stage 16)
-    // Room 0: Welcome, NPC guide, basic enemies & hidden upper secret ledge (needs Double Jump/Wall Jump!)
-    baseCol = 0 * RCOLS;
-    addNPC(4, 17, T_NPC0 + (curWorld & 3));
-    plat(14, 7, 13); addCoinRow(13, 8, 12); addE(E_SPIDER, 10, 17, 6, 15);
-    plat(12, 16, 22); addE(E_MUSHROOM, 19, 12, 16, 22);
-    // Secret high alcove reachable via Double Jump + Dash
-    plat(6, 4, 9); addChest(6, 6, true); addCoinRow(5, 5, 8);
-    plat(14, 25, 30); addE(E_SPIDER, 27, 14, 25, 30);
-
-    // Room 1: Moving platforms + Bats + Disappearing bridge
-    baseCol = 1 * RCOLS;
-    spk(16, 6, 25);
-    plat(15, 2, 6); addMPlat(14, 8, 15, 3, 2.2f + curWorld * 0.4f); addCoinRow(12, 10, 14);
-    addE(E_BAT, 14, 9, 8, 22);
-    addDPlat(12, 19, 3); addDPlat(12, 23, 3);
-    plat(13, 26, 30); addCP(28, 13); addPU(27, 13, PU_HEART);
-
-    // Room 2: Twin-Wall Jump Chimney + Secret Side Chamber + Mushroom ambush
-    baseCol = 2 * RCOLS;
-    wall(9, 6, 14); wall(13, 6, 16);
-    plat(6, 13, 21); addCoinRow(5, 14, 20); addE(E_MUSHROOM, 17, 6, 13, 21);
-    // Secret treasure behind left upper ledge
-    plat(6, 2, 7); addChest(4, 6, true);
-    spk(16, 14, 22);
-    plat(12, 23, 30); addE(E_SPIDER, 26, 12, 23, 30);
-
-    // Room 3: World-specific obstacle gauntlet (Saws, Moving Plats, Bats & Power-up)
-    baseCol = 3 * RCOLS;
-    spk(16, 4, 27);
-    plat(14, 2, 7); addPU(5, 14, (sub == 1) ? PU_SPEED : PU_SHIELD);
+    int sub = st % 4;
+    baseCol = 0 * RCOLS; addNPC(4, 17, T_NPC0 + (curWorld & 3)); plat(14, 7, 13); addCoinRow(13, 8, 12); addE(E_SPIDER, 10, 17, 6, 15);
+    plat(12, 16, 22); addE(E_MUSHROOM, 19, 12, 16, 22); plat(6, 4, 9); addChest(6, 6, true); addCoinRow(5, 5, 8); plat(14, 25, 30); addE(E_SPIDER, 27, 14, 25, 30);
+    baseCol = 1 * RCOLS; spk(16, 6, 25); plat(15, 2, 6); addMPlat(14, 8, 15, 3, 2.2f + curWorld * 0.4f); addCoinRow(12, 10, 14);
+    addE(E_BAT, 14, 9, 8, 22); addDPlat(12, 19, 3); addDPlat(12, 23, 3); plat(13, 26, 30); addCP(28, 13); addPU(27, 13, PU_HEART);
+    baseCol = 2 * RCOLS; wall(9, 6, 14); wall(13, 6, 16); plat(6, 13, 21); addCoinRow(5, 14, 20); addE(E_MUSHROOM, 17, 6, 13, 21);
+    plat(6, 2, 7); addChest(4, 6, true); spk(16, 14, 22); plat(12, 23, 30); addE(E_SPIDER, 26, 12, 23, 30);
+    baseCol = 3 * RCOLS; spk(16, 4, 27); plat(14, 2, 7); addPU(5, 14, (sub == 1) ? PU_SPEED : PU_SHIELD);
     if (curWorld == 1 || curWorld == 3) { sawAt(13, 11); sawAt(11, 20); }
-    addDPlat(13, 9, 3); plat(11, 14, 19); addCoinRow(10, 15, 18); addE(E_BAT, 16, 7, 11, 23);
-    addMPlat(12, 21, 26, 3, 2.5f);
-    plat(13, 27, 30); addCP(29, 13);
-
-    // Room 4: High-intensity platforming with Spider & Mushroom + Disappearing staircase
-    baseCol = 4 * RCOLS;
-    plat(15, 3, 9); addE(E_SPIDER, 6, 15, 3, 9);
-    addDPlat(13, 11, 3); addDPlat(11, 16, 3); addCoinRow(10, 16, 18);
-    plat(10, 21, 29); addE(E_MUSHROOM, 24, 10, 21, 29); addE(E_BAT, 25, 6, 19, 29);
-    addChest(27, 10, false);
-
-    // Room 5: Elite Guard Final Arena + Goal 'G'
-    baseCol = 5 * RCOLS;
-    plat(14, 3, 8); plat(12, 11, 21); addCoinRow(11, 12, 20);
-    addE(E_ELITE, 16, 12, 11, 21);
+    addDPlat(13, 9, 3); plat(11, 14, 19); addCoinRow(10, 15, 18); addE(E_BAT, 16, 7, 11, 23); addMPlat(12, 21, 26, 3, 2.5f); plat(13, 27, 30); addCP(29, 13);
+    baseCol = 4 * RCOLS; plat(15, 3, 9); addE(E_SPIDER, 6, 15, 3, 9); addDPlat(13, 11, 3); addDPlat(11, 16, 3); addCoinRow(10, 16, 18);
+    plat(10, 21, 29); addE(E_MUSHROOM, 24, 10, 21, 29); addE(E_BAT, 25, 6, 19, 29); addChest(27, 10, false);
+    baseCol = 5 * RCOLS; plat(14, 3, 8); plat(12, 11, 21); addCoinRow(11, 12, 20); addE(E_ELITE, 16, 12, 11, 21);
     if (curWorld >= 2 || st == 16) addE(E_BAT, 18, 7, 12, 25);
-    plat(10, 24, 30); put(9, 28, 'G');
-
-    baseCol = 0;
-    initWorldDetails();
+    plat(10, 24, 30); put(9, 28, 'G'); baseCol = 0; initWorldDetails();
 }
 
-// ---------- Collision & Particles ----------
+// ---------- Collision, Physics & Entities Update ----------
 static inline char tileAt(int r, int c) { return (r < 0 || r >= ROWS || c < 0 || c >= COLS) ? '#' : level[r][c]; }
 static inline char staticChar(int r, int c) { char ch = tileAt(r, c); return ch == 'O' ? '.' : ch; }
 static inline bool hiAt(int r, int c) { return r > 0 && staticChar(r, c) == '#' && staticChar(r - 1, c) != '#'; }
@@ -747,8 +723,7 @@ static inline bool circleHit(int cx, int cy, int rad, int rx, int ry, int rw, in
     int dx = cx - iclamp(cx, rx, rx + rw), dy = cy - iclamp(cy, ry, ry + rh);
     return dx * dx + dy * dy < rad * rad;
 }
-
-static void triggerShake(int frames, int mag) { if (frames > shakeTimer) shakeTimer = frames; if (mag > shakeMag) shakeMag = mag; }
+static void triggerShake(int f, int m) { if (f > shakeTimer) shakeTimer = f; if (m > shakeMag) shakeMag = m; }
 static void showToast(int tid) { toastTid = tid; toastTimer = 150; hudNeed[0] = hudNeed[1] = true; }
 
 static void addSplat(int wx, int wy, int w, int h) {
@@ -756,20 +731,15 @@ static void addSplat(int wx, int wy, int w, int h) {
     int idx = splatCount < MAX_SPLATS ? splatCount++ : -1;
     if (idx < 0) for (int i = 0; i < MAX_SPLATS; i++) if (splats[i].stage >= 4 && !splats[i].drawn[0] && !splats[i].drawn[1]) { idx = i; break; }
     if (idx < 0) return;
-    int rm = iclamp(wx / FW, 0, ROOMS - 1);
-    Splat &s = splats[idx];
+    int rm = iclamp(wx / FW, 0, ROOMS - 1); Splat &s = splats[idx];
     s.room = (short)rm; s.x = (short)(wx - rm * FW - w / 2); s.y = (short)(wy - h / 2); s.w = (short)w; s.h = (short)h;
     s.born = tick; s.stage = 0; s.drawn[0] = s.drawn[1] = false; s.dStage[0] = s.dStage[1] = 99;
 }
-
 static void spawnPart(float x, float y, float pvx, float pvy, int life, int sz, int kind) {
-    for (int i = 0; i < MAX_PARTS; i++) if (parts[i].life <= 0) {
-        parts[i] = {x, y, pvx, pvy, (short)life, (short)life, (unsigned char)kind, (unsigned char)sz}; return;
-    }
+    for (int i = 0; i < MAX_PARTS; i++) if (parts[i].life <= 0) { parts[i] = {x, y, pvx, pvy, (short)life, (short)life, (unsigned char)kind, (unsigned char)sz}; return; }
 }
 static void spawnDust(float x, float y, int n, float sp, int kind = 0) {
-    for (int i = 0; i < n; i++)
-        spawnPart(x + (rnd(20) - 10), y - rnd(4), ((rnd(100) - 50) / 50.0f) * sp, -(rnd(100) / 100.0f) * 1.8f, 16 + rnd(12), 6 + rnd(5), kind);
+    for (int i = 0; i < n; i++) spawnPart(x + (rnd(20) - 10), y - rnd(4), ((rnd(100) - 50) / 50.0f) * sp, -(rnd(100) / 100.0f) * 1.8f, 16 + rnd(12), 6 + rnd(5), kind);
 }
 static void spawnShot(float sx, float sy, float svx, float svy, int kind) {
     for (int i = 0; i < MAX_SHOTS; i++) if (!shots[i].active) { shots[i] = {sx, sy, svx, svy, kind, true}; return; }
@@ -780,10 +750,7 @@ static void respawn() {
     onGround = false; wallLock = coyote = dashTimer = dashCd = 0; slamActive = false; jumpsLeft = 2;
     maxHp = 3 + save.upHp; hp = maxHp; invulnTimer = 40;
     roomIdx = iclamp(((int)px + PW / 2) / FW, 0, ROOMS - 1);
-    if (bossActive && bossHP > 0) {
-        bossX = (float)(21 * TILE); bossY = (float)((ROWS - 1) * TILE - bossH);
-        for (int i = 0; i < MAX_SHOTS; i++) shots[i].active = false;
-    }
+    if (bossActive && bossHP > 0) { bossX = (float)(21 * TILE); bossY = (float)((ROWS - 1) * TILE - bossH); for (int i = 0; i < MAX_SHOTS; i++) shots[i].active = false; }
     hudNeed[0] = hudNeed[1] = true;
 }
 
@@ -796,9 +763,7 @@ static void hurtPlayer(int dmg) {
         for (int i = 0; i < 24; i++) spawnPart(cx + rnd(20) - 10, cy + rnd(20) - 10, (rnd(180) - 90) / 10.0f, (rnd(140) - 120) / 10.0f, 90, 5 + rnd(5), 1);
         for (int i = 0; i < 4; i++) addSplat((int)cx + rnd(40) - 20, (int)cy + rnd(40) - 20, 8 + rnd(10), 8 + rnd(10));
         vx = vy = 0; deadTimer = 30;
-    } else {
-        vy = -10.0f; vx = -facing * 5.0f; snd(6);
-    }
+    } else { vy = -10.0f; vx = -facing * 5.0f; snd(6); }
 }
 
 static void damageBoss(int dmg) {
@@ -817,15 +782,10 @@ static void killEnemy(Enemy &e) {
     for (int k = 0; k < 22; k++) spawnPart(e.x + 22, e.y + 22, (rnd(180) - 90) / 10.0f, -(45 + rnd(95)) / 10.0f, 110, 6 + rnd(4), 1);
 }
 
-// ---------- Main Gameplay Update (Double Jump, Dash, Wall Jump, Ground Slam, Smart Enemies & Bosses) ----------
 static void update() {
     stageTimeFrames++; animTick++;
-    if (invulnTimer > 0) invulnTimer--;
-    if (dashCd > 0) dashCd--;
-    if (slamShockTimer > 0) slamShockTimer--;
-    if (shieldTimer > 0) shieldTimer--;
-    if (speedTimer > 0) speedTimer--;
-    if (shakeTimer > 0) shakeTimer--;
+    if (invulnTimer > 0) invulnTimer--; if (dashCd > 0) dashCd--; if (slamShockTimer > 0) slamShockTimer--;
+    if (shieldTimer > 0) shieldTimer--; if (speedTimer > 0) speedTimer--; if (shakeTimer > 0) shakeTimer--;
     if (toastTimer > 0 && --toastTimer == 0) hudNeed[0] = hudNeed[1] = true;
     if (npcDialogTimer > 0 && --npcDialogTimer == 0) hudNeed[0] = hudNeed[1] = true;
     for (int i = 0; i < 8; i++) if (ghosts[i].life > 0) ghosts[i].life--;
@@ -844,18 +804,13 @@ static void update() {
         int age = tick - splats[i].born;
         splats[i].stage = age >= SPLAT_MAX_AGE ? 4 : (age >= SPLAT_MAX_AGE - 300 ? 3 : (age >= SPLAT_MAX_AGE - 600 ? 2 : (age >= SPLAT_MAX_AGE - 900 ? 1 : 0)));
     }
-
-    // Moving & Disappearing Platforms update
     for (int i = 0; i < mplatCount; i++) {
-        MPlat &m = mplats[i]; if (m.room != roomIdx) continue;
-        m.x += m.vx;
-        if (m.x <= m.minX) { m.x = m.minX; m.vx = fabsf(m.vx); }
-        else if (m.x >= m.maxX) { m.x = m.maxX; m.vx = -fabsf(m.vx); }
+        MPlat &m = mplats[i]; if (m.room != roomIdx) continue; m.x += m.vx;
+        if (m.x <= m.minX) { m.x = m.minX; m.vx = fabsf(m.vx); } else if (m.x >= m.maxX) { m.x = m.maxX; m.vx = -fabsf(m.vx); }
     }
     for (int i = 0; i < dplatCount; i++) {
         DPlat &d = dplats[i]; if (d.room != roomIdx) continue;
-        if (d.state == 1 && ++d.timer >= 32) { d.state = 2; d.timer = 0; }
-        else if (d.state == 2 && ++d.timer >= 140) { d.state = 0; d.timer = 0; }
+        if (d.state == 1 && ++d.timer >= 32) { d.state = 2; d.timer = 0; } else if (d.state == 2 && ++d.timer >= 140) { d.state = 0; d.timer = 0; }
     }
 
     bool burst = false;
@@ -864,31 +819,21 @@ static void update() {
         bool wasG = onGround;
         float k = onGround ? 0.0f : (iabs((int)vy) / 18.0f > 1.0f ? 1.0f : iabs((int)vy) / 18.0f);
         squashX += (1.0f - 0.22f * k - squashX) * 0.3f; squashY += (1.0f + 0.30f * k - squashY) * 0.3f;
-
         int dir = controlMode == 1 ? (in.ana != 0.0f ? (in.ana > 0 ? 1 : -1) : 0) : ((in.dright ? 1 : 0) - (in.dleft ? 1 : 0));
         float sc = controlMode == 1 && in.ana != 0.0f ? (fabsf(in.ana) < 0.5f ? 0.5f : fabsf(in.ana)) : 1.0f;
         bool wL = rectSolid((int)px - 1, (int)py, 1, PH), wR = rectSolid((int)px + PW, (int)py, 1, PH);
         if (dir) facing = dir;
 
-        // DASH ability (Circle or R1)
         if (in.dashNew && dashCd == 0 && !slamActive) {
-            dashTimer = 11; dashCd = save.upDash ? 24 : 40;
-            vx = (float)(facing * 15.5f); vy = 0.0f;
-            squashX = 1.38f; squashY = 0.68f; snd(5);
-            spawnDust(px + PW * 0.5f, py + PH * 0.5f, 8, 3.5f, 2);
+            dashTimer = 11; dashCd = save.upDash ? 24 : 40; vx = (float)(facing * 15.5f); vy = 0.0f;
+            squashX = 1.38f; squashY = 0.68f; snd(5); spawnDust(px + PW * 0.5f, py + PH * 0.5f, 8, 3.5f, 2);
         }
-
-        // GROUND SLAM ability (Down + Square while in air)
         if (!onGround && in.down && in.squareNew && !slamActive) {
-            slamActive = true; dashTimer = 0; vx = 0; vy = 22.0f;
-            squashX = 0.65f; squashY = 1.40f; snd(5);
+            slamActive = true; dashTimer = 0; vx = 0; vy = 22.0f; squashX = 0.65f; squashY = 1.40f; snd(5);
         }
-
         if (dashTimer > 0) {
             dashTimer--; vy = 0.0f;
-            if ((dashTimer & 1) == 0) {
-                for (int g = 0; g < 8; g++) if (ghosts[g].life <= 0) { ghosts[g] = {px, py, 10, facing}; break; }
-            }
+            if ((dashTimer & 1) == 0) for (int g = 0; g < 8; g++) if (ghosts[g].life <= 0) { ghosts[g] = {px, py, 10, facing}; break; }
         } else if (slamActive) {
             vy = 22.0f; vx = 0;
             if ((tick & 1) == 0) for (int g = 0; g < 8; g++) if (ghosts[g].life <= 0) { ghosts[g] = {px, py, 8, facing}; break; }
@@ -902,32 +847,19 @@ static void update() {
             if (slide && vy > 3.0f) vy = 3.0f;
             if (slide && (tick & 3) == 0) spawnDust(wL ? px : px + PW, py + PH - 6.0f, 1, 1.0f);
         }
-
         if (onGround) { coyote = 6; jumpsLeft = 2; if (dir != 0 && (tick % 14) == 0) snd(11); }
         else if (coyote > 0) coyote--;
 
-        // JUMP, DOUBLE JUMP & WALL JUMP
         if (in.crossNew && !slamActive) {
-            if (coyote > 0) {
-                vy = -16.8f; coyote = 0; jumpsLeft = 1; squashX = 0.72f; squashY = 1.30f;
-                spawnDust(px + PW * 0.5f, py + PH, 6, 3.0f); burst = true; snd(4);
-            } else if (wL || wR) {
-                vy = -16.0f; vx = wL ? 8.2f : -8.2f; wallLock = 9; facing = wL ? 1 : -1; jumpsLeft = 1;
-                squashX = 0.72f; squashY = 1.30f; spawnDust(wL ? px : px + PW, py + PH * 0.5f, 5, 2.2f); burst = true; snd(4);
-            } else if (jumpsLeft > 0) {
-                vy = -15.6f; jumpsLeft--; dashTimer = 0; squashX = 0.70f; squashY = 1.32f;
-                spawnDust(px + PW * 0.5f, py + PH, 9, 4.0f, 2); burst = true; snd(4);
-            }
+            if (coyote > 0) { vy = -16.8f; coyote = 0; jumpsLeft = 1; squashX = 0.72f; squashY = 1.30f; spawnDust(px + PW * 0.5f, py + PH, 6, 3.0f); burst = true; snd(4); }
+            else if (wL || wR) { vy = -16.0f; vx = wL ? 8.2f : -8.2f; wallLock = 9; facing = wL ? 1 : -1; jumpsLeft = 1; squashX = 0.72f; squashY = 1.30f; spawnDust(wL ? px : px + PW, py + PH * 0.5f, 5, 2.2f); burst = true; snd(4); }
+            else if (jumpsLeft > 0) { vy = -15.6f; jumpsLeft--; dashTimer = 0; squashX = 0.70f; squashY = 1.32f; spawnDust(px + PW * 0.5f, py + PH, 9, 4.0f, 2); burst = true; snd(4); }
         }
         if (!in.cross && vy < -6.0f && !slamActive) vy = -6.0f;
-
-        // Horizontal movement
         px += vx;
         if (rectSolid((int)px, (int)py, PW, PH)) { px = (float)(vx > 0 ? ((((int)px + PW - 1) / TILE) * TILE - PW) : ((((int)px) / TILE + 1) * TILE)); vx = 0; dashTimer = 0; }
 
-        // Vertical movement + Moving & Disappearing Platforms landing
-        float prevBot = py + PH;
-        py += vy; onGround = false;
+        float prevBot = py + PH; py += vy; onGround = false;
         if (rectSolid((int)px, (int)py, PW, PH)) {
             if (vy > 0) { py = (float)((((int)py + PH - 1) / TILE) * TILE - PH); onGround = true; }
             else if (vy < 0) py = (float)((((int)py) / TILE + 1) * TILE);
@@ -936,43 +868,29 @@ static void update() {
         int rmX = roomIdx * FW;
         if (vy >= 0) {
             for (int i = 0; i < mplatCount; i++) {
-                MPlat &m = mplats[i]; if (m.room != roomIdx) continue;
-                float mx = rmX + m.x;
-                if (px + PW > mx + 2 && px < mx + m.w - 2 && prevBot <= m.y + 10 && py + PH >= m.y) {
-                    py = m.y - PH; vy = 0; onGround = true; px += m.vx;
-                }
+                MPlat &m = mplats[i]; if (m.room != roomIdx) continue; float mx = rmX + m.x;
+                if (px + PW > mx + 2 && px < mx + m.w - 2 && prevBot <= m.y + 10 && py + PH >= m.y) { py = m.y - PH; vy = 0; onGround = true; px += m.vx; }
             }
             for (int i = 0; i < dplatCount; i++) {
-                DPlat &d = dplats[i]; if (d.room != roomIdx || d.state == 2) continue;
-                float dx0 = (float)(rmX + d.x);
-                if (px + PW > dx0 + 2 && px < dx0 + d.w - 2 && prevBot <= d.y + 10 && py + PH >= d.y) {
-                    py = (float)(d.y - PH); vy = 0; onGround = true;
-                    if (d.state == 0) { d.state = 1; d.timer = 0; }
-                }
+                DPlat &d = dplats[i]; if (d.room != roomIdx || d.state == 2) continue; float dx0 = (float)(rmX + d.x);
+                if (px + PW > dx0 + 2 && px < dx0 + d.w - 2 && prevBot <= d.y + 10 && py + PH >= d.y) { py = (float)(d.y - PH); vy = 0; onGround = true; if (d.state == 0) { d.state = 1; d.timer = 0; } }
             }
         }
         if (onGround && slamActive) {
-            slamActive = false; slamShockTimer = 16; triggerShake(12, 9); snd(10);
-            spawnDust(px + PW * 0.5f, py + PH, 16, 6.5f, 2); burst = true;
+            slamActive = false; slamShockTimer = 16; triggerShake(12, 9); snd(10); spawnDust(px + PW * 0.5f, py + PH, 16, 6.5f, 2); burst = true;
             int slamRad = save.upSlam ? 210 : 140;
             for (int i = 0; i < enemyCount; i++) if (enemies[i].active && iabs((int)(enemies[i].x - px)) < slamRad && iabs((int)(enemies[i].y - py)) < 90) killEnemy(enemies[i]);
             if (bossActive && bossHP > 0 && iabs((int)(bossX - px)) < slamRad + 40 && iabs((int)(bossY - py)) < 110) damageBoss(2);
-        } else if (onGround && !wasG && vy > 4.0f) {
-            squashY = 0.72f; squashX = 1.32f; spawnDust(px + PW * 0.5f, py + PH, 6, 3.5f); burst = true;
-        }
+        } else if (onGround && !wasG && vy > 4.0f) { squashY = 0.72f; squashX = 1.32f; spawnDust(px + PW * 0.5f, py + PH, 6, 3.5f); burst = true; }
     }
 
-    // Living Grass, Leaves & Fireflies
     float pcx = px - roomIdx * FW + PW * 0.5f, pby = py + PH;
     for (int i = 0; i < plantCount; i++) {
         Plant &p = plants[i]; if (p.room != roomIdx) continue;
         float wind = SN[((tick / 12) + (p.x / 60) + p.seed) & 15] / 256.0f * 1.8f;
         if (deadTimer == 0) {
             float dx = pcx - p.x, dy = pby - p.y, adx = fabsf(dx);
-            if (adx < 46.0f && dy > -22.0f && dy < 32.0f) {
-                float pr = 1.0f - adx / 46.0f; p.vel += vx * 0.40f * pr; wind += (dx < 0 ? 7.0f : -7.0f) * pr;
-                if (burst) p.vel += (dx < 0 ? 5.0f : -5.0f) * pr;
-            }
+            if (adx < 46.0f && dy > -22.0f && dy < 32.0f) { float pr = 1.0f - adx / 46.0f; p.vel += vx * 0.40f * pr; wind += (dx < 0 ? 7.0f : -7.0f) * pr; if (burst) p.vel += (dx < 0 ? 5.0f : -5.0f) * pr; }
         }
         p.vel = (p.vel + (wind - p.angle) * 0.18f) * 0.78f; p.angle = iclamp((int)((p.angle + p.vel) * 10), -120, 120) / 10.0f;
     }
@@ -982,52 +900,35 @@ static void update() {
         if (a.y > FH - 120) a.y = 95; else if (a.y < 90) a.y = FH - 130;
     }
     for (int i = 0; i < MAX_FIREFLIES; i++) {
-        Firefly &f = flies[i]; f.x += f.vx + SN[((tick / 9) + f.phase) & 15] / 256.0f * 0.8f;
-        f.y += f.vy + CS[((tick / 11) + f.phase) & 15] / 256.0f * 0.6f;
-        if (f.x < 40 || f.x > FW - 40) f.vx = -f.vx;
-        if (f.y < 180 || f.y > FH - 160) f.vy = -f.vy;
+        Firefly &f = flies[i]; f.x += f.vx + SN[((tick / 9) + f.phase) & 15] / 256.0f * 0.8f; f.y += f.vy + CS[((tick / 11) + f.phase) & 15] / 256.0f * 0.6f;
+        if (f.x < 40 || f.x > FW - 40) f.vx = -f.vx; if (f.y < 180 || f.y > FH - 160) f.vy = -f.vy;
     }
     if (deadTimer > 0) return;
 
     int rmX = roomIdx * FW;
-    // Checkpoints, Coins (with Magnet upgrade), Chests, Powerups & NPCs
-    for (int i = 0; i < checkCount; i++) if (!checkAct[i] && (int)px + PW >= checkC[i] * TILE) {
-        checkAct[i] = true; cpX = (float)(checkC[i] * TILE); cpY = (float)(checkR[i] * TILE - PH); snd(1); spawnDust(cpX + 20, cpY + 4, 10, 3.5f, 2);
-    }
+    for (int i = 0; i < checkCount; i++) if (!checkAct[i] && (int)px + PW >= checkC[i] * TILE) { checkAct[i] = true; cpX = (float)(checkC[i] * TILE); cpY = (float)(checkR[i] * TILE - PH); snd(1); spawnDust(cpX + 20, cpY + 4, 10, 3.5f, 2); }
     int magRad = save.upMagnet ? 160 : 36;
     for (int i = 0; i < coinCount; i++) if (coins[i].active && coins[i].room == roomIdx) {
-        float cx0 = (float)(rmX + coins[i].x), cy0 = (float)coins[i].y;
-        float dx = (px + PW * 0.5f) - cx0, dy = (py + PH * 0.5f) - cy0;
+        float dx = (px + PW * 0.5f) - (rmX + coins[i].x), dy = (py + PH * 0.5f) - coins[i].y;
         if (fabsf(dx) < magRad && fabsf(dy) < magRad) {
             if (save.upMagnet && (fabsf(dx) > 26 || fabsf(dy) > 26)) { coins[i].x += (short)(dx > 0 ? 5 : -5); coins[i].y += (short)(dy > 0 ? 5 : -5); }
             else { coins[i].active = false; save.coins++; snd(9); hudNeed[0] = hudNeed[1] = true; if (save.coins >= 50) unlockAch(3); }
         }
     }
-    for (int i = 0; i < chestCount; i++) if (!chests[i].opened && chests[i].room == roomIdx) {
-        if (rectOverlap((int)px, (int)py, PW, PH, rmX + chests[i].x, chests[i].y, 44, 34)) {
-            chests[i].opened = true; save.coins += 25; snd(1); triggerShake(8, 5);
-            spawnDust((float)(rmX + chests[i].x + 22), (float)chests[i].y, 14, 4.5f, 2);
-            unlockAch(1); if (chests[i].secret) { save.secretsFound++; unlockAch(4); showToast(T_SEC_FND); } else showToast(T_CHEST);
-            if (save.coins >= 50) unlockAch(3);
-            writeSave();
-        }
+    for (int i = 0; i < chestCount; i++) if (!chests[i].opened && chests[i].room == roomIdx && rectOverlap((int)px, (int)py, PW, PH, rmX + chests[i].x, chests[i].y, 44, 34)) {
+        chests[i].opened = true; save.coins += 25; snd(1); triggerShake(8, 5); spawnDust((float)(rmX + chests[i].x + 22), (float)chests[i].y, 14, 4.5f, 2);
+        unlockAch(1); if (chests[i].secret) { save.secretsFound++; unlockAch(4); showToast(T_SEC_FND); } else showToast(T_CHEST);
+        if (save.coins >= 50) unlockAch(3); writeSave();
     }
-    for (int i = 0; i < puCount; i++) if (powerups[i].active && powerups[i].room == roomIdx) {
-        if (rectOverlap((int)px, (int)py, PW, PH, rmX + powerups[i].x, powerups[i].y, 28, 28)) {
-            powerups[i].active = false; snd(1);
-            if (powerups[i].kind == PU_HEART && hp < maxHp) hp++;
-            else if (powerups[i].kind == PU_SHIELD) shieldTimer = 600;
-            else speedTimer = 480;
-            hudNeed[0] = hudNeed[1] = true;
-        }
+    for (int i = 0; i < puCount; i++) if (powerups[i].active && powerups[i].room == roomIdx && rectOverlap((int)px, (int)py, PW, PH, rmX + powerups[i].x, powerups[i].y, 28, 28)) {
+        powerups[i].active = false; snd(1);
+        if (powerups[i].kind == PU_HEART && hp < maxHp) hp++; else if (powerups[i].kind == PU_SHIELD) shieldTimer = 600; else speedTimer = 480;
+        hudNeed[0] = hudNeed[1] = true;
     }
-    for (int i = 0; i < npcCount; i++) if (npcs[i].room == roomIdx) {
-        if (in.triNew && iabs((int)px - (rmX + npcs[i].x)) < 90 && iabs((int)py - npcs[i].y) < 80) {
-            npcDialogTid = npcs[i].dialogTid; npcDialogTimer = 240; snd(0); hudNeed[0] = hudNeed[1] = true;
-        }
+    for (int i = 0; i < npcCount; i++) if (npcs[i].room == roomIdx && in.triNew && iabs((int)px - (rmX + npcs[i].x)) < 90 && iabs((int)py - npcs[i].y) < 80) {
+        npcDialogTid = npcs[i].dialogTid; npcDialogTimer = 240; snd(0); hudNeed[0] = hudNeed[1] = true;
     }
 
-    // Smart Enemies: Spider, Bat, Mushroom Monster & Elite Guard
     int rmX0 = rmX - 240, rmX1 = rmX + FW + 240;
     for (int i = 0; i < enemyCount; i++) {
         Enemy &e = enemies[i]; if (!e.active || (int)e.x < rmX0 || (int)e.x > rmX1) continue;
@@ -1035,71 +936,49 @@ static void update() {
         float dx = px - e.x, adx = fabsf(dx), ady = fabsf(py - e.y);
         if (e.kind == E_SPIDER || e.kind == E_ELITE) {
             if (adx < 360 && ady < 150) e.dir = dx >= 0 ? 1 : -1;
-            float spd = (adx < 300 && ady < 140) ? e.vx * 1.35f : e.vx;
-            float nx = e.x + spd * e.dir;
+            float nx = e.x + ((adx < 300 && ady < 140) ? e.vx * 1.35f : e.vx) * e.dir;
             if (nx <= e.minX) { nx = e.minX; e.dir = 1; } else if (nx >= e.maxX) { nx = e.maxX; e.dir = -1; }
             if (solidAt(e.dir > 0 ? (int)nx + 46 : (int)nx - 4, (int)e.y + 20)) { if (e.vy == 0) e.vy = -11.5f; else e.dir = -e.dir; }
             if (!rectSolid((int)nx, (int)e.y, 44, 44)) e.x = nx; else e.dir = -e.dir;
-            e.vy += 0.65f; e.y += e.vy;
-            if (rectSolid((int)e.x, (int)e.y, 44, 44)) { if (e.vy > 0) e.y = (float)((((int)e.y + 43) / TILE) * TILE - 44); e.vy = 0; }
+            e.vy += 0.65f; e.y += e.vy; if (rectSolid((int)e.x, (int)e.y, 44, 44)) { if (e.vy > 0) e.y = (float)((((int)e.y + 43) / TILE) * TILE - 44); e.vy = 0; }
             if (e.kind == E_ELITE && e.timer % 85 == 0 && adx < 560) spawnShot(e.x + 22, e.y + 18, e.dir * 6.5f, 0, 0);
         } else if (e.kind == E_BAT) {
             if (adx < 400) e.dir = dx >= 0 ? 1 : -1;
             e.x += e.vx * e.dir; if (e.x <= e.minX) { e.x = e.minX; e.dir = 1; } else if (e.x >= e.maxX) { e.x = e.maxX; e.dir = -1; }
-            float swoop = (adx < 180 && py > e.baseY) ? 55.0f : 0.0f;
-            e.y = e.baseY + (SN[(e.timer / 4) & 15] * 26) / 256 + swoop;
-        } else if (e.kind == E_MUSHROOM) {
-            e.state = (adx < 230 && ady < 140) ? 1 : 0; // Hides as cap when far, pops up & shoots spore when close!
-            e.dir = dx >= 0 ? 1 : -1;
+            e.y = e.baseY + (SN[(e.timer / 4) & 15] * 26) / 256 + ((adx < 180 && py > e.baseY) ? 55.0f : 0.0f);
+        } else {
+            e.state = (adx < 230 && ady < 140) ? 1 : 0; e.dir = dx >= 0 ? 1 : -1;
             if (e.state == 1 && e.timer % 70 == 0) spawnShot(e.x + 22, e.y + 12, e.dir * 5.4f, -1.8f, 1);
         }
         if (rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8, (int)e.x + 4, (int)e.y + 4, 36, 36)) {
             if ((vy > 0 && py + PH < e.y + 30) || dashTimer > 0 || slamActive) {
                 if (vy > 0 && !slamActive) { py = e.y - PH; vy = -15.5f; jumpsLeft = 1; squashX = 0.72f; squashY = 1.28f; }
-                e.hp--; e.hurt = 14;
-                if (e.hp <= 0) killEnemy(e); else snd(7);
+                e.hp--; e.hurt = 14; if (e.hp <= 0) killEnemy(e); else snd(7);
             } else { hurtPlayer(1); return; }
         }
     }
-
     for (int i = 0; i < MAX_SHOTS; i++) {
-        Shot &s = shots[i]; if (!s.active) continue; s.x += s.vx; s.y += s.vy;
-        if (s.kind == 1) s.vy += 0.12f;
+        Shot &s = shots[i]; if (!s.active) continue; s.x += s.vx; s.y += s.vy; if (s.kind == 1) s.vy += 0.12f;
         if (s.x < TILE || s.x > levelPW - TILE || s.y < TILE || s.y > FH - TILE || solidAt((int)s.x, (int)s.y)) { s.active = false; continue; }
         if (rectOverlap((int)px + 4, (int)py + 4, PW - 8, PH - 8, (int)s.x - 14, (int)s.y - 14, 28, 28)) { s.active = false; hurtPlayer(1); return; }
     }
-
-    // 4 Unique Boss Battles (King Frogus, Venom Spider Queen, Frost Devourer, Dark Overlord)
     if (bossActive && bossHP > 0) {
         if (bossHurt > 0) bossHurt--; if (bossSwCd > 0) bossSwCd--; bossTimer++;
         float floorY = (float)((ROWS - 1) * TILE - bossH);
         if (bossType == 0) {
-            // King Frogus: leaps across arena & flicks spiky tongue!
-            bossX += bossVX * 0.8f;
-            if (bossX < 4 * TILE) { bossX = 4 * TILE; bossVX = 3.8f; } else if (bossX > 24 * TILE) { bossX = 24 * TILE; bossVX = -3.8f; }
+            bossX += bossVX * 0.8f; if (bossX < 4 * TILE) { bossX = 4 * TILE; bossVX = 3.8f; } else if (bossX > 24 * TILE) { bossX = 24 * TILE; bossVX = -3.8f; }
             if (bossTimer % 95 == 40 && bossY >= floorY - 2) bossVY = -15.0f;
             bossTongueLen = (bossTimer % 120 > 75 && bossTimer % 120 < 105) ? 180 : 0;
-            if (bossTongueLen > 0) {
-                int tx = (bossVX >= 0) ? (int)(bossX + bossW) : (int)(bossX - bossTongueLen);
-                if (rectOverlap((int)px, (int)py, PW, PH, tx, (int)bossY + 42, bossTongueLen, 22)) hurtPlayer(1);
-            }
+            if (bossTongueLen > 0 && rectOverlap((int)px, (int)py, PW, PH, bossVX >= 0 ? (int)(bossX + bossW) : (int)(bossX - bossTongueLen), (int)bossY + 42, bossTongueLen, 22)) hurtPlayer(1);
         } else if (bossType == 1) {
-            // Giant Venom Spider: hovers high, swoops down & shoots acid webs
-            bossX += bossVX * 1.15f;
-            if (bossX < 4 * TILE) { bossX = 4 * TILE; bossVX = 4.6f; } else if (bossX > 24 * TILE) { bossX = 24 * TILE; bossVX = -4.6f; }
+            bossX += bossVX * 1.15f; if (bossX < 4 * TILE) { bossX = 4 * TILE; bossVX = 4.6f; } else if (bossX > 24 * TILE) { bossX = 24 * TILE; bossVX = -4.6f; }
             bossY = 260.0f + (SN[(bossTimer / 5) & 15] * 140) / 256;
             if (bossTimer % 65 == 0) spawnShot(bossX + bossW * 0.5f, bossY + bossH - 12, (px < bossX ? -5.5f : 5.5f), 3.2f, 1);
         } else {
-            // Frost Devourer (Pink charging beast) & Dark Overlord
-            float mult = (bossTimer % 140 > 90) ? 1.85f : 1.0f;
-            bossX += bossVX * mult;
+            bossX += bossVX * ((bossTimer % 140 > 90) ? 1.85f : 1.0f);
             if (bossX < 4 * TILE) { bossX = 4 * TILE; bossVX = 4.6f; } else if (bossX > 24 * TILE) { bossX = 24 * TILE; bossVX = -4.6f; }
             if (bossTimer % 90 == 30 && bossY >= floorY - 2) bossVY = -15.5f;
-            if (bossTimer % 65 == 0) {
-                float d = px < bossX ? -1.0f : 1.0f;
-                spawnShot(bossX + bossW * 0.5f, bossY + bossH - 28, d * 7.2f, 0, 0);
-                if (bossType == 3) spawnShot(bossX + bossW * 0.5f, bossY + 24, d * 6.0f, -2.6f, 0);
-            }
+            if (bossTimer % 65 == 0) { float d = px < bossX ? -1.0f : 1.0f; spawnShot(bossX + bossW * 0.5f, bossY + bossH - 28, d * 7.2f, 0, 0); if (bossType == 3) spawnShot(bossX + bossW * 0.5f, bossY + 24, d * 6.0f, -2.6f, 0); }
         }
         if (bossType != 1) { bossVY += 0.65f; bossY += bossVY; if (bossY >= floorY) { bossY = floorY; bossVY = 0; } }
         if (bossSwCd == 0 && rectOverlap((int)px, (int)py, PW, PH, 15 * TILE, 6 * TILE + 20, 120, 40)) { bossSwCd = 130; vy = -12.0f; damageBoss(2); return; }
@@ -1108,7 +987,6 @@ static void update() {
             else if (bossHurt == 0) { hurtPlayer(1); return; }
         }
     }
-
     int c0 = iclamp((int)px / TILE - 2, 0, COLS - 1), c1 = iclamp(((int)px + PW) / TILE + 2, 0, COLS - 1);
     for (int r = 0; r < ROWS; r++) for (int c = c0; c <= c1; c++) {
         char ch = level[r][c];
@@ -1117,18 +995,15 @@ static void update() {
         if (ch == 'G' && rectOverlap((int)px, (int)py, PW, PH, c * TILE + 8, r * TILE + 16, PW, PH)) {
             winTimer = 140; needWin[0] = needWin[1] = true; snd(8);
             if (curStage == 0) unlockAch(0);
-            if (timeTrialMode) {
-                unlockAch(5);
-                if (save.bestTime[curStage] == 0 || stageTimeFrames < save.bestTime[curStage]) save.bestTime[curStage] = stageTimeFrames;
-            }
+            if (timeTrialMode) { unlockAch(5); if (save.bestTime[curStage] == 0 || stageTimeFrames < save.bestTime[curStage]) save.bestTime[curStage] = stageTimeFrames; }
             if (curStage + 2 > save.unlockedStages && save.unlockedStages < TOTAL_STAGES) save.unlockedStages = curStage + 2;
             writeSave(); return;
         }
     }
     roomIdx = iclamp(((int)px + PW / 2) / FW, 0, ROOMS - 1);
 }
-// ====== نهاية الجزء 2 (الصق الجزء 3 أسفل هذا السطر مباشرة) ======
-// ====== بداية الجزء 3: الجرافيكس عالي التفاصيل، الزعماء، المتجر، المظاهر و main() ======
+// ====== نهاية الجزء 1 (الصق الجزء 2 أسفل هذا السطر مباشرة) ======
+// ====== بداية الجزء 2: الجرافيكس، القائمة السرية (L2+R2+L1+X)، القوائم و main() ======
 static void drawSaw(int cx, int cy) {
     int a = (tick / 2) & 15, cc = CS[a], ss = SN[a];
     for (int dy = -26; dy <= 26; dy++) for (int dx = -26; dx <= 26; dx++) {
@@ -1155,6 +1030,11 @@ static void drawPlayerFace(int dx, int dy, int dw, int dh, int d) {
 }
 
 static void drawSkinCube(int dx, int dy, int dw, int dh, int dir, int skin) {
+    if (skin >= 5 && skin <= 9) {
+        int ps = dh >= 60 ? 2 : 2;
+        drawNarutoHD(skin - 5, dx + (dw - 20 * ps) / 2, dy + dh - 32 * ps, ps, dir);
+        return;
+    }
     static const Color BDR[5] = {{125,0,14},{165,112,18},{32,24,52},{42,108,162},{120,24,12}};
     static const Color BDY[5] = {{208,26,36},{245,192,48},{62,48,96},{98,205,248},{242,92,28}};
     static const Color HI[5]  = {{248,96,108},{255,236,135},{112,92,162},{198,242,255},{255,186,88}};
@@ -1166,18 +1046,17 @@ static void drawSkinCube(int dx, int dy, int dw, int dh, int dir, int skin) {
 
 struct TilePal { Color mainC, litC, topC, topHi, botC, spHi, spMid, spShd; };
 static const TilePal TPAL[5] = {
-    {{112,68,38},{142,88,52},{64,198,58},{138,242,108},{68,38,22},{245,248,255},{195,200,215},{125,132,152}}, // Forest
-    {{62,36,44},{88,52,62},{245,98,36},{255,182,82},{34,18,24},{255,195,115},{240,112,52},{165,52,26}},      // Volcano
-    {{72,98,134},{98,128,172},{232,248,255},{255,255,255},{42,58,86},{240,252,255},{175,224,250},{105,165,205}}, // Ice
-    {{58,46,84},{82,66,116},{158,112,205},{208,168,245},{32,24,50},{245,248,255},{195,200,215},{125,132,152}}, // Castle
-    {{38,32,54},{58,48,82},{120,235,175},{195,255,225},{22,18,34},{210,255,230},{120,220,175},{65,140,105}}    // Secret
+    {{112,68,38},{142,88,52},{64,198,58},{138,242,108},{68,38,22},{245,248,255},{195,200,215},{125,132,152}},
+    {{62,36,44},{88,52,62},{245,98,36},{255,182,82},{34,18,24},{255,195,115},{240,112,52},{165,52,26}},
+    {{72,98,134},{98,128,172},{232,248,255},{255,255,255},{42,58,86},{240,252,255},{175,224,250},{105,165,205}},
+    {{58,46,84},{82,66,116},{158,112,205},{208,168,245},{32,24,50},{245,248,255},{195,200,215},{125,132,152}},
+    {{38,32,54},{58,48,82},{120,235,175},{195,255,225},{22,18,34},{210,255,230},{120,220,175},{65,140,105}}
 };
 
 static void drawTileCell(int r, int cx, char ch, bool hi) {
     int x = cx * TILE, y = r * TILE; const TilePal &tp = TPAL[iclamp(curWorld, 0, 4)];
     if (ch == '#') {
-        fillRect(x, y, TILE, TILE, tp.mainC);
-        fillRect(x + 6, y + 14, TILE - 12, TILE - 22, tp.litC);
+        fillRect(x, y, TILE, TILE, tp.mainC); fillRect(x + 6, y + 14, TILE - 12, TILE - 22, tp.litC);
         fillRect(x + 10, y + 18, 14, 8, tp.mainC); fillRect(x + 32, y + 32, 16, 10, tp.botC);
         if (hi) {
             fillRect(x, y, TILE, 10, tp.topC); fillRect(x, y, TILE, 3, tp.topHi);
@@ -1203,8 +1082,8 @@ static void drawPlantTuft(int bx, int by, int h, int bend, int bm, int st) {
     static const Color PD[5] = {{28,136,42},{95,32,32},{105,175,220},{78,52,128},{42,135,98}};
     static const Color PM[5] = {{76,216,74},{242,102,32},{185,230,255},{138,98,205},{98,225,165}};
     static const Color PT[5] = {{255,235,80},{255,225,75},{255,255,255},{185,235,255},{220,255,235}};
-    Color tip = bm == 0 ? (st == 0 ? mk(255,95,135) : (st == 1 ? mk(255,235,80) : mk(125,225,255))) : PT[iclamp(bm, 0, 4)];
     int w = iclamp(bm, 0, 4);
+    Color tip = w == 0 ? (st == 0 ? mk(255,95,135) : (st == 1 ? mk(255,235,80) : mk(125,225,255))) : PT[w];
     for (int b = -1; b <= 1; b++) {
         int ox = bx + b * 5, bh = h - (b ? 2 : 0), sh = bh / 2, off = bend / 2 + b;
         fillRect(ox - 1, by - sh, 3, sh, PD[w]); fillRect(ox - 1 + off, by - bh, 3, bh - sh, PM[w]);
@@ -1221,32 +1100,21 @@ static void drawSplat(const Splat &s) {
     if (s.stage <= 1) fillRect(ox + 1, oy + 1, dw / 3 + 1, dh / 3 + 1, mk(185 / div + 20, 22 / div, 34 / div));
 }
 
-// High-Detail Multi-Layer Parallax Pixel Art Backgrounds (Forest, Volcano, Ice, Castle, Secret Temple)
 static void paintBackground() {
     int pFar = roomIdx * 90, pNear = roomIdx * 180;
     if (curWorld == 0) {
-        // World 1: Lush Multi-Layer Living Forest (Inspired by user's Forest & King Frogus art!)
         fillRect(0, 0, FW, 240, mk(46,148,225)); fillRect(0, 240, FW, 260, mk(115,205,245));
         fillRect(0, 500, FW, 180, mk(38,118,68)); fillRect(0, 680, FW, 400, mk(22,74,44));
         fillCircle(1580, 130, 58, mk(255,242,155)); fillCircle(1580, 130, 44, mk(255,222,72));
-        // Distant misty tree trunks (Parallax layer 1)
-        for (int i = 0; i < 10; i++) {
-            int tx = ((i * 210 - pFar) % FW + FW) % FW;
-            fillRect(tx, 160, 48, 560, mk(52,135,98)); fillRect(tx + 8, 160, 12, 560, mk(72,162,122));
-        }
-        // Rich foreground mossy trunks & hanging vines (Parallax layer 2)
+        for (int i = 0; i < 10; i++) { int tx = ((i * 210 - pFar) % FW + FW) % FW; fillRect(tx, 160, 48, 560, mk(52,135,98)); fillRect(tx + 8, 160, 12, 560, mk(72,162,122)); }
         for (int i = 0; i < 6; i++) {
             int tx = ((i * 340 - pNear) % FW + FW) % FW;
             fillRect(tx, 260, 62, 520, mk(76,46,26)); fillRect(tx + 8, 260, 16, 520, mk(104,64,38));
             fillCircle(tx + 30, 240, 88, mk(32,128,54)); fillCircle(tx + 10, 210, 56, mk(62,178,76));
-            // Hanging vines
-            fillRect(tx + 70, 60, 8, 140 + (i % 3) * 35, mk(46,162,62));
-            fillRect(tx + 96, 60, 6, 110 + (i % 2) * 45, mk(68,196,76));
+            fillRect(tx + 70, 60, 8, 140 + (i % 3) * 35, mk(46,162,62)); fillRect(tx + 96, 60, 6, 110 + (i % 2) * 45, mk(68,196,76));
         }
-        // Distant sunlit waterfall & stream
         fillRect(340, 420, 86, 280, mk(82,188,248)); fillRect(362, 420, 42, 280, mk(185,238,255));
     } else if (curWorld == 1) {
-        // World 2: Volcano Core (Glowing craters, lava falls & basalt pillars)
         fillRect(0, 0, FW, 280, mk(42,14,24)); fillRect(0, 280, FW, 260, mk(86,26,32));
         fillRect(0, 540, FW, 180, mk(58,20,28)); fillRect(0, 720, FW, 360, mk(34,12,18));
         fillCircle(1540, 150, 52, mk(242,96,42)); fillCircle(1540, 150, 36, mk(255,172,76));
@@ -1256,20 +1124,14 @@ static void paintBackground() {
             fillRect(x + 88, 392, 24, 328, mk(242,82,28)); fillRect(x + 94, 392, 10, 328, mk(255,195,72));
         }
     } else if (curWorld == 2) {
-        // World 3: Frozen Peaks (Aurora ribbons, snow-capped mountains & ice crystals)
         fillRect(0, 0, FW, 280, mk(26,48,88)); fillRect(0, 280, FW, 260, mk(56,94,142));
         fillRect(0, 540, FW, 180, mk(86,126,172)); fillRect(0, 720, FW, 360, mk(52,84,126));
         for (int i = 0; i < 7; i++) fillRect(i * 280 + 40, 120 + (i & 1) * 24, 230, 18, mk(72,224,182));
         fillCircle(1540, 145, 48, mk(224,244,255));
-        for (int i = 0; i < 4; i++) {
-            int x = ((i * 510 - pFar) % FW + FW) % FW;
-            fillRect(x + 40, 390, 210, 330, mk(86,126,172)); fillRect(x + 70, 350, 150, 50, mk(236,248,255));
-        }
+        for (int i = 0; i < 4; i++) { int x = ((i * 510 - pFar) % FW + FW) % FW; fillRect(x + 40, 390, 210, 330, mk(86,126,172)); fillRect(x + 70, 350, 150, 50, mk(236,248,255)); }
     } else {
-        // World 4: Dark Castle & Secret Shadow Temple (Gothic arches, stained glass, ancient statue)
         Color s1 = curWorld == 4 ? mk(14,28,32) : mk(22,12,48), s2 = curWorld == 4 ? mk(24,48,54) : mk(34,18,68);
-        fillRect(0, 0, FW, 300, s1); fillRect(0, 300, FW, 280, s2);
-        fillRect(0, 580, FW, 500, curWorld == 4 ? mk(16,32,38) : mk(24,14,52));
+        fillRect(0, 0, FW, 300, s1); fillRect(0, 300, FW, 280, s2); fillRect(0, 580, FW, 500, curWorld == 4 ? mk(16,32,38) : mk(24,14,52));
         fillCircle(1540, 145, 50, curWorld == 4 ? mk(120,245,195) : mk(185,172,228));
         for (int i = 0; i < 6; i++) {
             int x = ((i * 340 - pNear) % FW + FW) % FW;
@@ -1299,152 +1161,96 @@ static void restoreRect(int b, int x, int y, int w, int h, bool det) {
     }
     resetClip();
 }
-
 static inline void addDirty(int b, int x, int y, int w, int h) { if (dirtyCnt[b] < MAX_DIRTY) dirty[b][dirtyCnt[b]++] = {x, y, w, h}; }
 
-// Detailed Pixel-Art Enemies (Spider, Animated Bat, Mushroom Monster, Elite Guard)
 static void drawEnemyChar(const Enemy &e, int sx, int sy) {
     bool fl = (e.hurt & 2) != 0;
     if (e.kind == E_SPIDER) {
         int leg = ((tick / 5) & 1) ? 4 : -4;
-        Color ab = fl ? mk(255,255,255) : mk(148,88,42), hd = mk(112,176,48);
         fillRect(sx - 10, sy + 20 + leg, 14, 5, mk(32,36,44)); fillRect(sx + 40, sy + 20 - leg, 14, 5, mk(32,36,44));
         fillRect(sx - 8, sy + 32 - leg, 12, 5, mk(32,36,44)); fillRect(sx + 40, sy + 32 + leg, 12, 5, mk(32,36,44));
-        fillCircle(sx + 22, sy + 18, 16, ab); fillCircle(sx + 22, sy + 28, 12, hd);
+        fillCircle(sx + 22, sy + 18, 16, fl ? mk(255,255,255) : mk(148,88,42)); fillCircle(sx + 22, sy + 28, 12, mk(112,176,48));
         fillRect(sx + 14, sy + 26, 6, 6, mk(225,24,36)); fillRect(sx + 24, sy + 26, 6, 6, mk(225,24,36));
     } else if (e.kind == E_BAT) {
-        int wg = ((tick / 4) & 1) ? -12 : 8;
-        Color wC = fl ? mk(255,255,255) : mk(124,52,72);
+        int wg = ((tick / 4) & 1) ? -12 : 8; Color wC = fl ? mk(255,255,255) : mk(124,52,72);
         fillRect(sx - 16, sy + 14 + wg, 18, 10, wC); fillRect(sx + 42, sy + 14 + wg, 18, 10, wC);
-        fillCircle(sx + 22, sy + 22, 13, mk(88,42,62));
-        fillRect(sx + 15, sy + 18, 4, 4, mk(255,220,75)); fillRect(sx + 25, sy + 18, 4, 4, mk(255,220,75));
+        fillCircle(sx + 22, sy + 22, 13, mk(88,42,62)); fillRect(sx + 15, sy + 18, 4, 4, mk(255,220,75)); fillRect(sx + 25, sy + 18, 4, 4, mk(255,220,75));
     } else if (e.kind == E_MUSHROOM) {
         if (e.state == 0) {
-            // Hiding as innocent mushroom cap
-            fillRect(sx + 8, sy + 26, 28, 18, mk(232,216,188));
-            fillRect(sx + 2, sy + 16, 40, 14, mk(208,42,58));
+            fillRect(sx + 8, sy + 26, 28, 18, mk(232,216,188)); fillRect(sx + 2, sy + 16, 40, 14, mk(208,42,58));
             fillRect(sx + 10, sy + 19, 6, 6, mk(255,245,230)); fillRect(sx + 28, sy + 19, 6, 6, mk(255,245,230));
         } else {
-            // Popped up angry Mushroom Monster!
-            fillRect(sx + 6, sy + 16, 32, 28, fl ? mk(255,255,255) : mk(238,224,196));
-            fillRect(sx, sy + 2, 44, 18, mk(215,38,54));
-            fillRect(sx + 8, sy + 6, 7, 7, mk(255,250,235)); fillRect(sx + 29, sy + 6, 7, 7, mk(255,250,235));
-            drawFace(sx, sy + 10, e.dir, mk(255,225,85));
+            fillRect(sx + 6, sy + 16, 32, 28, fl ? mk(255,255,255) : mk(238,224,196)); fillRect(sx, sy + 2, 44, 18, mk(215,38,54));
+            fillRect(sx + 8, sy + 6, 7, 7, mk(255,250,235)); fillRect(sx + 29, sy + 6, 7, 7, mk(255,250,235)); drawFace(sx, sy + 10, e.dir, mk(255,225,85));
         }
     } else {
-        // Elite Armored End-of-Stage Guard
-        fillRect(sx - 2, sy - 4, 48, 48, mk(36,24,48));
-        fillRect(sx + 2, sy, 40, 40, fl ? mk(255,255,255) : mk(168,32,58));
-        fillRect(sx + 6, sy - 10, 32, 8, mk(245,195,65));
-        drawFace(sx, sy, e.dir, mk(255,235,115));
+        fillRect(sx - 2, sy - 4, 48, 48, mk(36,24,48)); fillRect(sx + 2, sy, 40, 40, fl ? mk(255,255,255) : mk(168,32,58));
+        fillRect(sx + 6, sy - 10, 32, 8, mk(245,195,65)); drawFace(sx, sy, e.dir, mk(255,235,115));
     }
 }
 
-// 4 Detailed Pixel-Art World Bosses (King Frogus, Venom Spider Queen, Frost Devourer, Dark Overlord)
 static void drawBossChar(int bx, int by, int bw, int bh, bool hurt) {
     if (bossType == 0) {
-        // King Frogus (Green Giant Frog with Crown, Red Cape & Spiky Tongue!)
-        fillRect(bx + 10, by + 48, bw - 20, bh - 48, mk(178,28,42)); // Royal cape
-        fillCircle(bx + bw / 2, by + bh / 2 + 6, 52, hurt ? mk(255,255,255) : mk(72,212,96));
-        fillCircle(bx + bw / 2, by + bh / 2 + 22, 34, mk(158,245,168));
-        // Golden Crown
-        fillRect(bx + 36, by - 14, 48, 16, mk(255,212,55));
-        fillRect(bx + 36, by - 24, 10, 12, mk(255,212,55)); fillRect(bx + 55, by - 28, 10, 16, mk(255,212,55)); fillRect(bx + 74, by - 24, 10, 12, mk(255,212,55));
-        // Wide frog mouth & eyes
+        fillRect(bx + 10, by + 48, bw - 20, bh - 48, mk(178,28,42));
+        fillCircle(bx + bw / 2, by + bh / 2 + 6, 52, hurt ? mk(255,255,255) : mk(72,212,96)); fillCircle(bx + bw / 2, by + bh / 2 + 22, 34, mk(158,245,168));
+        fillRect(bx + 36, by - 14, 48, 16, mk(255,212,55)); fillRect(bx + 36, by - 24, 10, 12, mk(255,212,55)); fillRect(bx + 55, by - 28, 10, 16, mk(255,212,55)); fillRect(bx + 74, by - 24, 10, 12, mk(255,212,55));
         fillRect(bx + 26, by + 26, 18, 18, mk(255,255,255)); fillRect(bx + 76, by + 26, 18, 18, mk(255,255,255));
-        fillRect(bx + 32, by + 32, 8, 8, mk(0,0,0)); fillRect(bx + 82, by + 32, 8, 8, mk(0,0,0));
-        fillRect(bx + 28, by + 56, 64, 24, mk(142,24,42));
-        if (bossTongueLen > 0) {
-            int tx = bossVX >= 0 ? bx + bw : bx - bossTongueLen;
-            fillRect(tx, by + 56, bossTongueLen, 16, mk(224,96,118));
-            fillCircle(bossVX >= 0 ? tx + bossTongueLen : tx, by + 64, 14, mk(195,72,96));
-        }
+        fillRect(bx + 32, by + 32, 8, 8, mk(0,0,0)); fillRect(bx + 82, by + 32, 8, 8, mk(0,0,0)); fillRect(bx + 28, by + 56, 64, 24, mk(142,24,42));
+        if (bossTongueLen > 0) { int tx = bossVX >= 0 ? bx + bw : bx - bossTongueLen; fillRect(tx, by + 56, bossTongueLen, 16, mk(224,96,118)); fillCircle(bossVX >= 0 ? tx + bossTongueLen : tx, by + 64, 14, mk(195,72,96)); }
     } else if (bossType == 1) {
-        // Giant Venom Spider Queen (Segmented abdomen, glowing eyes & 6 articulated legs)
         int lg = ((tick / 5) & 1) ? 8 : -8;
-        for (int k = 0; k < 3; k++) {
-            fillRect(bx - 24, by + 20 + k * 28 + lg, 32, 8, mk(36,42,52));
-            fillRect(bx + bw - 8, by + 20 + k * 28 - lg, 32, 8, mk(36,42,52));
-        }
+        for (int k = 0; k < 3; k++) { fillRect(bx - 24, by + 20 + k * 28 + lg, 32, 8, mk(36,42,52)); fillRect(bx + bw - 8, by + 20 + k * 28 - lg, 32, 8, mk(36,42,52)); }
         fillCircle(bx + bw / 2, by + 76, 42, hurt ? mk(255,255,255) : mk(168,104,56));
         fillRect(bx + bw / 2 - 26, by + 68, 52, 8, mk(112,62,28)); fillRect(bx + bw / 2 - 22, by + 84, 44, 8, mk(112,62,28));
-        fillCircle(bx + bw / 2, by + 34, 30, mk(118,178,42));
-        fillCircle(bx + bw / 2 - 14, by + 32, 9, mk(225,22,38)); fillCircle(bx + bw / 2 + 14, by + 32, 9, mk(225,22,38));
+        fillCircle(bx + bw / 2, by + 34, 30, mk(118,178,42)); fillCircle(bx + bw / 2 - 14, by + 32, 9, mk(225,22,38)); fillCircle(bx + bw / 2 + 14, by + 32, 9, mk(225,22,38));
     } else if (bossType == 2) {
-        // Frost Devourer (Pink Charging Beast with giant teeth!)
         fillCircle(bx + bw / 2, by + bh / 2 + 8, 54, hurt ? mk(255,255,255) : mk(218,132,158));
         fillRect(bx + 26, by - 12, 16, 26, mk(218,132,158)); fillRect(bx + 78, by - 12, 16, 26, mk(218,132,158));
         fillCircle(bx + 36, by + 34, 10, mk(255,224,52)); fillCircle(bx + 84, by + 34, 10, mk(255,224,52));
         fillRect(bx + 24, by + 54, 72, 42, mk(62,18,28));
         for (int t0 = 0; t0 < 5; t0++) { fillRect(bx + 28 + t0 * 14, by + 54, 10, 12, mk(248,244,232)); fillRect(bx + 28 + t0 * 14, by + 84, 10, 12, mk(248,244,232)); }
     } else {
-        // Dark Castle Overlord
         Color dC = hurt ? mk(255,240,180) : mk(42,18,62), mC = hurt ? mk(255,255,255) : mk(124,28,158), cC = (tick & 4) ? mk(255,215,65) : mk(255,75,115);
-        fillRect(bx, by, bw, bh, dC); fillRect(bx + 8, by + 8, bw - 16, bh - 16, mC);
-        fillRect(bx + 20, by - 10, bw - 40, 12, cC);
+        fillRect(bx, by, bw, bh, dC); fillRect(bx + 8, by + 8, bw - 16, bh - 16, mC); fillRect(bx + 20, by - 10, bw - 40, 12, cC);
         fillRect(bx + 22, by + 28, 24, 20, mk(255,240,90)); fillRect(bx + bw - 46, by + 28, 24, 20, mk(255,240,90));
-        fillRect(bx + 28, by + 34, 12, 12, mk(20,0,0)); fillRect(bx + bw - 40, by + 34, 12, 12, mk(20,0,0));
-        fillRect(bx + 24, by + 70, bw - 48, 20, mk(24,10,38));
+        fillRect(bx + 28, by + 34, 12, 12, mk(20,0,0)); fillRect(bx + bw - 40, by + 34, 12, 12, mk(20,0,0)); fillRect(bx + 24, by + 70, bw - 48, 20, mk(24,10,38));
     }
 }
 
 static void drawHUDFull(int b) {
-    // Hearts (Top Left)
     for (int i = 0; i < maxHp; i++) {
-        int hx = 42 + i * 38, hy = 26;
-        Color hc = i < hp ? mk(235,32,52) : mk(68,54,72);
+        int hx = 42 + i * 38, hy = 26; Color hc = i < hp ? mk(235,32,52) : mk(68,54,72);
         fillCircle(hx + 8, hy + 8, 8, hc); fillCircle(hx + 20, hy + 8, 8, hc); fillRect(hx + 4, hy + 10, 20, 12, hc); fillRect(hx + 10, hy + 20, 8, 6, hc);
     }
-    // Coins Counter
     fillCircle(60, 74, 12, mk(255,208,45)); fillCircle(60, 74, 7, mk(255,238,120));
     char cb[16]; intToStr(save.coins, cb); drawText(82, 64, cb, 3, mk(255,235,110));
-
-    // Boss HP Bar OR Stage Info / Time Trial Clock (Top Center)
     if (bossActive && bossHP > 0) {
         drawLabel(T_BFROG + bossType, 960, 10, 32, 3, mk(255,215,90));
-        fillRect(676, 44, 568, 22, mk(28,16,38)); fillRect(680, 47, 560, 16, mk(68,24,34));
-        fillRect(680, 47, (bossHP * 560) / bossMaxHP, 16, mk(242,58,68));
+        fillRect(676, 44, 568, 22, mk(28,16,38)); fillRect(680, 47, 560, 16, mk(68,24,34)); fillRect(680, 47, (bossHP * 560) / bossMaxHP, 16, mk(242,58,68));
     } else if (timeTrialMode) {
-        char tb[24]; int sec = stageTimeFrames / 60, cs = (stageTimeFrames % 60) * 100 / 60;
-        sprintf(tb, "TIME %02d:%02d", sec, cs);
+        char tb[24]; sprintf(tb, "TIME %02d:%02d", stageTimeFrames / 60, (stageTimeFrames % 60) * 100 / 60);
         fillRect(820, 22, 280, 46, mk(26,20,48)); drawTextC(960, 34, tb, 3, mk(115,245,165));
-    } else {
-        drawLabel(T_W0 + curWorld, 960, 18, 38, 3, mk(235,232,250));
-    }
-
-    // Dash Ready & Active Power-ups (Top Right)
+    } else drawLabel(T_W0 + curWorld, 960, 18, 38, 3, mk(235,232,250));
     fillRect(1560, 22, 310, 44, mk(26,20,48));
     drawTextC(1715, 34, dashCd == 0 ? "O: DASH READY" : "DASH CHARGING", 2, dashCd == 0 ? mk(95,235,255) : mk(175,165,195));
     if (shieldTimer > 0) { fillRect(1560, 72, 145, 28, mk(35,98,175)); drawTextC(1632, 79, "SHIELD", 2, mk(210,245,255)); }
     if (speedTimer > 0) { fillRect(1720, 72, 150, 28, mk(185,125,24)); drawTextC(1795, 79, "SPEED+", 2, mk(255,245,155)); }
-
-    // Toast / Achievement / Secret Banner
-    if (toastTimer > 0 && toastTid >= 0) {
-        fillRect(540, 108, 840, 56, mk(245,195,55)); fillRect(544, 112, 832, 48, mk(34,24,58));
-        drawLabel(toastTid, 960, 112, 48, 3, mk(255,238,125));
-    }
-    // NPC Dialog Box (Bottom Center)
-    if (npcDialogTimer > 0 && npcDialogTid >= 0) {
-        fillRect(260, 910, 1400, 90, mk(245,195,65)); fillRect(264, 914, 1392, 82, mk(28,22,48));
-        drawLabel(npcDialogTid, 960, 914, 82, 3, mk(255,255,255));
-    }
+    if (toastTimer > 0 && toastTid >= 0) { fillRect(540, 108, 840, 56, mk(245,195,55)); fillRect(544, 112, 832, 48, mk(34,24,58)); drawLabel(toastTid, 960, 112, 48, 3, mk(255,238,125)); }
+    if (npcDialogTimer > 0 && npcDialogTid >= 0) { fillRect(260, 910, 1400, 90, mk(245,195,65)); fillRect(264, 914, 1392, 82, mk(28,22,48)); drawLabel(npcDialogTid, 960, 914, 82, 3, mk(255,255,255)); }
     hudNeed[b] = false;
 }
 
 static void renderGame(int b) {
     resetClip();
     if (winTimer > 0) {
-        if (needWin[b]) {
-            fillRect(0, 0, FW, FH, mk(20, 90, 60));
-            drawLabel(T_COMPLETE, 960, 350, 110, 10, mk(255,255,255));
-            drawLabel(T_GREAT, 960, 500, 80, 6, mk(255,220,180));
-            needWin[b] = false;
-        }
+        if (needWin[b]) { fillRect(0, 0, FW, FH, mk(20, 90, 60)); drawLabel(T_COMPLETE, 960, 350, 110, 10, mk(255,255,255)); drawLabel(T_GREAT, 960, 500, 80, 6, mk(255,220,180)); needWin[b] = false; }
         return;
     }
     int shkX = shakeTimer > 0 ? (rnd(shakeMag * 2 + 1) - shakeMag) : 0;
     int shkY = shakeTimer > 0 ? (rnd(shakeMag * 2 + 1) - shakeMag) : 0;
 
+    // FIX: Redraw full background cleanly whenever transitioning to a new room so parallax never tears!
+    if (bufRoom[b] != roomIdx) needFull[b] = true;
     if (needFull[b]) {
         paintBackground();
         for (int r = 0; r < ROWS; r++) for (int c = 0; c < RCOLS; c++) {
@@ -1460,22 +1266,8 @@ static void renderGame(int b) {
         }
         dirtyCnt[b] = 0; drawHUDFull(b); needFull[b] = false;
     } else {
-        bool trans = (bufRoom[b] != roomIdx);
-        for (int i = 0; i < dirtyCnt[b]; i++) { if (dirty[b][i].y < 170 || dirty[b][i].y > 890) hudNeed[b] = true; restoreRect(b, dirty[b][i].x, dirty[b][i].y, dirty[b][i].w, dirty[b][i].h, !trans); }
+        for (int i = 0; i < dirtyCnt[b]; i++) { if (dirty[b][i].y < 170 || dirty[b][i].y > 890) hudNeed[b] = true; restoreRect(b, dirty[b][i].x, dirty[b][i].y, dirty[b][i].w, dirty[b][i].h, true); }
         dirtyCnt[b] = 0;
-        if (trans) {
-            for (int i = 0; i < splatCount; i++) if (splats[i].drawn[b]) { restoreRect(b, splats[i].x - 1, splats[i].y - 1, splats[i].w + 2, splats[i].h + 2, false); splats[i].drawn[b] = false; }
-            for (int i = 0; i < plantCount; i++) if (plants[i].drawn[b]) { restoreRect(b, plants[i].x - 12, plants[i].y - plants[i].h - 5, 24, plants[i].h + 5, false); plants[i].drawn[b] = false; }
-            for (int r = 0; r < ROWS; r++) for (int c = 0; c < RCOLS; c++) {
-                int wc = roomIdx * RCOLS + c; char nc = staticChar(r, wc); bool nh = hiAt(r, wc);
-                if (nc == bufGrid[b][r][c] && nh == bufHi[b][r][c]) continue;
-                if (bufGrid[b][r][c] != '.' && nc != '#') { setClip(c * TILE, r * TILE, TILE, TILE); paintBackground(); resetClip(); }
-                bufGrid[b][r][c] = nc; bufHi[b][r][c] = nh;
-                if (nc != '.') drawTileCell(r, c, nc, nh);
-                if (r <= 2) hudNeed[b] = true;
-            }
-            bufRoom[b] = roomIdx;
-        }
         for (int i = 0; i < splatCount; i++) {
             Splat &s = splats[i]; if (s.room != bufRoom[b]) continue;
             if (s.drawn[b] && (s.stage >= 4 || s.dStage[b] != s.stage)) { restoreRect(b, s.x - 1, s.y - 1, s.w + 2, s.h + 2, false); s.drawn[b] = false; }
@@ -1496,48 +1288,29 @@ static void renderGame(int b) {
 
     resetClip();
     int roomX = roomIdx * FW;
-    // Flying Leaves & Glowing Fireflies
     static const Color LCOL[5] = {{98,225,84},{255,135,42},{235,248,255},{175,145,235},{112,245,185}};
-    for (int i = 0; i < MAX_LEAVES; i++) {
-        int lx = (int)leaves[i].x, ly = (int)leaves[i].y, sz = leaves[i].sz;
-        fillRect(lx, ly, sz, sz - 1, LCOL[curWorld]); addDirty(b, lx - 1, ly - 1, sz + 2, sz + 2);
-    }
+    for (int i = 0; i < MAX_LEAVES; i++) { int lx = (int)leaves[i].x, ly = (int)leaves[i].y, sz = leaves[i].sz; fillRect(lx, ly, sz, sz - 1, LCOL[curWorld]); addDirty(b, lx - 1, ly - 1, sz + 2, sz + 2); }
     for (int i = 0; i < MAX_FIREFLIES; i++) {
-        int fx = (int)flies[i].x, fy = (int)flies[i].y;
-        bool bright = (((tick / 8) + flies[i].phase) & 3) != 0;
-        fillRect(fx - 2, fy - 2, 7, 7, curWorld == 1 ? mk(165,65,24) : mk(95,125,45));
-        fillRect(fx, fy, 3, 3, bright ? mk(255,248,135) : mk(185,205,95));
-        addDirty(b, fx - 3, fy - 3, 9, 9);
+        int fx = (int)flies[i].x, fy = (int)flies[i].y; bool br = (((tick / 8) + flies[i].phase) & 3) != 0;
+        fillRect(fx - 2, fy - 2, 7, 7, curWorld == 1 ? mk(165,65,24) : mk(95,125,45)); fillRect(fx, fy, 3, 3, br ? mk(255,248,135) : mk(185,205,95)); addDirty(b, fx - 3, fy - 3, 9, 9);
     }
-    // Moving & Disappearing Platforms
-    for (int i = 0; i < mplatCount; i++) if (mplats[i].room == roomIdx) {
-        int mx = (int)mplats[i].x + shkX, my = (int)mplats[i].y + shkY, mw = mplats[i].w;
-        fillRect(mx, my, mw, 26, mk(96,68,42)); fillRect(mx, my, mw, 7, TPAL[curWorld].topC); addDirty(b, mx - 4, my - 4, mw + 8, 34);
-    }
+    for (int i = 0; i < mplatCount; i++) if (mplats[i].room == roomIdx) { int mx = (int)mplats[i].x + shkX, my = (int)mplats[i].y + shkY, mw = mplats[i].w; fillRect(mx, my, mw, 26, mk(96,68,42)); fillRect(mx, my, mw, 7, TPAL[curWorld].topC); addDirty(b, mx - 4, my - 4, mw + 8, 34); }
     for (int i = 0; i < dplatCount; i++) if (dplats[i].room == roomIdx && dplats[i].state < 2) {
         int dx0 = dplats[i].x + (dplats[i].state == 1 ? ((tick & 2) ? 3 : -3) : 0), dy0 = dplats[i].y;
-        fillRect(dx0, dy0, dplats[i].w, 24, dplats[i].state == 1 ? mk(215,95,65) : mk(142,112,86));
-        fillRect(dx0 + 4, dy0 + 4, dplats[i].w - 8, 6, mk(225,205,175));
-        addDirty(b, dx0 - 6, dy0 - 2, dplats[i].w + 12, 28);
+        fillRect(dx0, dy0, dplats[i].w, 24, dplats[i].state == 1 ? mk(215,95,65) : mk(142,112,86)); fillRect(dx0 + 4, dy0 + 4, dplats[i].w - 8, 6, mk(225,205,175)); addDirty(b, dx0 - 6, dy0 - 2, dplats[i].w + 12, 28);
     }
-    // Coins, Chests, Power-ups, Checkpoints & NPCs
     for (int i = 0; i < coinCount; i++) if (coins[i].active && coins[i].room == roomIdx) {
-        int cx0 = coins[i].x, cy0 = coins[i].y + (SN[((tick / 5) + i) & 15] >> 6);
-        int cw = ((tick / 6 + i) & 3) == 0 ? 6 : 14;
-        fillRect(cx0 - cw / 2, cy0 - 10, cw, 20, mk(255,208,42)); fillRect(cx0 - cw / 4, cy0 - 6, cw / 2 + 1, 12, mk(255,245,145));
-        addDirty(b, cx0 - 10, cy0 - 14, 20, 28);
+        int cx0 = coins[i].x, cy0 = coins[i].y + (SN[((tick / 5) + i) & 15] >> 6), cw = ((tick / 6 + i) & 3) == 0 ? 6 : 14;
+        fillRect(cx0 - cw / 2, cy0 - 10, cw, 20, mk(255,208,42)); fillRect(cx0 - cw / 4, cy0 - 6, cw / 2 + 1, 12, mk(255,245,145)); addDirty(b, cx0 - 10, cy0 - 14, 20, 28);
     }
     for (int i = 0; i < chestCount; i++) if (chests[i].room == roomIdx) {
-        int cx0 = chests[i].x, cy0 = chests[i].y;
-        fillRect(cx0, cy0, 44, 34, chests[i].opened ? mk(95,62,36) : mk(168,104,42));
-        fillRect(cx0, cy0 + 12, 44, 5, mk(245,195,55)); fillRect(cx0 + 18, cy0 + 10, 8, 10, mk(255,232,105));
-        addDirty(b, cx0 - 2, cy0 - 2, 48, 38);
+        int cx0 = chests[i].x, cy0 = chests[i].y; fillRect(cx0, cy0, 44, 34, chests[i].opened ? mk(95,62,36) : mk(168,104,42));
+        fillRect(cx0, cy0 + 12, 44, 5, mk(245,195,55)); fillRect(cx0 + 18, cy0 + 10, 8, 10, mk(255,232,105)); addDirty(b, cx0 - 2, cy0 - 2, 48, 38);
     }
     for (int i = 0; i < puCount; i++) if (powerups[i].active && powerups[i].room == roomIdx) {
         int px0 = powerups[i].x, py0 = powerups[i].y + (SN[(tick / 5) & 15] >> 6);
         Color pc = powerups[i].kind == PU_HEART ? mk(245,42,68) : (powerups[i].kind == PU_SHIELD ? mk(75,185,255) : mk(255,215,55));
-        fillCircle(px0 + 14, py0 + 14, 13, pc); fillCircle(px0 + 14, py0 + 14, 6, mk(255,255,255));
-        addDirty(b, px0 - 2, py0 - 2, 32, 32);
+        fillCircle(px0 + 14, py0 + 14, 13, pc); fillCircle(px0 + 14, py0 + 14, 6, mk(255,255,255)); addDirty(b, px0 - 2, py0 - 2, 32, 32);
     }
     for (int i = 0; i < checkCount; i++) if (checkC[i] / RCOLS == roomIdx) {
         int fx = (checkC[i] % RCOLS) * TILE + 24, fy = checkR[i] * TILE - 64;
@@ -1546,8 +1319,7 @@ static void renderGame(int b) {
     for (int i = 0; i < npcCount; i++) if (npcs[i].room == roomIdx) {
         int nx = npcs[i].x, ny = npcs[i].y;
         fillRect(nx, ny, 38, 48, mk(62,88,165)); fillRect(nx + 4, ny + 4, 30, 18, mk(242,205,168));
-        fillRect(nx + 8, ny + 10, 6, 6, mk(0,0,0)); fillRect(nx + 22, ny + 10, 6, 6, mk(0,0,0));
-        fillRect(nx - 2, ny - 10, 42, 12, mk(195,55,65));
+        fillRect(nx + 8, ny + 10, 6, 6, mk(0,0,0)); fillRect(nx + 22, ny + 10, 6, 6, mk(0,0,0)); fillRect(nx - 2, ny - 10, 42, 12, mk(195,55,65));
         if (iabs((int)px - (roomX + nx)) < 90) drawLabel(T_NPC_H, nx + 19, ny - 44, 30, 2, mk(255,235,95));
         addDirty(b, nx - 60, ny - 48, 160, 100);
     }
@@ -1560,8 +1332,7 @@ static void renderGame(int b) {
     if (bossActive && bossHP > 0) {
         fillRect(15 * TILE + 20, 7 * TILE - 18, 80, 18, bossSwCd == 0 ? ((tick & 8) ? mk(80,255,120) : mk(40,200,85)) : mk(90,80,100));
         addDirty(b, 15 * TILE + 18, 7 * TILE - 20, 84, 22);
-        int bx = (int)bossX + shkX, by = (int)bossY + shkY;
-        drawBossChar(bx, by, bossW, bossH, (bossHurt & 2) != 0);
+        int bx = (int)bossX + shkX, by = (int)bossY + shkY; drawBossChar(bx, by, bossW, bossH, (bossHurt & 2) != 0);
         addDirty(b, bx - (bossTongueLen + 36), by - 36, bossW + bossTongueLen * 2 + 72, bossH + 56);
     }
     for (int i = 0; i < MAX_SHOTS; i++) if (shots[i].active) {
@@ -1575,7 +1346,6 @@ static void renderGame(int b) {
         Color col = p.kind == 1 ? mk(210,18,32) : (p.kind == 2 ? mk(115,235,255) : mk(205,195,230));
         fillRect(sx, sy, sz, sz, col); addDirty(b, sx - 1, sy - 1, sz + 2, sz + 2);
     }
-    // Dash & Slam Afterimage Ghosts
     for (int i = 0; i < 8; i++) if (ghosts[i].life > 0) {
         int gx = (int)ghosts[i].x - roomX, gy = (int)ghosts[i].y;
         fillRect(gx, gy, PW, PH, mk(115,215,255)); addDirty(b, gx - 2, gy - 2, PW + 4, PH + 4);
@@ -1588,13 +1358,13 @@ static void renderGame(int b) {
         int x = (int)px - roomX + shkX, y = (int)py + shkY, dw = iclamp((int)(PW * squashX), 20, 80), dh = iclamp((int)(PH * squashY), 20, 80);
         int walkBob = (onGround && iabs((int)vx) > 1 && ((animTick / 6) & 1)) ? -3 : 0;
         int dx = x + (PW - dw) / 2, dy = y + (PH - dh) + walkBob;
-        if (shieldTimer > 0) fillCircle(dx + dw / 2, dy + dh / 2, 32, mk(85,195,255));
+        if (shieldTimer > 0) fillCircle(dx + dw / 2, dy + dh / 2, 34, mk(85,195,255));
         drawSkinCube(dx, dy, dw, dh, facing, save.selectedSkin);
-        addDirty(b, x - 36, y - 34, PW + 72, PH + 64);
+        addDirty(b, x - 36, y - 36, PW + 72, PH + 68);
     }
 }
 
-// ---------- Menus, Shop, Skins, Achievements & Story ----------
+// ---------- Menus, Secret Naruto Roster (L2+R2+L1+X), Shop, Skins, Achievements & Story ----------
 static void drawBanner(int tid, int sc, int y, int h, bool cubes) {
     fillRect(456, y - 4, 1008, h + 8, mk(245,190,65)); fillRect(460, y, 1000, h, mk(35,25,55));
     drawLabel(tid, 960, y, h, sc, mk(255,75,115));
@@ -1617,10 +1387,28 @@ static void startStage(int st, bool tt) {
     state = S_PLAY;
 }
 
+static void drawSecretMenu() {
+    static const char *NAMES[5] = {"OBITO", "PAIN", "ITACHI", "MADARA", "KAKASHI"};
+    static const char *TITLES[5] = {"MASKED SHINOBI", "AKATSUKI LEADER", "SHARINGAN PRODIGY", "LEGENDARY UCHIHA", "COPY NINJA"};
+    fillRect(0, 0, FW, FH, mk(14, 12, 28));
+    fillRect(260, 64, 1400, 96, mk(225, 48, 62)); fillRect(264, 68, 1392, 88, mk(28, 20, 48));
+    drawTextC(960, 96, "SECRET SHINOBI CHARACTERS", 5, mk(255, 212, 72));
+    for (int i = 0; i < 5; i++) {
+        int bx = 135 + i * 335, by = 225; bool sel = (i == secretSel);
+        if (sel) fillRect(bx - 6, by - 6, 302, 522, mk(255, 212, 72));
+        fillRect(bx, by, 290, 510, sel ? mk(48, 28, 72) : mk(26, 20, 44));
+        fillRect(bx + 14, by + 18, 262, 340, mk(18, 16, 32));
+        drawNarutoHD(i, bx + 85, by + 48, 6, 1); // Crisp 120x192 Pixel-Art Preview!
+        drawTextC(bx + 145, by + 390, NAMES[i], 4, sel ? mk(255, 224, 92) : mk(235, 235, 245));
+        drawTextC(bx + 145, by + 448, TITLES[i], 2, mk(145, 215, 245));
+    }
+    fillRect(420, 820, 1080, 64, mk(32, 24, 54));
+    drawTextC(960, 842, "LEFT / RIGHT: CHOOSE   -   X: EQUIP CHARACTER   -   O: BACK", 2, mk(225, 225, 240));
+}
+
 static void drawItem(int i) {
     static const int MENU_T[7] = {T_PLAY, T_SHOP, T_SKINS, T_ACH, T_SETTINGS, T_CREDITS, T_EXIT};
-    static const int SHOP_COST[4] = {30, 35, 40, 45};
-    static const int SKIN_COST[5] = {0, 40, 50, 60, 75};
+    static const int SHOP_COST[4] = {30, 35, 40, 45}, SKIN_COST[5] = {0, 40, 50, 60, 75};
     if (state == S_MENU && i >= 0 && i < 7) {
         int y = 315 + i * 90; bool sel = (i == menuSel);
         if (sel) fillRect(606, y - 4, 708, 80, mk(255,210,85));
@@ -1633,14 +1421,11 @@ static void drawItem(int i) {
             bool sel = (i == levelSel), unl = (i < save.unlockedStages || (i == 16 && save.secretsFound > 0)), bs = isBossStage(i);
             if (sel) fillRect(x - 6, y - 6, 152, 92, mk(255,245,255));
             fillRect(x, y, 140, 80, unl ? (bs ? mk(175,24,48) : (i == 16 ? mk(48,145,112) : mk(205,42,58))) : mk(50,40,62));
-            if (unl) {
-                char buf[16]; if (i == 16) strcpy(buf, "SECRET"); else sprintf(buf, "%d-%d%s", row + 1, col + 1, bs ? " B" : "");
-                drawTextC(x + 70, y + 26, buf, 4, mk(255,255,255));
-            } else drawTextC(x + 70, y + 28, "LOCK", 3, mk(150,150,165));
+            if (unl) { char buf[16]; if (i == 16) strcpy(buf, "SECRET"); else sprintf(buf, "%d-%d%s", row + 1, col + 1, bs ? " B" : ""); drawTextC(x + 70, y + 26, buf, 4, mk(255,255,255)); }
+            else drawTextC(x + 70, y + 28, "LOCK", 3, mk(150,150,165));
         } else if (i == TOTAL_STAGES) {
             fillRect(540, 880, 840, 60, mk(35,25,55));
-            int wId = levelSel >= 16 ? 4 : (levelSel / 4);
-            drawLabel(T_W0 + wId, 960, 880, 60, 3, mk(135,238,165));
+            drawLabel(T_W0 + (levelSel >= 16 ? 4 : (levelSel / 4)), 960, 880, 60, 3, mk(135,238,165));
         }
     } else if (state == S_SHOP && i >= 0 && i < 4) {
         int y = 330 + i * 115; bool sel = (i == shopSel);
@@ -1651,12 +1436,10 @@ static void drawItem(int i) {
         if (owned) drawLabel(T_BOUGHT, 1380, y, 90, 3, mk(115,245,145));
         else { char cb[16]; sprintf(cb, "%d C", SHOP_COST[i]); drawTextC(1380, y + 32, cb, 4, mk(255,215,75)); }
     } else if (state == S_SKINS && i >= 0 && i < 5) {
-        int y = 300 + i * 112; bool sel = (i == skinSel);
-        bool owned = (save.skinsOwned & (1u << i)) != 0;
+        int y = 300 + i * 112; bool sel = (i == skinSel), owned = (save.skinsOwned & (1u << i)) != 0;
         if (sel) fillRect(446, y - 4, 1028, 96, mk(255,210,85));
         fillRect(450, y, 1020, 88, sel ? mk(205,36,52) : mk(48,36,68));
-        drawSkinCube(480, y + 22, 44, 44, 1, i);
-        drawLabel(T_SK0 + i, 920, y, 88, 4, mk(255,255,255));
+        drawSkinCube(480, y + 22, 44, 44, 1, i); drawLabel(T_SK0 + i, 920, y, 88, 4, mk(255,255,255));
         if (save.selectedSkin == i) drawTextC(1350, y + 32, "EQUIPPED", 3, mk(115,245,145));
         else if (owned) drawLabel(T_BOUGHT, 1350, y, 88, 3, mk(200,235,255));
         else { char cb[16]; sprintf(cb, "%d C", SKIN_COST[i]); drawTextC(1350, y + 32, cb, 4, mk(255,215,75)); }
@@ -1670,14 +1453,13 @@ static void drawItem(int i) {
 
 static void drawUI(int b) {
     resetClip();
+    if (state == S_SECRET) { if (uiFull[b]) { drawSecretMenu(); uiFull[b] = false; } return; }
     if (uiFull[b]) {
-        // Lively Pixel Art Title & Menu Backdrop
         fillRect(0,0,FW,300,mk(36,122,205)); fillRect(0,300,FW,340,mk(92,188,238));
         fillRect(0,640,FW,280,mk(32,102,58)); fillRect(0,920,FW,160,mk(84,52,32)); fillRect(0,920,FW,12,mk(72,208,68));
         fillCircle(1640, 130, 58, mk(255,242,155)); fillCircle(1640, 130, 44, mk(255,222,72));
         for (int i = 0; i < 6; i++) { fillRect(i*340+40,560,220,120,mk(44,132,74)); fillRect(i*340+80,520,140,48,mk(44,132,74)); }
         for (int gx = 60; gx < FW - 60; gx += 64) drawPlantTuft(gx, 920, 15, SN[(tick/8)&15]/32, 0, (gx/64)%3);
-        // Coin counter in menus
         fillRect(50, 30, 220, 54, mk(32,24,54)); fillCircle(82, 57, 13, mk(255,208,45));
         char cb[16]; intToStr(save.coins, cb); drawText(108, 45, cb, 4, mk(255,235,110));
 
@@ -1687,20 +1469,10 @@ static void drawUI(int b) {
         else if (state == S_SKINS) { drawBanner(T_B_SKINS, 7, 100, 105, false); drawHint(T_H_SELECT); }
         else if (state == S_ACH) {
             drawBanner(T_B_ACH, 7, 100, 105, false);
-            for (int k = 0; k < 6; k++) {
-                bool ok = (save.achMask & (1u << k)) != 0; int y = 260 + k * 105;
-                fillRect(420, y, 1080, 82, ok ? mk(42,118,68) : mk(42,32,62));
-                drawLabel(T_ACH0 + k, 960, y, 82, 3, ok ? mk(255,245,145) : mk(165,160,185));
-            }
+            for (int k = 0; k < 6; k++) { bool ok = (save.achMask & (1u << k)) != 0; int y = 260 + k * 105; fillRect(420, y, 1080, 82, ok ? mk(42,118,68) : mk(42,32,62)); drawLabel(T_ACH0 + k, 960, y, 82, 3, ok ? mk(255,245,145) : mk(165,160,185)); }
             drawHint(T_H_BACK);
-        } else if (state == S_SETTINGS) {
-            drawBanner(T_B_SETTINGS, 7, 100, 105, false); fillRect(610,740,700,60,mk(35,25,55));
-            drawLabel(T_TIP, 960, 740, 60, 3, mk(220,212,238)); drawHint(T_H_BACK);
-        } else if (state == S_CREDITS) {
-            drawBanner(T_B_CREDITS, 7, 100, 105, false); fillRect(460,280,1000,540,mk(35,25,55));
-            drawLabel(T_DESIGNERS,960,320,60,5,mk(220,212,238)); drawLabel(T_KAREEM,960,430,100,9,mk(255,75,115));
-            drawLabel(T_CLAUDE,960,550,100,9,mk(255,75,115)); drawLabel(T_GAME,960,710,60,4,mk(165,165,185)); drawHint(T_H_BACK);
-        }
+        } else if (state == S_SETTINGS) { drawBanner(T_B_SETTINGS, 7, 100, 105, false); fillRect(610,740,700,60,mk(35,25,55)); drawLabel(T_TIP, 960, 740, 60, 3, mk(220,212,238)); drawHint(T_H_BACK); }
+        else if (state == S_CREDITS) { drawBanner(T_B_CREDITS, 7, 100, 105, false); fillRect(460,280,1000,540,mk(35,25,55)); drawLabel(T_DESIGNERS,960,320,60,5,mk(220,212,238)); drawLabel(T_KAREEM,960,430,100,9,mk(255,75,115)); drawLabel(T_CLAUDE,960,550,100,9,mk(255,75,115)); drawLabel(T_GAME,960,710,60,4,mk(165,165,185)); drawHint(T_H_BACK); }
         int cnt = state == S_MENU ? 7 : (state == S_LEVELS ? TOTAL_STAGES + 1 : (state == S_SHOP ? 4 : (state == S_SKINS ? 5 : (state == S_SETTINGS ? 3 : 0))));
         for (int i = 0; i < cnt; i++) drawItem(i);
         uiFull[b] = false; memset(pend[b], 0, 64);
@@ -1717,29 +1489,30 @@ static void renderStory(int b) {
         fillRect(460, 630, 1000, 300, mk(30,22,48)); fillRect(460, 950, 1000, 60, mk(12,8,24));
         drawLabel(T_H_STORY, 960, 950, 60, 3, mk(200,190,220)); storyDrawnPage[b] = storyPage; storyShown[b] = 0;
     }
-    const Page &p = PAGES[storyPage]; int tot = 0;
-    if (useAr()) { for (int i = 0; i < p.n; i++) if (p.ar[i] >= 0) tot += arW(p.ar[i]); tot = tot / 14 + 1; }
-    else { for (int i = 0; i < p.n; i++) tot += (int)strlen(p.en[i]); tot *= 2; }
+    const Page &p = PAGES[storyPage];
     if (typed > storyShown[b]) {
         bool ar = useAr(); int f = ar ? storyShown[b] * 14 : storyShown[b] / 2, t = ar ? typed * 14 : typed / 2, bef = 0;
         for (int i = 0; i < p.n; i++) {
             int y = 660 + i * 80;
-            if (ar) {
-                int id = p.ar[i]; if (id < 0) continue; int w = arW(id), a = iclamp(f - bef, 0, w), b2 = iclamp(t - bef, 0, w);
-                if (b2 > a) drawArCols(id, 960 - w / 2, y + (70 - arH(id)) / 2, w - b2, w - a, mk(255,255,255)); bef += w;
-            } else {
-                int len = (int)strlen(p.en[i]), a = iclamp(f - bef, 0, len), b2 = iclamp(t - bef, 0, len), x0 = 960 - textWidth(p.en[i], 4) / 2;
-                for (int k = a; k < b2; k++) { char tmp[2] = {p.en[i][k], 0}; drawText(x0 + k * 24, y + 21, tmp, 4, mk(255,255,255)); } bef += len;
-            }
+            if (ar) { int id = p.ar[i]; if (id < 0) continue; int w = arW(id), a = iclamp(f - bef, 0, w), b2 = iclamp(t - bef, 0, w); if (b2 > a) drawArCols(id, 960 - w / 2, y + (70 - arH(id)) / 2, w - b2, w - a, mk(255,255,255)); bef += w; }
+            else { int len = (int)strlen(p.en[i]), a = iclamp(f - bef, 0, len), b2 = iclamp(t - bef, 0, len), x0 = 960 - textWidth(p.en[i], 4) / 2; for (int k = a; k < b2; k++) { char tmp[2] = {p.en[i][k], 0}; drawText(x0 + k * 24, y + 21, tmp, 4, mk(255,255,255)); } bef += len; }
         }
         storyShown[b] = typed;
     }
-    (void)tot;
 }
 
 static void updateUI() {
     bool nu = navEvent(0, in.up), nd = navEvent(1, in.down), nl = navEvent(2, in.left), nr = navEvent(3, in.right);
+    if (state == S_SECRET) {
+        int o = secretSel; if (nl) secretSel = (secretSel + 4) % 5; if (nr) secretSel = (secretSel + 1) % 5;
+        if (secretSel != o) { snd(0); uiFull[0] = uiFull[1] = true; }
+        if (in.crossNew) { save.selectedSkin = 5 + secretSel; writeSave(); snd(1); setState(S_MENU); }
+        else if (in.circleNew) { snd(2); setState(S_MENU); }
+        return;
+    }
     if (state == S_MENU) {
+        // SECRET MENU COMBO: Hold L2 + R2 + L1 and press X!
+        if (in.l2 && in.r2 && in.l1 && in.crossNew) { snd(1); setState(S_SECRET); return; }
         int o = menuSel; if (nu) menuSel = (menuSel + 6) % 7; if (nd) menuSel = (menuSel + 1) % 7;
         if (menuSel != o) { markPend(o); markPend(menuSel); snd(0); }
         if (in.crossNew) {
@@ -1824,4 +1597,4 @@ int main(void) {
     }
     return 0;
 }
-// ====== نهاية الجزء 3 ======
+// ====== نهاية الجزء 2 ======
