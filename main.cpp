@@ -447,7 +447,7 @@ static bool navEvent(int i, bool p) {
     holdCnt[i]++; return holdCnt[i] == 1 || (holdCnt[i] > 20 && ((holdCnt[i] - 20) % 6) == 0);
 }
 
-// ---------- 6-Channel Independent Halal Audio Engine ----------
+// ---------- 6-Channel Independent Halal Audio Engine (Fixed Volume Scaling) ----------
 static int curSfx = -1, sfxChan = 0, sfxPos = 0, sfxLen = 0, sfxPhase = 0, bgmSample = 0, humP1 = 0, humP2 = 0, duffP = 0;
 static unsigned int noiseRng = 987654321u;
 
@@ -517,8 +517,9 @@ static void updateGameplayAudio() {
     int aGain = cfg.muteAll ? 0 : (cfg.masterVol * cfg.ambVol) / 100;
     int sBase = (cfg.muteAll || cfg.muteSfx) ? 0 : (sfxChan == 1 ? cfg.playerVol : (sfxChan == 2 ? cfg.enemyVol : cfg.sfxVol));
     int sGain = (cfg.masterVol * sBase) / 100;
+    int blocks = (cfg.fpsLimit == 30) ? 6 : 3;
 
-    for (int blk = 0; blk < 2; blk++) {
+    for (int blk = 0; blk < blocks; blk++) {
         for (int i = 0; i < 256; i++) {
             int mix = 0;
             if (mGain > 0) {
@@ -532,13 +533,13 @@ static void updateGameplayAudio() {
                 if ((humP1 += f1) >= 48000) humP1 -= 48000; if ((humP2 += f2) >= 48000) humP2 -= 48000;
                 int v1 = humP1 < 24000 ? humP1 - 12000 : 36000 - humP1, v2 = humP2 < 24000 ? humP2 - 12000 : 36000 - humP2;
                 int br = inS < (stepS / 2) ? inS : (stepS - inS);
-                m += ((v1 + v2) * (1200 + br / 6)) / 10000;
-                mix += (m * mGain) / 10000;
+                m += ((v1 + v2) * (1350 + br / 6)) / 10000;
+                mix += (m * mGain) / 100;
             }
             if (aGain > 0) {
                 noiseRng = noiseRng * 1664525u + 1013904223u;
                 int breeze = (((int)(noiseRng >> 22) & 255) - 128) * (w == 7 || w == 1 ? 6 : 3);
-                mix += (breeze * aGain) / 10000;
+                mix += (breeze * aGain) / 100;
             }
             if (curSfx >= 0) {
                 int rem = sfxLen - sfxPos;
@@ -559,7 +560,7 @@ static void updateGameplayAudio() {
                     int s = (((sfxPhase < 24000 ? sfxPhase : 48000 - sfxPhase) - 12000) * vol) / 12000;
                     if (curSfx == 5 || curSfx == 6 || curSfx == 7 || curSfx == 10) { noiseRng = noiseRng * 1664525u + 1013904223u; s += (((int)(noiseRng >> 19) & 1023) - 512) * (curSfx == 10 ? 9 : 5); }
                     if (rem < 1000) s = (s * rem) / 1000;
-                    if (sGain > 0) mix += (s * sGain) / 10000;
+                    if (sGain > 0) mix += (s * sGain) / 100;
                     sfxPos++;
                 }
             }
